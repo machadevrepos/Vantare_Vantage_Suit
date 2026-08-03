@@ -23,6 +23,28 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Verify uploaded patch parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A expected=(
+            [part-01.b64]=0cffd530b67683b40796fc5d3d8a8ce1ed2aaa51
+            [part-02.b64]=f6f61ce45f035b4802461e71bab6a2910cbd2de7
+            [part-03.b64]=a6183b4f7b09865db94d6ba4fad0ed653eab6db3
+            [part-04.b64]=bbc6921e0604320420c665822ff4c2fed0a7ae77
+            [part-05.b64]=776131caf22fbbb5e8b6095fe6c8cccf1ca29625
+            [part-06.b64]=bda9835dce8f61b8327c0c591dbac971e83d9578
+            [part-07.b64]=16b3febfdf6ce733c88046c2630a1e1a7256c736
+            [part-08.b64]=b579c21b18744a6d7c199f1e981dc33210c6eee8
+            [part-09.b64]=b7a3748d74f88099ee2fa490b85d3fccd45a066d
+          )
+          for name in "${!expected[@]}"; do
+            path=".cleanup-patch/${name}"
+            actual="$(git hash-object "${path}")"
+            printf '%s bytes=%s expected=%s actual=%s\n' "${name}" "$(wc -c < "${path}")" "${expected[$name]}" "${actual}"
+            test "${actual}" = "${expected[$name]}"
+          done
+
       - name: Reconstruct uploaded patch
         shell: bash
         run: |
