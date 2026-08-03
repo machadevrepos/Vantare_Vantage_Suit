@@ -29,12 +29,13 @@ public:
 
   bool start_or_record_active() const {
     return start_or_record_active_ || queued_done_count_ != 0U ||
-           live_sample_count_ != 0U || active_source_id_ != 0U;
+           pending_live_count_ != 0U || active_source_id_ != 0U;
   }
 
   bool pop_next_record_done(exo::RecordDoneMessage &out) {
     if (queued_done_count_ == 0U) {
-      start_or_record_active_ = transfer_hold_ || active_source_id_ != 0U;
+      start_or_record_active_ = transfer_hold_ || active_source_id_ != 0U ||
+          pending_live_count_ != 0U;
       return false;
     }
     uint8_t best = 0U;
@@ -61,55 +62,51 @@ public:
 
   bool push_leaf_sample(uint8_t node_id, uint8_t sensor_id,
                         const uint8_t *payload, uint8_t payload_len) {
-    if (node_id == 0U || payload == nullptr || payload_len == 0U ||
+    if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U ||
+        payload == nullptr || payload_len == 0U ||
         payload_len > sizeof(LiveSample::payload)) {
       return false;
     }
     touch_node(node_id);
-
-    // Live preview is a latest-value display, not a lossless recording path.
-    // Coalesce an unsent sample from the same Node/sensor pair so one high-rate
-    // source cannot evict every other Node from the small BLE preview queue.
-    for (uint8_t i = 0U; i < live_sample_count_; ++i) {
-      const uint8_t index = static_cast<uint8_t>(
-          (live_sample_head_ + i) % kMaxQueuedSamples);
-      LiveSample &pending = live_samples_[index];
-      if (pending.node_id == node_id && pending.sensor_id == sensor_id) {
-        pending.payload_len = payload_len;
-        memcpy(pending.payload, payload, payload_len);
-        start_or_record_active_ = true;
-        return true;
-      }
+    const uint8_t index = live_slot_index_(node_id, sensor_id);
+    LiveSlot &slot = live_slots_[index];
+    if (slot.valid) {
+      ++slot.coalesced;
+    } else {
+      slot.valid = true;
+      ++pending_live_count_;
     }
-
-    if (live_sample_count_ >= kMaxQueuedSamples) {
-      live_sample_head_ = static_cast<uint8_t>((live_sample_head_ + 1U) % kMaxQueuedSamples);
-      --live_sample_count_;
-    }
-    const uint8_t write_index = static_cast<uint8_t>(
-        (live_sample_head_ + live_sample_count_) % kMaxQueuedSamples);
-    LiveSample &sample = live_samples_[write_index];
-    sample.node_id = node_id;
-    sample.sensor_id = sensor_id;
-    sample.payload_len = payload_len;
-    memcpy(sample.payload, payload, payload_len);
-    ++live_sample_count_;
+    slot.sample.node_id = node_id;
+    slot.sample.sensor_id = sensor_id;
+    slot.sample.payload_len = payload_len;
+    memcpy(slot.sample.payload, payload, payload_len);
+    selected_live_index_ = kNoLiveSelection;
     start_or_record_active_ = true;
     return true;
   }
 
   bool peek_next_live_sample(LiveSample &out) const {
-    if (live_sample_count_ == 0U) return false;
-    out = live_samples_[live_sample_head_];
+    const int8_t selected = select_next_live_index_();
+    if (selected < 0) return false;
+    out = live_slots_[static_cast<uint8_t>(selected)].sample;
     return true;
   }
 
   bool discard_next_live_sample() {
-    if (live_sample_count_ == 0U) return false;
-    live_samples_[live_sample_head_] = LiveSample{};
-    live_sample_head_ = static_cast<uint8_t>((live_sample_head_ + 1U) % kMaxQueuedSamples);
-    --live_sample_count_;
-    if (live_sample_count_ == 0U && queued_done_count_ == 0U &&
+    const int8_t selected = select_next_live_index_();
+    if (selected < 0) return false;
+    const uint8_t index = static_cast<uint8_t>(selected);
+    const uint8_t source = live_slots_[index].sample.node_id;
+    live_slots_[index].sample = LiveSample{};
+    live_slots_[index].valid = false;
+    if (pending_live_count_ > 0U) --pending_live_count_;
+    if (source >= 1U && source <= kMaxLeaves) {
+      sensor_preference_[source - 1U] =
+          static_cast<uint8_t>(sensor_preference_[source - 1U] ^ 1U);
+      next_preview_source_ = source == kMaxLeaves ? 1U : static_cast<uint8_t>(source + 1U);
+    }
+    selected_live_index_ = kNoLiveSelection;
+    if (pending_live_count_ == 0U && queued_done_count_ == 0U &&
         !transfer_hold_ && active_source_id_ == 0U) {
       start_or_record_active_ = false;
     }
@@ -119,6 +116,15 @@ public:
   bool pop_next_live_sample(LiveSample &out) {
     return peek_next_live_sample(out) && discard_next_live_sample();
   }
+
+  uint32_t live_coalesced(uint8_t node_id, uint8_t sensor_id) const {
+    if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U) {
+      return 0U;
+    }
+    return live_slots_[live_slot_index_(node_id, sensor_id)].coalesced;
+  }
+
+  uint8_t pending_live_sample_count() const { return pending_live_count_; }
 
   bool queue_record_done(const exo::RecordDoneMessage &message) {
     if (message.node_id < 1U || message.node_id > kMaxLeaves) return false;
@@ -141,11 +147,13 @@ public:
       queued_done_[i] = exo::RecordDoneMessage{};
     }
     queued_done_count_ = 0U;
-    for (uint8_t i = 0U; i < kMaxQueuedSamples; ++i) {
-      live_samples_[i] = LiveSample{};
+    for (uint8_t i = 0U; i < kLiveSlotCount; ++i) {
+      live_slots_[i] = LiveSlot{};
     }
-    live_sample_count_ = 0U;
-    live_sample_head_ = 0U;
+    for (uint8_t i = 0U; i < kMaxLeaves; ++i) sensor_preference_[i] = 0U;
+    pending_live_count_ = 0U;
+    next_preview_source_ = 1U;
+    selected_live_index_ = kNoLiveSelection;
     active_source_id_ = 0U;
     active_session_id_ = 0U;
     next_chunk_index_ = 0U;
@@ -160,7 +168,8 @@ public:
   void set_transfer_hold(bool hold) {
     transfer_hold_ = hold;
     if (hold) start_or_record_active_ = true;
-    else if (queued_done_count_ == 0U && active_source_id_ == 0U)
+    else if (queued_done_count_ == 0U && active_source_id_ == 0U &&
+             pending_live_count_ == 0U)
       start_or_record_active_ = false;
   }
 
@@ -244,7 +253,8 @@ public:
     active_session_id_ = 0U;
     receiver_credit_ = 0U;
     paused_ = false;
-    if (queued_done_count_ == 0U && !transfer_hold_) start_or_record_active_ = false;
+    if (queued_done_count_ == 0U && !transfer_hold_ && pending_live_count_ == 0U)
+      start_or_record_active_ = false;
   }
 
   void on_ble_chunk_ack(uint32_t session_id, uint16_t source_id,
@@ -265,6 +275,49 @@ public:
 
 private:
   struct NodeSlot { uint8_t node_id = 0U; bool discovered = false; bool connected = false; };
+  struct LiveSlot {
+    LiveSample sample{};
+    uint32_t coalesced = 0U;
+    bool valid = false;
+  };
+
+  static constexpr uint8_t kMaxLeaves = 4U;
+  static constexpr uint8_t kSensorsPerLeaf = 2U;
+  static constexpr uint8_t kLiveSlotCount = kMaxLeaves * kSensorsPerLeaf;
+  static constexpr int8_t kNoLiveSelection = -1;
+
+  static uint8_t live_slot_index_(uint8_t node_id, uint8_t sensor_id) {
+    return static_cast<uint8_t>((node_id - 1U) * kSensorsPerLeaf + (sensor_id - 1U));
+  }
+
+  int8_t select_next_live_index_() const {
+    if (pending_live_count_ == 0U) {
+      selected_live_index_ = kNoLiveSelection;
+      return -1;
+    }
+    if (selected_live_index_ >= 0 &&
+        live_slots_[static_cast<uint8_t>(selected_live_index_)].valid) {
+      return selected_live_index_;
+    }
+    for (uint8_t offset = 0U; offset < kMaxLeaves; ++offset) {
+      const uint8_t source = static_cast<uint8_t>(
+          ((next_preview_source_ - 1U + offset) % kMaxLeaves) + 1U);
+      const uint8_t preferred = sensor_preference_[source - 1U];
+      const uint8_t first = live_slot_index_(source, static_cast<uint8_t>(preferred + 1U));
+      const uint8_t second = live_slot_index_(source,
+          static_cast<uint8_t>((preferred ^ 1U) + 1U));
+      if (live_slots_[first].valid) {
+        selected_live_index_ = static_cast<int8_t>(first);
+        return selected_live_index_;
+      }
+      if (live_slots_[second].valid) {
+        selected_live_index_ = static_cast<int8_t>(second);
+        return selected_live_index_;
+      }
+    }
+    selected_live_index_ = kNoLiveSelection;
+    return -1;
+  }
 
   bool owns_transfer_(uint32_t session_id, uint16_t source_id) const {
     return active_source_id_ == source_id && active_session_id_ == session_id;
@@ -304,15 +357,15 @@ private:
            a.total_size == b.total_size && a.payload_crc32 == b.payload_crc32;
   }
 
-  static constexpr uint8_t kMaxLeaves = 4U;
-  static constexpr uint8_t kMaxQueuedSamples = 8U;
   NodeSlot nodes_[kMaxLeaves]{};
   uint8_t discovered_count_ = 0U;
   exo::RecordDoneMessage queued_done_[kMaxLeaves]{};
   uint8_t queued_done_count_ = 0U;
-  LiveSample live_samples_[kMaxQueuedSamples]{};
-  uint8_t live_sample_count_ = 0U;
-  uint8_t live_sample_head_ = 0U;
+  LiveSlot live_slots_[kLiveSlotCount]{};
+  uint8_t sensor_preference_[kMaxLeaves]{};
+  uint8_t pending_live_count_ = 0U;
+  uint8_t next_preview_source_ = 1U;
+  mutable int8_t selected_live_index_ = kNoLiveSelection;
   bool start_or_record_active_ = false;
   bool transfer_hold_ = false;
   uint16_t active_source_id_ = 0U;
