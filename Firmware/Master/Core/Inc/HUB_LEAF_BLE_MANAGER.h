@@ -66,6 +66,22 @@ public:
       return false;
     }
     touch_node(node_id);
+
+    // Live preview is a latest-value display, not a lossless recording path.
+    // Coalesce an unsent sample from the same Node/sensor pair so one high-rate
+    // source cannot evict every other Node from the small BLE preview queue.
+    for (uint8_t i = 0U; i < live_sample_count_; ++i) {
+      const uint8_t index = static_cast<uint8_t>(
+          (live_sample_head_ + i) % kMaxQueuedSamples);
+      LiveSample &pending = live_samples_[index];
+      if (pending.node_id == node_id && pending.sensor_id == sensor_id) {
+        pending.payload_len = payload_len;
+        memcpy(pending.payload, payload, payload_len);
+        start_or_record_active_ = true;
+        return true;
+      }
+    }
+
     if (live_sample_count_ >= kMaxQueuedSamples) {
       live_sample_head_ = static_cast<uint8_t>((live_sample_head_ + 1U) % kMaxQueuedSamples);
       --live_sample_count_;
