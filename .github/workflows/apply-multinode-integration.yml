@@ -7,6 +7,9 @@ on:
     paths:
       - tools/patches/multinode-master-owned.patch
       - .github/workflows/apply-multinode-integration.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -62,5 +65,3 @@ jobs:
           git add Firmware Docs
           git commit -m 'feat: add master-owned four-node session transfer'
           git push origin HEAD:2nd_Branch
-
-# trigger: 2026-08-03T17:10+05:00
