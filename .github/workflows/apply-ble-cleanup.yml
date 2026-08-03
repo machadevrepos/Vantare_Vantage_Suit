@@ -1,0 +1,83 @@
+name: Apply BLE-only cleanup
+
+on:
+  pull_request:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.cleanup-patch/**'
+      - '.github/workflows/apply-ble-cleanup.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct uploaded patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .cleanup-patch/part-*.b64 | base64 --decode | gzip --decompress > /tmp/ble-cleanup.patch
+          test "$(sha256sum /tmp/ble-cleanup.patch | awk '{print $1}')" = "b763681b55020c3e0fd108340253055b3e46f42f41d600055bdac11883f6f378"
+
+      - name: Validate patch and apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check /tmp/ble-cleanup.patch
+          git apply /tmp/ble-cleanup.patch
+
+      - name: Verify expected target blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Firmware/Master/Core/Src/main.c)" = "8daf733b87ca7af9d4e61adca4dab8a71ef6abd5"
+          test "$(git hash-object Firmware/Node/Core/Src/main.c)" = "fa66d023c600f1e9dab30a8982f5a9c94db27a28"
+          test "$(git hash-object Firmware/LIBRARY/CUSTOM/ACQUISITION_DIAGNOSTICS.h | cut -c1-7)" = "e1c1881"
+          test "$(git hash-object Firmware/Master/tests/test_acquisition_diagnostics_source.ps1 | cut -c1-7)" = "ce4aa1d"
+          test "$(git hash-object 'Firmware/Project Details.md' | cut -c1-7)" = "19b181e"
+
+      - name: Run portable host checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile Firmware/HostTests/*.py
+          if command -v g++ >/dev/null 2>&1; then
+            g++ -std=c++17 -Wall -Wextra -Werror -DEXO_ACQ_DIAG_HOST_TEST=1 \
+              -I Firmware/LIBRARY/CUSTOM \
+              Firmware/Master/tests/acquisition_diagnostics_test.cpp \
+              -o /tmp/acquisition_diagnostics_test
+            /tmp/acquisition_diagnostics_test
+          fi
+          grep -RInE 'MasterRs485_|HubRs485|master_rs485_recording|node_rs485_recording|comms_rs485|RS485_RECORD_' \
+            Firmware/Master Firmware/Node Firmware/LIBRARY/CUSTOM \
+            --exclude='*.patch' && exit 1 || true
+
+      - name: Remove temporary patch machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .cleanup-patch
+          rm -f .github/workflows/apply-ble-cleanup.yml
+
+      - name: Commit validated cleanup
+        shell: bash
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'chore: remove RS485 dead code and update BLE-only architecture'
+          git push origin "HEAD:${HEAD_BRANCH}"
