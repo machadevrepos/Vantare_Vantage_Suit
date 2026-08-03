@@ -33,7 +33,8 @@ jobs:
             [part-03.b64]=a6183b4f7b09865db94d6ba4fad0ed653eab6db3
             [part-04.b64]=bbc6921e0604320420c665822ff4c2fed0a7ae77
             [part-05.b64]=776131caf22fbbb5e8b6095fe6c8cccf1ca29625
-            [part-06.b64]=bda9835dce8f61b8327c0c591dbac971e83d9578
+            [part-06a.b64]=3779523ba418e3066d09eee0521eb6db7264ce69
+            [part-06b.b64]=11d59b3b3649896bc73c45961f3d49b1ee1ff95a
             [part-07.b64]=16b3febfdf6ce733c88046c2630a1e1a7256c736
             [part-08.b64]=b579c21b18744a6d7c199f1e981dc33210c6eee8
             [part-09.b64]=b7a3748d74f88099ee2fa490b85d3fccd45a066d
@@ -49,7 +50,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .cleanup-patch/part-*.b64 | base64 --decode | gzip --decompress > /tmp/ble-cleanup.patch
+          cat \
+            .cleanup-patch/part-01.b64 \
+            .cleanup-patch/part-02.b64 \
+            .cleanup-patch/part-03.b64 \
+            .cleanup-patch/part-04.b64 \
+            .cleanup-patch/part-05.b64 \
+            .cleanup-patch/part-06a.b64 \
+            .cleanup-patch/part-06b.b64 \
+            .cleanup-patch/part-07.b64 \
+            .cleanup-patch/part-08.b64 \
+            .cleanup-patch/part-09.b64 \
+            | base64 --decode | gzip --decompress > /tmp/ble-cleanup.patch
           test "$(sha256sum /tmp/ble-cleanup.patch | awk '{print $1}')" = "539c0486217bfdacd2cfb1adc857350ce58dbda2dde3797bd94e5d60fcdd8116"
 
       - name: Validate patch and apply
