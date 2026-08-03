@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Exoskeleton Code Project </title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: left;
+    }
+    #TOC li {
+      list-style: disc;
+    }
+    #TOC ul {
+      padding-left: 1.6em;
+    }
+    #TOC > ul {
+      padding-left: 1.6em;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Exoskeleton Code Project </h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#exoskeleton-code-project"
+id="toc-exoskeleton-code-project">INDEX</a>
+<ul>
+<li><a href="#repository-scope" id="toc-repository-scope">Repository
+Scope</a></li>
+<li><a href="#functional" id="toc-functional">Functional</a></li>
+<li><a href="#directory" id="toc-directory">Directory</a>
+<ul>
+<li><a href="#master" id="toc-master"><code>Master/</code></a></li>
+<li><a href="#node" id="toc-node"><code>Node/</code></a></li>
+<li><a href="#library" id="toc-library"><code>LIBRARY/</code></a></li>
+<li><a href="#desktoptools"
+id="toc-desktoptools"><code>DesktopTools/</code></a></li>
+</ul></li>
+<li><a href="#blepipe-gatt" id="toc-blepipe-gatt">BLEPipe GATT</a></li>
+<li><a href="#blepipe-frame" id="toc-blepipe-frame">BLEPipe
+Frame</a></li>
+<li><a href="#live-stream-data-flow" id="toc-live-stream-data-flow">Live
+Stream Data Flow</a></li>
+<li><a href="#recording-data-flow"
+id="toc-recording-data-flow">Recording Data Flow</a>
+<ul>
+<li><a href="#start-command" id="toc-start-command">Start
+Command</a></li>
+<li><a href="#hub-coordination" id="toc-hub-coordination">Hub
+Coordination</a></li>
+<li><a href="#node-recording" id="toc-node-recording">Node
+Recording</a></li>
+<li><a href="#hub-recording" id="toc-hub-recording">Hub
+Recording</a></li>
+<li><a href="#session-format" id="toc-session-format">Session
+Format</a></li>
+<li><a href="#reliable-transfer" id="toc-reliable-transfer">Reliable
+Transfer</a></li>
+</ul></li>
+<li><a href="#control-command" id="toc-control-command">Control
+Command</a></li>
+<li><a href="#sensor" id="toc-sensor">Sensor</a></li>
+<li><a href="#storage" id="toc-storage">Storage</a></li>
+<li><a href="#runtime-loop" id="toc-runtime-loop">Runtime Loop</a></li>
+<li><a href="#retained-rs485" id="toc-retained-rs485">Retained
+RS485</a></li>
+<li><a href="#testing-and-diagnostic-macro"
+id="toc-testing-and-diagnostic-macro">Testing and Diagnostic
+Macro</a></li>
+<li><a href="#compile-time-and-cube-setting"
+id="toc-compile-time-and-cube-setting">Compile-Time and Cube
+Setting</a></li>
+<li><a href="#logging" id="toc-logging">Logging</a></li>
+<li><a href="#maintenance" id="toc-maintenance">Maintenance</a></li>
+<li><a href="#main-data-paths" id="toc-main-data-paths">Main Data
+Paths</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="exoskeleton-code-project">Exoskeleton Code Project</h1>
+<h2 id="repository-scope">Repository Scope</h2>
+<ul>
+<li>Project type: STM32WB55 BLE exoskeleton sensor, recording, and
+desktop diagnostic system.</li>
+<li>Active transport architecture: BLE-first.</li>
+<li>Retained but inactive transport stack: RS485 recording
+protocol.</li>
+<li>Firmware projects:
+<ul>
+<li><code>Master/</code>: hub firmware.</li>
+<li><code>Node/</code>: leaf/node firmware.</li>
+</ul></li>
+<li>Shared code:
+<ul>
+<li><code>LIBRARY/</code>: custom application code, shared protocol
+headers, sensor drivers, storage drivers, retained transport code.</li>
+</ul></li>
+<li>Host tool:
+<ul>
+<li><code>DesktopTools/Exoskeleton.html</code>: Web Bluetooth browser
+tool.</li>
+</ul></li>
+<li>Build system: STM32CubeIDE GCC.</li>
+<li>MCU target: <code>STM32WB55CCUx</code> /
+<code>STM32WB55CCU6</code>.</li>
+<li>STM32Cube firmware package:
+<code>STM32Cube FW_WB V1.24.0</code>.</li>
+<li>Main firmware files use <code>.c</code> extension but are compiled
+with <code>g++</code>.</li>
+</ul>
+<h2 id="functional">Functional</h2>
+<ul>
+<li>The system collects IMU data from a hub and BLE leaf nodes.</li>
+<li>The hub exposes a BLE service to the browser.</li>
+<li>The hub also acts as a BLE central for leaf nodes.</li>
+<li>Leaf nodes advertise the same custom BLEPipe service.</li>
+<li>Live data can be streamed without recording.</li>
+<li>Recording data is stored locally first.</li>
+<li>Hub recording storage target: SD card.</li>
+<li>Node recording storage target: external W25Q256 SPI flash.</li>
+<li>Recorded sessions are transferred after recording completion.</li>
+<li>The browser verifies recorded-session header CRC and payload
+CRC.</li>
+<li>The browser decodes recorded BNO85 and ICM45686 samples.</li>
+<li>The browser plots live and recorded signals.</li>
+<li>The browser can export selected samples as CSV.</li>
+</ul>
+<h2 id="directory">Directory</h2>
+<h3 id="master"><code>Master/</code></h3>
+<ul>
+<li>STM32WB55 hub firmware project.</li>
+<li>Main application file: <code>Master/Core/Src/main.c</code>.</li>
+<li>BLEPipe frame implementation:
+<ul>
+<li><code>Master/Core/Inc/blepipe_proto.h</code></li>
+<li><code>Master/Core/Src/blepipe_proto.c</code></li>
+</ul></li>
+<li>BLE custom service implementation:
+<ul>
+<li><code>Master/STM32_WPAN/App/custom_stm.c</code></li>
+<li><code>Master/STM32_WPAN/App/custom_stm.h</code></li>
+</ul></li>
+<li>BLE app event layer:
+<ul>
+<li><code>Master/STM32_WPAN/App/custom_app.c</code></li>
+<li><code>Master/STM32_WPAN/App/custom_app.h</code></li>
+</ul></li>
+<li>BLE central/client implementation:
+<ul>
+<li><code>Master/STM32_WPAN/App/exo_hub_central_client.c</code></li>
+<li><code>Master/STM32_WPAN/App/exo_hub_central_client.h</code></li>
+</ul></li>
+<li>FatFs support:
+<ul>
+<li><code>Master/FATFS/</code></li>
+<li><code>Master/Middlewares/Third_Party/FatFs/</code></li>
+</ul></li>
+<li>CubeMX configuration: <code>Master/Master.ioc</code>.</li>
+<li>CubeIDE build configuration: <code>Master/.cproject</code>.</li>
+</ul>
+<p>Master duties:</p>
+<ul>
+<li>Phone/browser-facing BLE peripheral.</li>
+<li>Leaf-node-facing BLE central.</li>
+<li>Local BNO85 sampler.</li>
+<li>Local ICM45686 sampler.</li>
+<li>Local SD session recorder.</li>
+<li>BLE command router.</li>
+<li>BLE node discovery manager.</li>
+<li>Recording prepare/commit coordinator.</li>
+<li>Node session transfer receiver.</li>
+<li>Browser session transfer relay.</li>
+<li>Actuator/test command handler.</li>
+</ul>
+<h3 id="node"><code>Node/</code></h3>
+<ul>
+<li>STM32WB55 leaf firmware project.</li>
+<li>Main application file: <code>Node/Core/Src/main.c</code>.</li>
+<li>BLEPipe frame implementation:
+<ul>
+<li><code>Node/Core/Inc/blepipe_proto.h</code></li>
+<li><code>Node/Core/Src/blepipe_proto.c</code></li>
+</ul></li>
+<li>BLE custom service implementation:
+<ul>
+<li><code>Node/STM32_WPAN/App/custom_stm.c</code></li>
+<li><code>Node/STM32_WPAN/App/custom_stm.h</code></li>
+</ul></li>
+<li>BLE app event layer:
+<ul>
+<li><code>Node/STM32_WPAN/App/custom_app.c</code></li>
+<li><code>Node/STM32_WPAN/App/custom_app.h</code></li>
+</ul></li>
+<li>CubeMX configuration: <code>Node/Node.ioc</code>.</li>
+<li>CubeIDE build configuration: <code>Node/.cproject</code>.</li>
+</ul>
+<p>Node duties:</p>
+<ul>
+<li>BLE peripheral advertising.</li>
+<li>Local BNO85 sampling.</li>
+<li>Local ICM45686 sampling.</li>
+<li>External SPI flash recording.</li>
+<li>Runtime node ID persistence.</li>
+<li>Recording readiness reporting.</li>
+<li>Recording prepare/commit handling.</li>
+<li>Reliable session upload.</li>
+<li>Direct browser commissioning support.</li>
+<li>Actuator/test command handling.</li>
+</ul>
+<h3 id="library"><code>LIBRARY/</code></h3>
+<ul>
+<li>Shared firmware code lives mainly in
+<code>LIBRARY/CUSTOM</code>.</li>
+<li>Important shared headers:
+<ul>
+<li><code>RECORDING_TYPES.h</code>: session header, sample structs, CRC
+helpers, format version.</li>
+<li><code>BLE_RECORD_PROTOCOL.h</code>: recording command IDs and
+reliable transfer frames.</li>
+<li><code>BLE_STREAM_V2.h</code>: live sample envelope.</li>
+<li><code>SESSION_TRANSFER.h</code>: upload reader and session
+assembler.</li>
+<li><code>NODE_RECORDING_APP.h</code>: node recording state
+machine.</li>
+<li><code>NODE_RECORDER.h</code>: flash-backed session recorder.</li>
+<li><code>MASTER_SD_SESSION_RECORDER.h</code>: SD-backed hub
+recorder.</li>
+<li><code>HUB_RECORDING_APP.h</code>: hub-side session assembly
+support.</li>
+<li><code>HUB_SESSION_STORE.h</code>: hub session file support.</li>
+<li><code>NODE_RUNTIME_CONFIG.h</code>: persistent node ID
+settings.</li>
+<li><code>BNO85_STM32.h</code>: BNO85 STM32 wrapper.</li>
+<li><code>ICM45686_STM32.h</code>: ICM45686 STM32 wrapper.</li>
+<li><code>W25Q256_FLASH.h</code>: W25Q256 flash adapter.</li>
+<li><code>HUB_SENSOR_TEST_APP.h</code>: sensor test and optional binary
+logging.</li>
+<li><code>EXO_LOGGER.h</code>: formatted logging.</li>
+</ul></li>
+<li>Retained RS485 headers:
+<ul>
+<li><code>RS485_FRAME_PROTOCOL.h</code></li>
+<li><code>RS485_RECORD_MASTER_APP.h</code></li>
+<li><code>RS485_RECORD_NODE_APP.h</code></li>
+<li><code>RS485.h</code></li>
+</ul></li>
+<li>Third-party/custom driver folders:
+<ul>
+<li><code>sh2/</code>: BNO85 SH2/SHTP code.</li>
+<li><code>motion.mcu.icm45686.driver/</code>: ICM45686 driver.</li>
+<li><code>w25qxx/</code>: W25Q flash driver.</li>
+<li><code>W25Qxxx_SPI_FLASH_STM32/</code>: W25Q reference/loader
+code.</li>
+<li><code>llcc68/</code>: LoRa-related retained code.</li>
+<li><code>MODBUS/</code>: Modbus retained code.</li>
+</ul></li>
+</ul>
+<h3 id="desktoptools"><code>DesktopTools/</code></h3>
+<ul>
+<li>Main tool: <code>DesktopTools/Exoskeleton.html</code>.</li>
+<li>Runtime: browser with Web Bluetooth support.</li>
+<li>BLE target: hub BLEPipe service.</li>
+<li>Optional BLE target: direct node BLEPipe service.</li>
+<li>Tool functions:
+<ul>
+<li>Connect/disconnect BLE.</li>
+<li>Start/stop stream.</li>
+<li>Set stream interval.</li>
+<li>Start recording.</li>
+<li>Receive reliable recorded-session transfer.</li>
+<li>Tune transfer parameters.</li>
+<li>Decode live samples.</li>
+<li>Decode recorded sessions.</li>
+<li>Verify CRCs.</li>
+<li>Plot signals.</li>
+<li>Filter traces.</li>
+<li>Select plotted points.</li>
+<li>Export selected points as CSV.</li>
+<li>Set/get node ID.</li>
+<li>Rediscover nodes.</li>
+<li>Test ERM, buzzer, RGB LED, touch feedback, and poweroff command
+path.</li>
+</ul></li>
+</ul>
+<h2 id="blepipe-gatt">BLEPipe GATT</h2>
+<ul>
+<li>Service name: <code>BLEPipeService</code>.</li>
+<li>Service short name: <code>BLEPipe</code>.</li>
+<li>Service UUID:
+<code>3f881000-b4a5-4f7c-9b60-98e0b5c8a000</code>.</li>
+</ul>
+<p>Characteristics:</p>
+<ul>
+<li><code>PipeDataTx</code>
+<ul>
+<li>UUID: <code>3f881001-b4a5-4f7c-9b60-98e0b5c8a000</code></li>
+<li>Property: notify.</li>
+<li>Usage: live samples, hub aggregate samples, raw forwarded
+payloads.</li>
+</ul></li>
+<li><code>PipeControlRx</code>
+<ul>
+<li>UUID: <code>3f881002-b4a5-4f7c-9b60-98e0b5c8a000</code></li>
+<li>Properties: write, write without response.</li>
+<li>Usage: incoming commands.</li>
+</ul></li>
+<li><code>PipeControlTx</code>
+<ul>
+<li>UUID: <code>3f881003-b4a5-4f7c-9b60-98e0b5c8a000</code></li>
+<li>Properties: notify, indicate.</li>
+<li>Usage: command responses, ACK, NACK, control relays.</li>
+</ul></li>
+<li><code>PipeStatusTx</code>
+<ul>
+<li>UUID: <code>3f881004-b4a5-4f7c-9b60-98e0b5c8a000</code></li>
+<li>Properties: read, notify.</li>
+<li>Usage: readiness, topology, heartbeat, link stats, events, logs,
+errors, reliable-transfer status.</li>
+</ul></li>
+<li><code>PipeConfigRw</code>
+<ul>
+<li>UUID: <code>3f881005-b4a5-4f7c-9b60-98e0b5c8a000</code></li>
+<li>Properties: read, write.</li>
+<li>Usage: config lane.</li>
+</ul></li>
+</ul>
+<h2 id="blepipe-frame">BLEPipe Frame</h2>
+<ul>
+<li>Protocol version: <code>1</code>.</li>
+<li>Max notification payload: <code>244</code> bytes.</li>
+<li>Header length: <code>20</code> bytes.</li>
+<li>CRC length: <code>2</code> bytes.</li>
+<li>Max application payload: <code>222</code> bytes.</li>
+<li>CRC type: CRC-16/CCITT.</li>
+<li>CRC coverage: BLEPipe header plus application payload.</li>
+</ul>
+<p>BLEPipe IDs:</p>
+<ul>
+<li>Hub: <code>0x0001</code>.</li>
+<li>Leaf 1: <code>0x0101</code>.</li>
+<li>Leaf 2: <code>0x0102</code>.</li>
+<li>Leaf 3: <code>0x0103</code>.</li>
+<li>Leaf 4: <code>0x0104</code>.</li>
+<li>Broadcast: <code>0xFFFF</code>.</li>
+<li>Browser/phone in desktop tool: <code>0x1000</code>.</li>
+</ul>
+<p>BLEPipe lanes:</p>
+<ul>
+<li><code>DATA_TX</code>: <code>LEAF_SAMPLE</code>,
+<code>HUB_AGGREGATE</code>, <code>RAW_FORWARD</code>.</li>
+<li><code>CONTROL_RX</code>: <code>COMMAND</code>,
+<code>TIME_SYNC</code>, <code>CONFIG_SET</code>,
+<code>STREAM_CONTROL</code>.</li>
+<li><code>CONTROL_TX</code>: <code>COMMAND_RESP</code>,
+<code>ACK</code>, <code>NACK</code>.</li>
+<li><code>STATUS_TX</code>: <code>STATUS</code>, <code>TOPOLOGY</code>,
+<code>LINK_STATS</code>, <code>EVENT</code>, <code>LOG</code>,
+<code>ERROR</code>.</li>
+<li><code>CONFIG_RW</code>: <code>CONFIG_READ</code>,
+<code>CONFIG_WRITE</code>, <code>ROUTING_TABLE</code>,
+<code>DEVICE_INFO</code>, <code>STREAM_PROFILE</code>.</li>
+</ul>
+<h2 id="live-stream-data-flow">Live Stream Data Flow</h2>
+<p>Live stream path:</p>
+<ol type="1">
+<li>Browser connects to hub BLEPipe service.</li>
+<li>Browser writes a <code>STREAM_CONTROL</code> BLEPipe frame to
+<code>PipeControlRx</code>.</li>
+<li>Hub receives the command in the custom BLE app event path.</li>
+<li>Hub updates stream state.</li>
+<li>Hub samples BNO85 and ICM45686.</li>
+<li>Hub packs each sample in a <code>BLE_STREAM_V2</code> envelope.</li>
+<li>Hub sends sample notifications through <code>PipeDataTx</code>.</li>
+<li>Browser receives notifications.</li>
+<li>Browser validates BLEPipe frame.</li>
+<li>Browser parses <code>BLE_STREAM_V2</code>.</li>
+<li>Browser decodes sensor payload.</li>
+<li>Browser appends trace points to the plot.</li>
+</ol>
+<p>Live stream command IDs:</p>
+<ul>
+<li>Start stream: <code>0xA0</code>.</li>
+<li>Stop stream: <code>0xA1</code>.</li>
+<li>Set stream interval: <code>0xA2</code>.</li>
+</ul>
+<p><code>BLE_STREAM_V2</code> :</p>
+<ul>
+<li>Frame ID: <code>0xB1</code>.</li>
+<li>Version: <code>1</code>.</li>
+<li>Header fields:
+<ul>
+<li>Node ID.</li>
+<li>Sensor ID.</li>
+<li>Sequence.</li>
+<li>Timestamp in milliseconds.</li>
+<li>Payload length.</li>
+</ul></li>
+<li>Sensor IDs:
+<ul>
+<li>BNO/IMU: <code>0x01</code>.</li>
+<li>ICM45686: <code>0x02</code>.</li>
+<li>Flex/analog decoder support: <code>0x03</code>.</li>
+</ul></li>
+</ul>
+<p>Leaf live-stream path:</p>
+<ol type="1">
+<li>Leaf sends BLEPipe data notification.</li>
+<li>Hub BLE central client receives leaf notification.</li>
+<li>Hub validates/decodes BLEPipe.</li>
+<li>Hub forwards data/control/status to the browser through its own
+BLEPipe service.</li>
+<li>Browser treats forwarded leaf samples as node-specific traces.</li>
+</ol>
+<h2 id="recording-data-flow">Recording Data Flow</h2>
+<h3 id="start-command">Start Command</h3>
+<ul>
+<li>Browser sends a record start command over BLEPipe.</li>
+<li>Start command struct: <code>StartRecordMessage</code>.</li>
+<li>Start command fields:
+<ul>
+<li>Command.</li>
+<li>Session ID.</li>
+<li>Lead time in microseconds.</li>
+<li>Duration in milliseconds.</li>
+</ul></li>
+<li>Hub receives the command through <code>PipeControlRx</code>.</li>
+<li>Hub routes the command in <code>Master/Core/Src/main.c</code>.</li>
+</ul>
+<h3 id="hub-coordination">Hub Coordination</h3>
+<ul>
+<li>Hub tracks connected BLE leaves.</li>
+<li>Hub tracks ready BLE leaves.</li>
+<li>Hub sends prepare/start messages to selected leaves.</li>
+<li>Hub waits for leaf prepare/app-ready responses.</li>
+<li>Hub sends commit when required leaves are prepared.</li>
+<li>Hub starts local SD recording.</li>
+<li>Nodes start local flash recording.</li>
+</ul>
+<p>Recording start heartbeat phases:</p>
+<ul>
+<li><code>0x01</code>: wait app ready.</li>
+<li><code>0x02</code>: reset cooldown.</li>
+<li><code>0x03</code>: prepare sent.</li>
+<li><code>0x04</code>: wait prepare ACK.</li>
+<li><code>0x05</code>: app ready acquired.</li>
+<li><code>0x06</code>: commit start.</li>
+<li><code>0x20</code>: node reset.</li>
+<li><code>0x21</code>: node prepare.</li>
+<li><code>0x22</code>: node commit.</li>
+<li><code>0x23</code>: node abort.</li>
+<li><code>0x24</code>: node ready wait.</li>
+</ul>
+<h3 id="node-recording">Node Recording</h3>
+<ul>
+<li>Node recording class: <code>exo::NodeRecordingApp</code>.</li>
+<li>Default duration: <code>10000 ms</code>.</li>
+<li>Default lead time: <code>300000 us</code>.</li>
+<li>Record tick: <code>10 ms</code>.</li>
+<li>Effective recording rate target: <code>100 Hz</code>.</li>
+<li>BNO batch size: <code>4</code> samples.</li>
+<li>ICM batch size: <code>8</code> samples.</li>
+<li>Storage target: W25Q256 SPI flash.</li>
+<li>Upload reader class: <code>exo::SessionUploadReader</code>.</li>
+<li>Completion notification: <code>RecordDoneMessage</code>.</li>
+</ul>
+<h3 id="hub-recording">Hub Recording</h3>
+<ul>
+<li>Hub recorder class: <code>exo::MasterSdSessionRecorder</code>.</li>
+<li>Storage target: SD card through FatFs.</li>
+<li>Session root directory: <code>/SESSIONS</code>.</li>
+<li>Final master session path: <code>/SESSIONS/MREC.BIN</code>.</li>
+<li>Max BNO samples: <code>1200</code>.</li>
+<li>Max ICM samples: <code>2400</code>.</li>
+<li>BNO buffer samples: <code>8</code>.</li>
+<li>ICM buffer samples: <code>32</code>.</li>
+<li>Copy buffer size: <code>256</code> bytes.</li>
+</ul>
+<h3 id="session-format">Session Format</h3>
+<ul>
+<li>Session magic: <code>0x584F5345</code> (<code>ESOX</code>).</li>
+<li>Header size: <code>56</code> bytes.</li>
+<li>Complete flag: <code>0xA5</code>.</li>
+<li>Format macro: <code>EXO_SAMPLE_FORMAT_VERSION</code>.</li>
+<li>Default format version: <code>3</code>.</li>
+<li>Allowed format versions: <code>2</code>, <code>3</code>.</li>
+<li>Invalid format versions cause compile-time error.</li>
+<li>BNO85 sensor ID: <code>0x01</code>.</li>
+<li>ICM45686 sensor ID: <code>0x02</code>.</li>
+<li>Session payload order:
+<ul>
+<li>Session header.</li>
+<li>BNO85 payload region.</li>
+<li>ICM45686 payload region.</li>
+</ul></li>
+<li>Header CRC function: <code>session_header_crc</code>.</li>
+<li>Payload CRC: CRC-32 over BNO85 plus ICM45686 payload regions.</li>
+</ul>
+<h3 id="reliable-transfer">Reliable Transfer</h3>
+<ul>
+<li>Protocol header: <code>RecordReliableFrameHeader</code>.</li>
+<li>Reliable protocol version: <code>6</code>.</li>
+<li>Reliable magic: <code>0x5845</code> (<code>EX</code>).</li>
+<li>Default chunk size: <code>180</code> bytes.</li>
+<li>Default credit: <code>16</code>.</li>
+</ul>
+<p>Recording command :</p>
+<ul>
+<li><code>ListSessions</code>: list sessions.</li>
+<li><code>FetchSession</code>: fetch session.</li>
+<li><code>SessionChunk</code>: legacy/direct session chunk.</li>
+<li><code>ChunkAck</code>: chunk acknowledgement.</li>
+<li><code>SessionCompleteAck</code>: transfer completion
+acknowledgement.</li>
+<li><code>EraseSession</code>: erase session.</li>
+<li><code>PrepareRecord</code>: prepare delayed synchronized
+record.</li>
+<li><code>CommitPreparedRecord</code>: commit prepared record.</li>
+<li><code>AbortPreparedRecord</code>: abort prepared record.</li>
+<li><code>ReliableFrame</code>: reliable transfer frame.</li>
+</ul>
+<p>Reliable frame types:</p>
+<ul>
+<li><code>Manifest</code>: declares transfer metadata.</li>
+<li><code>ManifestAck</code>: opens receive window and credit.</li>
+<li><code>AckWindow</code>: acknowledges received window/progress.</li>
+<li><code>NackRange</code>: requests retransmission of missing
+chunks.</li>
+<li><code>Chunk</code>: carries payload bytes.</li>
+<li><code>Pause</code>: pauses source.</li>
+<li><code>Resume</code>: resumes source.</li>
+<li><code>Cancel</code>: cancels transfer.</li>
+<li><code>VerifyOk</code>: receiver verified transfer.</li>
+<li><code>VerifyFail</code>: receiver verification failed.</li>
+<li><code>BusyNotOwner</code>: receiver is busy with another
+source/session.</li>
+<li><code>SourceWaiting</code>: source has no current credit or is
+waiting.</li>
+<li><code>CommitDone</code>: source finished commit/cleanup step.</li>
+</ul>
+<p>Reliable transfer path:</p>
+<ol type="1">
+<li>Source sends <code>RecordDone</code>.</li>
+<li>Receiver creates or queues transfer state for
+<code>(session_id, source_id)</code>.</li>
+<li>Source sends <code>Manifest</code>.</li>
+<li>Receiver validates manifest.</li>
+<li>Receiver sends <code>ManifestAck</code>.</li>
+<li>Source sends chunks while credit is available.</li>
+<li>Receiver records chunk bitmap.</li>
+<li>Receiver sends <code>AckWindow</code> periodically.</li>
+<li>Receiver sends <code>NackRange</code> for gaps.</li>
+<li>Source retransmits missing ranges.</li>
+<li>Receiver verifies CRC.</li>
+<li>Receiver sends <code>VerifyOk</code> or
+<code>VerifyFail</code>.</li>
+<li>Source sends <code>CommitDone</code>.</li>
+<li>Receiver sends or handles <code>SessionCompleteAck</code>.</li>
+<li>Source may erase/reset local completed session state.</li>
+</ol>
+<h2 id="control-command">Control Command</h2>
+<p>Command IDs used by the desktop tool and firmware:</p>
+<ul>
+<li><code>0xA0</code>: start stream.</li>
+<li><code>0xA1</code>: stop stream.</li>
+<li><code>0xA2</code>: set stream interval.</li>
+<li><code>0xA3</code>: set ERM percentage.</li>
+<li><code>0xA4</code>: set buzzer percentage.</li>
+<li><code>0xA5</code>: set RGB LED mask.</li>
+<li><code>0xA6</code>: touch feedback test.</li>
+<li><code>0xB0</code>: set node ID.</li>
+<li><code>0xB1</code>: get node ID.</li>
+<li><code>0xB2</code>: rediscover BLE nodes.</li>
+<li><code>0xB3</code>: reset record state.</li>
+<li><code>0xB4</code>: get discovered nodes.</li>
+<li><code>0xB5</code>: record transfer tuning.</li>
+<li><code>0xC0</code>: report set-node-ID result.</li>
+<li><code>0xC1</code>: report get-node-ID result.</li>
+</ul>
+<p>RGB mask :</p>
+<ul>
+<li><code>0x00</code>: off.</li>
+<li><code>0x01</code>: red.</li>
+<li><code>0x02</code>: green.</li>
+<li><code>0x04</code>: blue.</li>
+<li><code>0x07</code>: white.</li>
+<li><code>0x80</code>: clear override.</li>
+</ul>
+<h2 id="sensor">Sensor</h2>
+<p>BNO85:</p>
+<ul>
+<li>Bus: I2C3.</li>
+<li>Address: <code>0x4B</code>.</li>
+<li>Wrapper: <code>LIBRARY/CUSTOM/BNO85_STM32.h</code>.</li>
+<li>Protocol stack: SH2/SHTP.</li>
+<li>Default report interval: <code>10000 us</code>.</li>
+<li>Enabled reports:
+<ul>
+<li>Rotation vector.</li>
+<li>Game rotation vector.</li>
+<li>Linear acceleration.</li>
+<li>Gravity.</li>
+<li>Calibrated gyroscope.</li>
+</ul></li>
+<li>Trace macro: <code>EXO_BNO85_I2C_TRACE</code>.</li>
+</ul>
+<p>ICM45686:</p>
+<ul>
+<li>Bus: I2C1.</li>
+<li>Address: <code>0x69</code>.</li>
+<li>Wrapper: <code>LIBRARY/CUSTOM/ICM45686_STM32.h</code>.</li>
+<li>Driver: <code>motion.mcu.icm45686.driver</code>.</li>
+<li>Default accelerometer ODR:
+<code>ACCEL_CONFIG0_ACCEL_ODR_400_HZ</code>.</li>
+<li>Default gyroscope ODR:
+<code>GYRO_CONFIG0_GYRO_ODR_400_HZ</code>.</li>
+<li>Accelerometer FSR: <code>4 g</code>.</li>
+<li>Gyroscope FSR: <code>2000 dps</code>.</li>
+<li>I2C analog filter: disabled.</li>
+</ul>
+<h2 id="storage">Storage</h2>
+<p>Node flash:</p>
+<ul>
+<li>Device class: <code>W25Q256Flash</code>.</li>
+<li>Session flash interface: <code>SessionFlash</code>.</li>
+<li>Runtime settings total flash size constant: <code>2 MB</code>.</li>
+<li>Settings sector size: <code>4096</code> bytes.</li>
+<li>Settings sector base: final sector of flash.</li>
+<li>Settings magic: <code>0x4E535447</code> (<code>NSTG</code>).</li>
+<li>Settings version: <code>1</code>.</li>
+<li>Valid node IDs: <code>1</code> to <code>5</code>.</li>
+</ul>
+<p>Hub SD:</p>
+<ul>
+<li>Filesystem: FatFs.</li>
+<li>Session root: <code>/SESSIONS</code>.</li>
+<li>Master record file: <code>/SESSIONS/MREC.BIN</code>.</li>
+<li>Optional sensor test log: <code>/SESSIONS/HUBTEST.BIN</code>.</li>
+</ul>
+<h2 id="runtime-loop">Runtime Loop</h2>
+<p>Common firmware startup sequence:</p>
+<ol type="1">
+<li><code>HAL_Init()</code>.</li>
+<li><code>MX_APPE_Config()</code>.</li>
+<li>System clock configuration.</li>
+<li>Peripheral initialization.</li>
+<li><code>MX_APPE_Init()</code>.</li>
+<li>Infinite loop.</li>
+<li><code>MX_APPE_Process()</code> inside loop.</li>
+<li>Application USER CODE logic inside loop.</li>
+</ol>
+<p>Master initialized peripherals:</p>
+<ul>
+<li>GPIO.</li>
+<li>DMA.</li>
+<li>RTC.</li>
+<li>ADC1.</li>
+<li>I2C1.</li>
+<li>I2C3.</li>
+<li>LPUART1.</li>
+<li>USART1.</li>
+<li>SPI1.</li>
+<li>TIM1.</li>
+<li>FatFs.</li>
+<li>RF.</li>
+</ul>
+<p>Node initialized peripherals:</p>
+<ul>
+<li>GPIO.</li>
+<li>DMA.</li>
+<li>RTC.</li>
+<li>ADC1.</li>
+<li>I2C1.</li>
+<li>I2C3.</li>
+<li>LPUART1.</li>
+<li>USART1.</li>
+<li>SPI1.</li>
+<li>TIM1.</li>
+<li>RF.</li>
+</ul>
+<h2 id="retained-rs485">Retained RS485</h2>
+<ul>
+<li>RS485 protocol files remain in <code>LIBRARY/CUSTOM</code>.</li>
+<li>Active <code>main.c</code> files log/comment that RS485 is removed
+in the BLE-only architecture.</li>
+<li>RS485 master controller class:
+<code>MasterRecordingController</code>.</li>
+<li>RS485 node responder class:
+<code>NodeRecordingResponder</code>.</li>
+<li>RS485 baud: <code>921600</code>.</li>
+<li>Master default chunk payload: <code>180</code> bytes.</li>
+<li>Node burst chunk size: <code>512</code> bytes.</li>
+<li>Node IDs: <code>1</code>, <code>2</code>, <code>3</code>,
+<code>4</code>, <code>5</code>.</li>
+<li>ACK timeout: <code>900 ms</code>.</li>
+<li>Start-record ACK timeout: <code>8000 ms</code>.</li>
+<li>Max retries: <code>10</code>.</li>
+<li>Master RX ring size: <code>1024</code>.</li>
+<li>Node RX ring size: <code>512</code>.</li>
+<li>Node RX DMA size: <code>256</code>.</li>
+<li>Node chunk cache depth: <code>4</code>.</li>
+</ul>
+<h2 id="testing-and-diagnostic-macro">Testing and Diagnostic Macro</h2>
+<ul>
+<li><code>DEBUG</code>
+<ul>
+<li>Debug build define.</li>
+<li>Not present in Release build define list.</li>
+</ul></li>
+<li><code>USE_HAL_DRIVER</code>
+<ul>
+<li>Present in Debug and Release.</li>
+</ul></li>
+<li><code>STM32WB55xx</code>
+<ul>
+<li>Present in Debug and Release.</li>
+</ul></li>
+<li><code>EXO_SAMPLE_FORMAT_VERSION</code>
+<ul>
+<li>Default: <code>3</code>.</li>
+<li>Allowed values: <code>2</code>, <code>3</code>.</li>
+<li>Invalid value: compile-time error.</li>
+</ul></li>
+<li><code>EXO_NODE_FLASH_ENABLED</code>
+<ul>
+<li>Enables node flash recording path.</li>
+<li>Enables <code>NODE_RECORDING_APP</code>.</li>
+<li>Enables runtime node ID storage hooks.</li>
+<li>Enables BLE upload path when combined with
+<code>EXO_NODE_BLE_FORWARD_ENABLE</code>.</li>
+</ul></li>
+<li><code>EXO_NODE_SENSOR_TEST_ENABLE</code>
+<ul>
+<li>Default: <code>0</code>.</li>
+<li>Enables node-side sensor test app when set.</li>
+</ul></li>
+<li><code>EXO_NODE_UART_RS485_MODE</code>
+<ul>
+<li>Default in node main: <code>1</code>.</li>
+<li>Active transport path still logs BLE-only mode.</li>
+</ul></li>
+<li><code>EXO_NODE_BLE_FORWARD_ENABLE</code>
+<ul>
+<li>Default: <code>1</code>.</li>
+<li>Enables node BLE forwarding/upload logic.</li>
+</ul></li>
+<li><code>EXO_NODE_FLASH_TEST_BOOT_ENABLE</code>
+<ul>
+<li>Default: <code>0</code>.</li>
+<li>Enables boot-time 128-byte flash test when set.</li>
+</ul></li>
+<li><code>EXO_NODE_FLASH_TEST_API_ENABLE</code>
+<ul>
+<li>Default: <code>0</code>.</li>
+<li>Enables API-triggered 128-byte flash test when set.</li>
+</ul></li>
+<li><code>EXO_NODE_ID</code>
+<ul>
+<li>Default: <code>1</code>.</li>
+<li>Fallback node ID.</li>
+<li>Runtime value can be loaded from flash.</li>
+</ul></li>
+<li><code>EXO_BNO85_I2C_TRACE</code>
+<ul>
+<li>Default: <code>0</code>.</li>
+<li>Enables BNO85 I2C trace logs.</li>
+</ul></li>
+<li><code>EXO_BNO85_REPORT_INTERVAL_US</code>
+<ul>
+<li>Default: <code>10000U</code>.</li>
+</ul></li>
+<li><code>EXO_ICM45686_ACCEL_ODR</code>
+<ul>
+<li>Default: <code>ACCEL_CONFIG0_ACCEL_ODR_400_HZ</code>.</li>
+</ul></li>
+<li><code>EXO_ICM45686_GYRO_ODR</code>
+<ul>
+<li>Default: <code>GYRO_CONFIG0_GYRO_ODR_400_HZ</code>.</li>
+</ul></li>
+<li><code>EXO_HAS_FATFS</code>
+<ul>
+<li>Controls FatFs-backed recorder code paths.</li>
+</ul></li>
+<li><code>ALWAYS_PRINT</code>
+<ul>
+<li>Defined in <code>INCLUDER.h</code>.</li>
+</ul></li>
+<li><code>PRINT_DEBUG</code>
+<ul>
+<li>Present but commented in <code>INCLUDER.h</code>.</li>
+<li>Enables verbose <code>printdebug</code> behavior when defined.</li>
+</ul></li>
+<li><code>BLE_ON</code>
+<ul>
+<li>Checked by <code>INCLUDER.h</code>.</li>
+</ul></li>
+</ul>
+<p>RS485 log macros:</p>
+<ul>
+<li><code>RS485_MASTER_LOG_DISC(...)</code>: gated by
+<code>g_rs485_master_log_discovery</code>.</li>
+<li><code>RS485_MASTER_LOG_XPORT(...)</code>: gated by
+<code>g_rs485_master_log_transport</code>.</li>
+<li><code>RS485_NODE_LOG_DISC(...)</code>: gated by
+<code>g_rs485_node_log_discovery</code>.</li>
+<li><code>RS485_NODE_LOG_XPORT(...)</code>: gated by
+<code>g_rs485_node_log_transport</code>.</li>
+</ul>
+<h2 id="compile-time-and-cube-setting">Compile-Time and Cube
+Setting</h2>
+<p>Shared project settings:</p>
+<ul>
+<li>MCU: <code>STM32WB55CCUx</code>.</li>
+<li>Part: <code>STM32WB55CCU6</code>.</li>
+<li>Toolchain: STM32CubeIDE GCC.</li>
+<li>Linker script: <code>STM32WB55CCUX_FLASH.ld</code>.</li>
+<li>Security target: NonSecure.</li>
+<li>Heap size: <code>0x200</code>.</li>
+<li>Stack size: <code>0x400</code>.</li>
+<li><code>ProjectManager.KeepUserCode</code>: <code>true</code>.</li>
+<li><code>ProjectManager.HalAssertFull</code>: <code>false</code>.</li>
+<li><code>ProjectManager.CompilerOptimize</code>: <code>6</code>.</li>
+<li>Optimization level in <code>.cproject</code>: <code>-Os</code>.</li>
+<li>Debug build debug level: <code>g3</code>.</li>
+<li>Release build debug level: <code>g0</code>.</li>
+</ul>
+<p>Debug defines:</p>
+<ul>
+<li><code>DEBUG</code>.</li>
+<li><code>USE_HAL_DRIVER</code>.</li>
+<li><code>STM32WB55xx</code>.</li>
+</ul>
+<p>Release defines:</p>
+<ul>
+<li><code>USE_HAL_DRIVER</code>.</li>
+<li><code>STM32WB55xx</code>.</li>
+</ul>
+<p>C++ :</p>
+<ul>
+<li><code>Master/Core/Src/main.c</code> has a file-specific
+<code>g++</code> compiler setting.</li>
+<li><code>Node/Core/Src/main.c</code> has a file-specific
+<code>g++</code> compiler setting.</li>
+<li>The project must remain C++ capable.</li>
+<li>Do not convert the STM32 projects to C-only.</li>
+</ul>
+<p>Master Cube :</p>
+<ul>
+<li>FatFs enabled.</li>
+<li>BLE role: central and peripheral.</li>
+<li><code>CFG_BLE_NUM_LINK = 6</code>.</li>
+<li><code>CFG_BLE_NUM_GATT_SERVICES = 8</code>.</li>
+<li><code>CFG_BLE_NUM_GATT_ATTRIBUTES = 68</code>.</li>
+<li><code>CFG_BLE_MAX_ATT_MTU = 247</code>.</li>
+<li>BLE data length extension enabled.</li>
+<li>SPI1 calculated baud: <code>16.0 Mbits/s</code>.</li>
+<li>LPUART1 baud: <code>115200</code>.</li>
+<li>I2C1 clock: <code>32 MHz</code>.</li>
+<li>I2C3 clock: <code>32 MHz</code>.</li>
+<li>USART1 mode in <code>.ioc</code>: synchronous.</li>
+</ul>
+<p>Node Cube :</p>
+<ul>
+<li>FatFs not enabled.</li>
+<li>BLE role: peripheral.</li>
+<li><code>CFG_BLE_NUM_LINK = 2</code>.</li>
+<li><code>CFG_BLE_NUM_GATT_SERVICES = 8</code>.</li>
+<li><code>CFG_BLE_NUM_GATT_ATTRIBUTES = 68</code>.</li>
+<li><code>CFG_BLE_MAX_ATT_MTU = 247</code>.</li>
+<li>BLE data length extension enabled.</li>
+<li>SPI1 prescaler: <code>SPI_BAUDRATEPRESCALER_16</code>.</li>
+<li>SPI1 calculated baud: <code>2.0 Mbits/s</code>.</li>
+<li>LPUART1 baud: <code>115200</code>.</li>
+<li>USART1 baud: <code>921600</code>.</li>
+<li>I2C1 clock: <code>32 MHz</code>.</li>
+<li>I2C3 clock: <code>32 MHz</code>.</li>
+</ul>
+<p>Shared pin :</p>
+<ul>
+<li>PA0: <code>ICM_INT</code>.</li>
+<li>PA1: ADC1 input.</li>
+<li>PA2: <code>TOUCH_MCU</code>.</li>
+<li>PA4: SPI1 NSS / node flash CS.</li>
+<li>PA5: SPI1 SCK.</li>
+<li>PA6: SPI1 MISO.</li>
+<li>PA7: I2C3 SCL.</li>
+<li>PA9: <code>PWR_EN</code>.</li>
+<li>PA10: <code>BUZZER</code> / TIM1 CH3.</li>
+<li>PA11: <code>ERM</code> / TIM1 CH4.</li>
+<li>PA12: SPI1 MOSI.</li>
+<li>PA15: <code>BNO_INT</code>.</li>
+<li>PB0: <code>RGB_R</code>.</li>
+<li>PB1: <code>RGB_G</code>.</li>
+<li>PB2: <code>CHG_STAT</code>.</li>
+<li>PB4: I2C3 SDA.</li>
+<li>PB5: LPUART1 TX.</li>
+<li>PB6: USART1 TX.</li>
+<li>PB7: USART1 RX.</li>
+<li>PB8: I2C1 SCL.</li>
+<li>PB9: I2C1 SDA.</li>
+<li>PE4: <code>RGB_B</code>.</li>
+</ul>
+<h2 id="logging">Logging</h2>
+<ul>
+<li>Main log macro: <code>EXO_LOG(...)</code>.</li>
+<li>Log wrapper file: <code>LIBRARY/CUSTOM/EXO_LOGGER.h</code>.</li>
+<li>Common log tags:
+<ul>
+<li><code>[BLE][HUB]</code></li>
+<li><code>[BLE][NODE]</code></li>
+<li><code>[BLEPIPE]</code></li>
+<li><code>[MASTER][REC]</code></li>
+<li><code>[BLE][REC][REL]</code></li>
+<li><code>[RS485][MASTER]</code></li>
+<li><code>[RS485][NODE]</code></li>
+</ul></li>
+<li>Desktop tool keeps a browser-side event log.</li>
+<li>Desktop log includes transfer progress, CRC status, discovery
+events, heartbeat phases, and transfer telemetry.</li>
+</ul>
+<h2 id="maintenance">Maintenance</h2>
+<ul>
+<li>STM32 generated files must be edited only inside existing USER CODE
+sections.</li>
+<li>New USER CODE sections must not be added.</li>
+<li>HAL library files must not be modified outside USER CODE
+sections.</li>
+<li>Custom application logic should go in existing USER CODE sections or
+custom files.</li>
+<li>Project C++ settings must be preserved.</li>
+<li>Firmware build was not run for this documentation update.</li>
+</ul>
+<h2 id="main-data-paths">Main Data Paths</h2>
+<p>Live stream:</p>
+<p><code>Sensors -&gt; STM32 sampler -&gt; BLE_STREAM_V2 payload -&gt; BLEPipe DATA_TX -&gt; browser notification -&gt; decoder -&gt; plot</code></p>
+<p>Hub-record path:</p>
+<p><code>Hub sensors -&gt; MasterSdSessionRecorder -&gt; SD card -&gt; reliable transfer/notification -&gt; browser -&gt; CRC check -&gt; decoder -&gt; plot/export</code></p>
+<p>Node-record path:</p>
+<p><code>Node sensors -&gt; NodeRecordingApp -&gt; W25Q256 flash -&gt; RecordDone -&gt; Manifest -&gt; Chunk/Ack/Nack -&gt; Verify -&gt; browser decode</code></p>
+<p>Hub relay path:</p>
+<p><code>Leaf BLEPipe notification -&gt; Hub BLE central client -&gt; Hub BLEPipe peripheral notification -&gt; browser</code></p>
+<p>Control path:</p>
+<p><code>Browser command -&gt; Hub PipeControlRx -&gt; local handler or leaf forward -&gt; device action -&gt; PipeControlTx/PipeStatusTx response</code></p>
+</body>
+</html>

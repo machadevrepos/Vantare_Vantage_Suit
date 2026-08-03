@@ -1,0 +1,4 @@
+../Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gen_aci.c:20:12:aci_reset	2
+../Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gen_aci.c:44:12:aci_get_information	3
+../Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gen_aci.c:66:12:aci_write_config_data	2
+../Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gen_aci.c:93:12:aci_read_config_data	3

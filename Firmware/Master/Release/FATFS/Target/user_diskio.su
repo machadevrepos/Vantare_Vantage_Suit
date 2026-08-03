@@ -1,0 +1,12 @@
+../FATFS/Target/user_diskio.c:363:9:USER_status	0	static
+../FATFS/Target/user_diskio.c:119:16:SD_WaitReady	16	static
+../FATFS/Target/user_diskio.c:87:13:SD_Deselect	8	static
+../FATFS/Target/user_diskio.c:166:16:SD_WriteDataBlock	16	static
+../FATFS/Target/user_diskio.c:93:13:SD_ReadBytes.part.0	16	static
+../FATFS/Target/user_diskio.c:93:13:SD_ReadBytes	16	static
+../FATFS/Target/user_diskio.c:522:9:USER_ioctl	8	static
+../FATFS/Target/user_diskio.c:106:16:SD_WaitToken.constprop	16	static
+../FATFS/Target/user_diskio.c:130:16:SD_SendCommand	24	static
+../FATFS/Target/user_diskio.c:383:9:USER_read	16	static
+../FATFS/Target/user_diskio.c:451:9:USER_write	16	static
+../FATFS/Target/user_diskio.c:257:9:USER_initialize	72	static

@@ -1,0 +1,15 @@
+../STM32_WPAN/App/custom_app.c:564:13:Custom_APP_StoreLastWrite	5
+../STM32_WPAN/App/custom_app.c:106:6:Custom_STM_App_Notification	9
+../STM32_WPAN/App/custom_app.c:239:6:Custom_APP_Notification	5
+../STM32_WPAN/App/custom_app.c:286:6:Custom_APP_Init	1
+../STM32_WPAN/App/custom_app.c:295:12:Custom_APP_SendPipeFrame	13
+../STM32_WPAN/App/custom_app.c:339:12:Custom_APP_SendImuFrame	2
+../STM32_WPAN/App/custom_app.c:348:12:Custom_APP_SendCmdAck	3
+../STM32_WPAN/App/custom_app.c:367:12:Custom_APP_SendCmdReport	4
+../STM32_WPAN/App/custom_app.c:385:12:Custom_APP_SendCmdTrace	1
+../STM32_WPAN/App/custom_app.c:390:12:Custom_APP_SendCmdNotify	2
+../STM32_WPAN/App/custom_app.c:399:12:Custom_APP_SendRecordFrame	2
+../STM32_WPAN/App/custom_app.c:408:12:Custom_APP_SendRecoveryFrame	2
+../STM32_WPAN/App/custom_app.c:426:13:Custom_Pipedatatx_Update_Char	1
+../STM32_WPAN/App/custom_app.c:465:13:Custom_Pipectrltx_Update_Char	1
+../STM32_WPAN/App/custom_app.c:524:13:Custom_Pipestattx_Update_Char	1
