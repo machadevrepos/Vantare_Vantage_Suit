@@ -137,9 +137,13 @@ public:
   }
 
   bool reset_and_abort_all(bool) {
-    memset(queued_done_, 0, sizeof(queued_done_));
+    for (uint8_t i = 0U; i < kMaxLeaves; ++i) {
+      queued_done_[i] = exo::RecordDoneMessage{};
+    }
     queued_done_count_ = 0U;
-    memset(live_samples_, 0, sizeof(live_samples_));
+    for (uint8_t i = 0U; i < kMaxQueuedSamples; ++i) {
+      live_samples_[i] = LiveSample{};
+    }
     live_sample_count_ = 0U;
     live_sample_head_ = 0U;
     active_source_id_ = 0U;
