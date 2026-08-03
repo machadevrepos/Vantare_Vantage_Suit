@@ -99,6 +99,7 @@ public:
         file_open_ = true;
         writable_ = true;
         active_ = true;
+        read_cursor_ = kInvalidCursor;
         return true;
     }
 
@@ -136,6 +137,7 @@ public:
         }
 
         FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(byte_offset));
+        read_cursor_ = kInvalidCursor;
         if (result != FR_OK) {
             return set_error(node_session_staging::NodeSessionStageOperation::WriteSeek, result);
         }
@@ -160,6 +162,7 @@ public:
                     FR_INVALID_OBJECT);
         }
         FRESULT result = ops_->close_fn(&file_);
+        read_cursor_ = kInvalidCursor;
         if (result != FR_OK) {
             return set_error(node_session_staging::NodeSessionStageOperation::CloseWrite, result);
         }
@@ -171,16 +174,12 @@ public:
             return set_error(node_session_staging::NodeSessionStageOperation::OpenRead, result);
         }
         file_open_ = true;
+        read_cursor_ = kInvalidCursor;
         if (!read_exact(0U, &header_, sizeof(header_),
                 node_session_staging::NodeSessionStageOperation::HeaderSeek,
                 node_session_staging::NodeSessionStageOperation::HeaderRead)) {
             return close_invalid_stage(last_operation_, last_result_);
         }
-        /* Integrity only. `loss_flags` and an attempted/captured shortfall describe capture
-         * QUALITY: they mean a sensor missed scheduled ticks, not that the bytes are wrong.
-         * Rejecting on them discards a CRC-valid session and produces no Node CSV at all,
-         * which is strictly worse for training than a session at a reduced sample rate.
-         * Every stored sample is still required to be accounted for and byte-exact below. */
         if (header_.magic != kSessionMagic || header_.version != kSessionFormatVersion ||
                 header_.node_id != done_.node_id || header_.session_id != done_.session_id ||
                 header_.completion_flag != kSessionComplete ||
@@ -205,9 +204,11 @@ public:
 
         result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(sizeof(SessionHeader)));
         if (result != FR_OK) {
+            read_cursor_ = kInvalidCursor;
             return close_invalid_stage(
                     node_session_staging::NodeSessionStageOperation::PayloadSeek, result);
         }
+        read_cursor_ = static_cast<uint32_t>(sizeof(SessionHeader));
         validation_crc_ = 0U;
         validation_remaining_ = done_.total_size - static_cast<uint32_t>(sizeof(SessionHeader));
         validation_status_ = validation_remaining_ == 0U ?
@@ -225,18 +226,18 @@ public:
                     FR_INVALID_PARAMETER);
         }
         uint32_t request_bytes = validation_remaining_;
-        if (request_bytes > byte_budget) {
-            request_bytes = byte_budget;
-        }
-        if (request_bytes > sizeof(io_buffer_)) {
-            request_bytes = sizeof(io_buffer_);
-        }
+        if (request_bytes > byte_budget) request_bytes = byte_budget;
+        if (request_bytes > sizeof(io_buffer_)) request_bytes = sizeof(io_buffer_);
         const UINT request = static_cast<UINT>(request_bytes);
         UINT received = 0U;
         const FRESULT result = ops_->read_fn(&file_, io_buffer_, request, &received);
         if (result != FR_OK || received != request) {
+            read_cursor_ = kInvalidCursor;
             return close_invalid_stage(
                     node_session_staging::NodeSessionStageOperation::PayloadRead, result);
+        }
+        if (read_cursor_ != kInvalidCursor) {
+            read_cursor_ += request;
         }
         validation_crc_ = crc32_update(validation_crc_, io_buffer_, request);
         validation_remaining_ -= request;
@@ -269,9 +270,7 @@ public:
 
     bool read_bno(uint32_t index, Bno85Sample &out)
     {
-        if (!validated_ || index >= header_.bno85_sample_count) {
-            return false;
-        }
+        if (!validated_ || index >= header_.bno85_sample_count) return false;
         const uint32_t offset = static_cast<uint32_t>(sizeof(SessionHeader)) +
                 index * static_cast<uint32_t>(sizeof(Bno85Sample));
         return read_exact(offset, &out, sizeof(out),
@@ -281,9 +280,7 @@ public:
 
     bool read_icm(uint32_t index, Icm45686Sample &out)
     {
-        if (!validated_ || index >= header_.icm45686_sample_count) {
-            return false;
-        }
+        if (!validated_ || index >= header_.icm45686_sample_count) return false;
         const uint32_t offset = static_cast<uint32_t>(sizeof(SessionHeader)) +
                 header_.bno85_payload_size +
                 index * static_cast<uint32_t>(sizeof(Icm45686Sample));
@@ -294,11 +291,10 @@ public:
 
     bool discard_after_success()
     {
-        if (!validated_ || discarded_) {
-            return false;
-        }
+        if (!validated_ || discarded_) return false;
         if (file_open_) {
             const FRESULT close_result = ops_->close_fn(&file_);
+            read_cursor_ = kInvalidCursor;
             if (close_result != FR_OK) {
                 return set_error(node_session_staging::NodeSessionStageOperation::CloseRead,
                         close_result);
@@ -315,6 +311,7 @@ public:
     {
         if (file_open_) {
             const FRESULT close_result = ops_->close_fn(&file_);
+            read_cursor_ = kInvalidCursor;
             if (close_result != FR_OK) {
                 return set_error(node_session_staging::NodeSessionStageOperation::ShutdownClose,
                         close_result);
@@ -327,6 +324,7 @@ public:
         validation_status_ = node_session_staging::NodeSessionValidationStatus::Idle;
         validation_remaining_ = 0U;
         validation_crc_ = 0U;
+        read_cursor_ = kInvalidCursor;
         clear_error();
         return true;
     }
@@ -348,6 +346,8 @@ public:
     FRESULT last_result() const { return last_result_; }
 
 private:
+    static constexpr uint32_t kInvalidCursor = UINT32_MAX;
+
     const char *staging_path() const { return staging_path_; }
 
     void make_staging_path(uint16_t index, uint8_t node_id)
@@ -355,18 +355,14 @@ private:
         static const char prefix[] = "/SESSIONS/R";
         static const char suffix[] = ".BIN";
         size_t cursor = 0U;
-        for (size_t i = 0U; i < sizeof(prefix) - 1U; ++i) {
-            staging_path_[cursor++] = prefix[i];
-        }
+        for (size_t i = 0U; i < sizeof(prefix) - 1U; ++i) staging_path_[cursor++] = prefix[i];
         staging_path_[cursor++] = static_cast<char>('0' + ((index / 1000U) % 10U));
         staging_path_[cursor++] = static_cast<char>('0' + ((index / 100U) % 10U));
         staging_path_[cursor++] = static_cast<char>('0' + ((index / 10U) % 10U));
         staging_path_[cursor++] = static_cast<char>('0' + (index % 10U));
         staging_path_[cursor++] = 'N';
         staging_path_[cursor++] = static_cast<char>('0' + node_id);
-        for (size_t i = 0U; i < sizeof(suffix) - 1U; ++i) {
-            staging_path_[cursor++] = suffix[i];
-        }
+        for (size_t i = 0U; i < sizeof(suffix) - 1U; ++i) staging_path_[cursor++] = suffix[i];
         staging_path_[cursor] = '\0';
     }
 
@@ -383,6 +379,7 @@ private:
         discarded_ = false;
         validation_remaining_ = 0U;
         validation_crc_ = 0U;
+        read_cursor_ = kInvalidCursor;
         validation_status_ = node_session_staging::NodeSessionValidationStatus::Idle;
         clear_error();
     }
@@ -390,6 +387,7 @@ private:
     bool duplicate_matches(uint32_t offset, const uint8_t *data, uint16_t size)
     {
         FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(offset));
+        read_cursor_ = kInvalidCursor;
         if (result != FR_OK) {
             return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
                     result);
@@ -414,6 +412,7 @@ private:
             expected += request;
         }
         result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(staged_size_));
+        read_cursor_ = kInvalidCursor;
         if (result != FR_OK) {
             return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
                     result);
@@ -429,16 +428,22 @@ private:
         if (!file_open_ || output == nullptr || size > static_cast<size_t>(UINT_MAX)) {
             return set_error(read_operation, FR_INVALID_OBJECT);
         }
-        FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(offset));
-        if (result != FR_OK) {
-            return set_error(seek_operation, result);
+        if (read_cursor_ != offset) {
+            const FRESULT seek_result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(offset));
+            if (seek_result != FR_OK) {
+                read_cursor_ = kInvalidCursor;
+                return set_error(seek_operation, seek_result);
+            }
+            read_cursor_ = offset;
         }
         UINT received = 0U;
         const UINT request = static_cast<UINT>(size);
-        result = ops_->read_fn(&file_, output, request, &received);
-        if (result != FR_OK || received != request) {
-            return set_error(read_operation, result);
+        const FRESULT read_result = ops_->read_fn(&file_, output, request, &received);
+        if (read_result != FR_OK || received != request) {
+            read_cursor_ = kInvalidCursor;
+            return set_error(read_operation, read_result);
         }
+        read_cursor_ += request;
         clear_error();
         return true;
     }
@@ -450,6 +455,7 @@ private:
         last_result_ = result;
         if (file_open_) {
             const FRESULT close_result = ops_->close_fn(&file_);
+            read_cursor_ = kInvalidCursor;
             if (close_result != FR_OK) {
                 return set_error(node_session_staging::NodeSessionStageOperation::CloseRead,
                         close_result);
@@ -483,6 +489,7 @@ private:
     uint32_t staged_size_ = 0U;
     uint32_t validation_remaining_ = 0U;
     uint32_t validation_crc_ = 0U;
+    uint32_t read_cursor_ = kInvalidCursor;
     bool active_ = false;
     bool writable_ = false;
     bool file_open_ = false;
