@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euo pipefail
           cat .cleanup-patch/part-*.b64 | base64 --decode | gzip --decompress > /tmp/ble-cleanup.patch
-          test "$(sha256sum /tmp/ble-cleanup.patch | awk '{print $1}')" = "b763681b55020c3e0fd108340253055b3e46f42f41d600055bdac11883f6f378"
+          test "$(sha256sum /tmp/ble-cleanup.patch | awk '{print $1}')" = "539c0486217bfdacd2cfb1adc857350ce58dbda2dde3797bd94e5d60fcdd8116"
 
       - name: Validate patch and apply
         shell: bash
@@ -59,9 +59,12 @@ jobs:
               -o /tmp/acquisition_diagnostics_test
             /tmp/acquisition_diagnostics_test
           fi
-          grep -RInE 'MasterRs485_|HubRs485|master_rs485_recording|node_rs485_recording|comms_rs485|RS485_RECORD_' \
+          if grep -RInE 'MasterRs485_|HubRs485|master_rs485_recording|node_rs485_recording|comms_rs485|RS485_RECORD_' \
             Firmware/Master Firmware/Node Firmware/LIBRARY/CUSTOM \
-            --exclude='*.patch' && exit 1 || true
+            --exclude='*.patch'; then
+            echo 'BLE-only cleanup regression: stale RS485 identifiers found' >&2
+            exit 1
+          fi
 
       - name: Remove temporary patch machinery
         shell: bash
