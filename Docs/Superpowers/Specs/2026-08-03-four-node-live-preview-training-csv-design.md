@@ -73,8 +73,8 @@ Normal operating target:
 Congested operating target:
 
 - one bundle per active source every 80 ms, approximately 12.5 Hz;
-- enter congested mode when transmit failures, queue age, or repeated scheduling misses exceed thresholds;
-- return to normal mode only after five seconds without congestion evidence.
+- enter congested mode when either three browser-notification failures occur within a rolling one-second window, or the oldest ready source exceeds 160 ms of queue age for three consecutive scheduler passes;
+- return to normal mode only after five continuous seconds with no browser-notification failures and with the oldest ready source below 100 ms of queue age.
 
 The adaptive state is global on the Master so all sources remain visually synchronized and no source is penalized independently.
 
@@ -109,7 +109,7 @@ For every source it shows:
 - coalesced or dropped-preview count;
 - connected, stale, recording, and transfer state.
 
-Rendering is decoupled from BLE callbacks. BLE callbacks update the latest data store; a fixed animation/render loop updates charts. A stale badge appears when no bundle has arrived for 500 ms. Existing graph data is not erased merely because a source becomes temporarily stale.
+Rendering is decoupled from BLE callbacks. BLE callbacks update the latest data store; a fixed 30 Hz animation/render loop updates charts. A stale badge appears when no bundle has arrived for 500 ms. Existing graph data is not erased merely because a source becomes temporarily stale.
 
 ## Recording Completion and Transfer
 
@@ -124,7 +124,7 @@ After recording stops:
 7. CSV conversion processes one validated source at a time using sequential FatFs reads.
 8. `TRNxxxx.OK` is created only after every expected source is committed and the final CSV has been synchronized and renamed from `.TMP`.
 
-A browser disconnect must not invalidate a recording already captured on the devices. The Master resumes a partially transferred Node from its next expected chunk after reconnection.
+A browser disconnect must not pause or invalidate a transfer already controlled by the Master. A Node disconnect pauses only that Node's transfer; after the Node reconnects, the Master resumes from its next expected chunk. When the browser reconnects, it reads the current transfer and CSV state from the Master.
 
 ## Training CSV Schema Version 2
 
@@ -162,7 +162,7 @@ Add:
 - `bno_gravity_magnitude_mps2`
 - `bno_gyro_magnitude_radps`
 
-Euler angles are derived from the stored normalized quaternion using one documented convention. Quaternion values remain authoritative to avoid information loss and angle-wrap ambiguity.
+Euler angles use normalized quaternion columns `(qx, qy, qz, qw)`, a right-handed intrinsic Z-Y-X yaw-pitch-roll convention, and output degrees. The pitch `asin` input is clamped to `[-1, 1]`. Quaternion values remain authoritative to avoid information loss and angle-wrap ambiguity.
 
 ### ICM45686 raw and calibrated columns
 
@@ -222,7 +222,7 @@ STM32-generated code outside USER CODE sections must not be edited manually.
 3. Adaptive preview transition from 25 Hz to 12.5 Hz and recovery after five stable seconds.
 4. Preview queue coalescing without mutation of recording buffers.
 5. Deterministic Master, Node1, Node2, Node3, Node4 transfer order.
-6. Gap, duplicate, corrupt-chunk, reconnect, and resume behavior.
+6. Gap, duplicate, corrupt-chunk, Node reconnect, and resume behavior.
 7. CSV schema-version-2 header and row generation.
 8. Quaternion-to-Euler and magnitude feature calculations against fixed vectors.
 9. Empty-field and timestamp-quality behavior.
@@ -248,8 +248,9 @@ Use one Master, four commissioned Nodes, and the browser dashboard.
 8. Binary header and payload CRC checks pass for every source.
 9. The CSV contains non-zero BNO85 and ICM45686 rows for sources 0-4.
 10. Raw column values match decoded binary samples and derived-feature spot checks pass.
-11. Browser disconnect during one Node upload does not lose the session; transfer resumes after reconnect.
-12. Preview diagnostics may report coalescing, but recording dropped counts must remain within the existing accepted capture-quality limits.
+11. Disconnect the browser during a Node upload and verify that the Master continues the transfer; reconnect the browser and verify that it reports the current state without restarting the session.
+12. Disconnect one Node during its upload, reconnect it, and verify resume from the next expected chunk.
+13. Preview diagnostics may report coalescing, but recording dropped counts must remain within the existing accepted capture-quality limits.
 
 ## Non-Goals
 
