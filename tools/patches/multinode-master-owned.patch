@@ -1,0 +1,732 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h b/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
+--- a/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
++++ b/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
+@@ -29,8 +29,10 @@ static constexpr uint8_t kRecordReliableDefaultCredit = 16U;
+ 
+ enum class RecordSourceId : uint16_t {
+     Master = 0U,
++    Node1 = 1U,
+     Node2 = 2U,
+-    Node3 = 3U
++    Node3 = 3U,
++    Node4 = 4U
+ };
+ 
+ enum class RecordReliableType : uint8_t {
+diff --git a/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h b/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h
+new file mode 100644
+--- /dev/null
++++ b/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h
+@@ -0,0 +1,155 @@
++#ifndef MASTER_NODE_TRANSFER_WINDOW_H_
++#define MASTER_NODE_TRANSFER_WINDOW_H_
++
++#include <stdint.h>
++
++namespace exo {
++
++enum class NodeTransferDecision : uint8_t {
++    Ignore,
++    Accept,
++    Duplicate,
++    NackGap,
++    NackCorrupt,
++    Complete
++};
++
++struct NodeTransferInspection {
++    NodeTransferDecision decision = NodeTransferDecision::Ignore;
++    uint32_t request_chunk = 0U;
++    uint32_t next_chunk = 0U;
++    uint32_t next_offset = 0U;
++};
++
++class MasterNodeTransferWindow {
++public:
++    bool begin(uint8_t node_id, uint32_t session_id, uint32_t total_size,
++            uint16_t chunk_size)
++    {
++        reset();
++        if (node_id < 1U || node_id > 4U || session_id == 0U ||
++                total_size == 0U || chunk_size == 0U) {
++            return false;
++        }
++        active_ = true;
++        node_id_ = node_id;
++        session_id_ = session_id;
++        total_size_ = total_size;
++        chunk_size_ = chunk_size;
++        return true;
++    }
++
++    void reset()
++    {
++        active_ = false;
++        node_id_ = 0U;
++        session_id_ = 0U;
++        total_size_ = 0U;
++        chunk_size_ = 0U;
++        next_chunk_ = 0U;
++        next_offset_ = 0U;
++    }
++
++    NodeTransferInspection inspect(uint8_t node_id, uint32_t session_id,
++            uint32_t chunk_index, uint32_t byte_offset, uint16_t payload_size,
++            bool payload_crc_ok, bool final_chunk) const
++    {
++        NodeTransferInspection result{};
++        result.next_chunk = next_chunk_;
++        result.next_offset = next_offset_;
++        result.request_chunk = next_chunk_;
++        if (!active_ || node_id != node_id_ || session_id != session_id_ ||
++                payload_size == 0U) {
++            return result;
++        }
++        if (!payload_crc_ok ||
++                static_cast<uint64_t>(byte_offset) + payload_size > total_size_) {
++            result.decision = NodeTransferDecision::NackCorrupt;
++            result.request_chunk = chunk_index;
++            return result;
++        }
++        if (byte_offset < next_offset_) {
++            if (static_cast<uint64_t>(byte_offset) + payload_size <= next_offset_) {
++                result.decision = NodeTransferDecision::Duplicate;
++            } else {
++                result.decision = NodeTransferDecision::NackGap;
++            }
++            return result;
++        }
++        if (byte_offset != next_offset_ || chunk_index != next_chunk_) {
++            result.decision = NodeTransferDecision::NackGap;
++            return result;
++        }
++        const uint32_t end = byte_offset + payload_size;
++        if (final_chunk && end != total_size_) {
++            result.decision = NodeTransferDecision::NackGap;
++            return result;
++        }
++        result.decision = (end == total_size_) ?
++                NodeTransferDecision::Complete : NodeTransferDecision::Accept;
++        result.next_chunk = next_chunk_ + 1U;
++        result.next_offset = end;
++        result.request_chunk = result.next_chunk;
++        return result;
++    }
++
++    bool commit(const NodeTransferInspection &inspection)
++    {
++        if (!active_ ||
++                (inspection.decision != NodeTransferDecision::Accept &&
++                 inspection.decision != NodeTransferDecision::Complete) ||
++                inspection.next_offset < next_offset_ ||
++                inspection.next_offset > total_size_) {
++            return false;
++        }
++        next_chunk_ = inspection.next_chunk;
++        next_offset_ = inspection.next_offset;
++        return true;
++    }
++
++    bool active() const { return active_; }
++    uint8_t node_id() const { return node_id_; }
++    uint32_t session_id() const { return session_id_; }
++    uint32_t total_size() const { return total_size_; }
++    uint16_t chunk_size() const { return chunk_size_; }
++    uint32_t next_chunk() const { return next_chunk_; }
++    uint32_t next_offset() const { return next_offset_; }
++    bool complete() const { return active_ && next_offset_ == total_size_; }
++
++private:
++    bool active_ = false;
++    uint8_t node_id_ = 0U;
++    uint32_t session_id_ = 0U;
++    uint32_t total_size_ = 0U;
++    uint16_t chunk_size_ = 0U;
++    uint32_t next_chunk_ = 0U;
++    uint32_t next_offset_ = 0U;
++};
++
++} // namespace exo
++
++#endif
+diff --git a/Firmware/HostTests/test_master_node_transfer_window.cpp b/Firmware/HostTests/test_master_node_transfer_window.cpp
+new file mode 100644
+--- /dev/null
++++ b/Firmware/HostTests/test_master_node_transfer_window.cpp
+@@ -0,0 +1,88 @@
++#include <cassert>
++#include <cstdint>
++#include <iostream>
++
++#include "MASTER_NODE_TRANSFER_WINDOW.h"
++
++using exo::MasterNodeTransferWindow;
++using exo::NodeTransferDecision;
++
++int main()
++{
++    MasterNodeTransferWindow window;
++    assert(!window.begin(0U, 1U, 360U, 180U));
++    assert(window.begin(1U, 42U, 400U, 180U));
++
++    auto first = window.inspect(1U, 42U, 0U, 0U, 180U, true, false);
++    assert(first.decision == NodeTransferDecision::Accept);
++    assert(first.next_chunk == 1U);
++    assert(first.next_offset == 180U);
++    assert(window.commit(first));
++
++    auto duplicate = window.inspect(1U, 42U, 0U, 0U, 180U, true, false);
++    assert(duplicate.decision == NodeTransferDecision::Duplicate);
++    assert(duplicate.next_chunk == 1U);
++
++    auto gap = window.inspect(1U, 42U, 2U, 360U, 40U, true, true);
++    assert(gap.decision == NodeTransferDecision::NackGap);
++    assert(gap.request_chunk == 1U);
++
++    auto corrupt = window.inspect(1U, 42U, 1U, 180U, 180U, false, false);
++    assert(corrupt.decision == NodeTransferDecision::NackCorrupt);
++    assert(corrupt.request_chunk == 1U);
++
++    auto wrong_source = window.inspect(2U, 42U, 1U, 180U, 180U, true, false);
++    assert(wrong_source.decision == NodeTransferDecision::Ignore);
++
++    auto second = window.inspect(1U, 42U, 1U, 180U, 180U, true, false);
++    assert(second.decision == NodeTransferDecision::Accept);
++    assert(window.commit(second));
++
++    auto final_chunk = window.inspect(1U, 42U, 2U, 360U, 40U, true, true);
++    assert(final_chunk.decision == NodeTransferDecision::Complete);
++    assert(window.commit(final_chunk));
++    assert(window.complete());
++    assert(window.next_offset() == 400U);
++
++    window.reset();
++    assert(!window.active());
++    std::cout << "master node transfer window tests passed\n";
++    return 0;
++}
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -8,12 +8,21 @@
+ 
+ #include "app_fatfs.h"
+ #include <BLE_RECORD_PROTOCOL.h>
++#include <MASTER_NODE_TRANSFER_WINDOW.h>
+ #include <MASTER_NODE_SESSION_STAGER.h>
+ #include <MASTER_SD_SESSION_RECORDER.h>
+ #include <MASTER_SESSION_TIMESTAMP_LEDGER.h>
+ #include <MASTER_TRAINING_CSV_LOGGER.h>
+ #include "blepipe_proto.h"
+ 
++#ifdef __cplusplus
++extern "C" {
++#endif
++uint8_t exo_master_node_control_send(uint8_t node_id, const uint8_t *payload,
++        uint16_t payload_len);
++void exo_master_node_source_complete(uint8_t node_id, uint32_t session_id,
++        uint32_t payload_crc32);
++#ifdef __cplusplus
++}
++#endif
++
+ namespace exo {
+@@ -90,7 +99,7 @@ class MasterTrainingCsvCoordinator {
+ public:
+     static constexpr uint32_t kRowsPerService = 8U;
+     static constexpr uint32_t kValidationBytesPerService = 256U;
+-    /* Matches the desktop tool's session watchdog so both give up on a stalled Node together. */
+-    static constexpr uint32_t kSessionStallMs = 30000U;
++    static constexpr uint32_t kSessionStallMs = 120000U;
+@@ -126,6 +135,8 @@ class MasterTrainingCsvCoordinator {
+         node_icm_index_ = 0U;
+         master_ledger_matches_ = false;
+         memset(&master_header_, 0, sizeof(master_header_));
++        transfer_window_.reset();
++        node_verify_last_tx_ms_ = 0U;
+         ledger_.reset(session_id);
+         state_ = TrainingCsvState::WaitingForMaster;
+         return true;
+@@ -158,6 +169,8 @@ class MasterTrainingCsvCoordinator {
+         master_ledger_matches_ = false;
+         memset(&master_header_, 0, sizeof(master_header_));
+         ledger_.reset(0U);
++        transfer_window_.reset();
++        node_verify_last_tx_ms_ = 0U;
+         last_progress_ms_ = 0U;
+@@ -211,6 +224,11 @@ class MasterTrainingCsvCoordinator {
+             fail(TrainingCsvState::StageError, TrainingFailSite::Site2);
+             return;
+         }
++        if (!transfer_window_.begin(static_cast<uint8_t>(done.node_id),
++                done.session_id, done.total_size, kRecordReliableDefaultChunkSize)) {
++            fail(TrainingCsvState::StageError, TrainingFailSite::Site2);
++            return;
++        }
++        node_verify_last_tx_ms_ = 0U;
+         active_node_id_ = static_cast<uint8_t>(done.node_id);
+@@ -226,40 +244,73 @@ class MasterTrainingCsvCoordinator {
+     void on_node_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length)
+     {
+-        // Validate frame: must be a RecordReliableFrame for our session
+         if (partial_finalized_ || frame == nullptr ||
+                 length < sizeof(RecordReliableFrameHeader) ||
+                 node_id < 1U || node_id > 4U) {
+@@ -278,25 +329,55 @@ class MasterTrainingCsvCoordinator {
+                 static_cast<size_t>(sizeof(header)) + header.payload_len != length) {
+             return;
+         }
+         const uint8_t *payload = frame + sizeof(header);
+-        if (blepipe_crc16_ccitt(payload, header.payload_len) != header.payload_crc16) {
+-            return;
+-        }
+-
+-        if (state_ == TrainingCsvState::ReceiveNode) {
+-            // Normal path: coordinator is ready — write to stager directly
+-            if (node_id != active_node_id_) {
+-                return;
+-            }
+-            if (!stager_.accept_chunk(node_id, header.session_id, header.byte_offset,
+-                    payload, header.payload_len)) {
++        if (state_ != TrainingCsvState::ReceiveNode || node_id != active_node_id_) {
++            return;
++        }
++        const bool crc_ok =
++                blepipe_crc16_ccitt(payload, header.payload_len) == header.payload_crc16;
++        const NodeTransferInspection inspection = transfer_window_.inspect(node_id,
++                header.session_id, header.chunk_index, header.byte_offset,
++                header.payload_len, crc_ok,
++                (header.flags & kRecordFlagFinalChunk) != 0U);
++        switch (inspection.decision) {
++            case NodeTransferDecision::Ignore:
++                return;
++            case NodeTransferDecision::NackGap:
++            case NodeTransferDecision::NackCorrupt:
++                (void)send_nack(node_id, header.session_id, inspection.request_chunk);
++                return;
++            case NodeTransferDecision::Duplicate:
++                if (!stager_.accept_chunk(node_id, header.session_id, header.byte_offset,
++                        payload, header.payload_len)) {
++                    fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
++                    return;
++                }
++                (void)send_ack_window(node_id, header.session_id,
++                        transfer_window_.next_chunk(), 1U);
++                ++progress_seq_;
++                return;
++            case NodeTransferDecision::Accept:
++            case NodeTransferDecision::Complete:
++                break;
++        }
++        if (!stager_.accept_chunk(node_id, header.session_id, header.byte_offset,
++                payload, header.payload_len) || !transfer_window_.commit(inspection)) {
++            fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
++            (void)send_pause(node_id, header.session_id);
++            return;
++        }
++        ++progress_seq_;
++        if (inspection.decision == NodeTransferDecision::Complete) {
++            (void)send_ack_window(node_id, header.session_id,
++                    transfer_window_.next_chunk(), 0U);
++            state_ = TrainingCsvState::ValidateNode;
++        } else {
++            if (!send_ack_window(node_id, header.session_id,
++                    transfer_window_.next_chunk(), 1U)) {
+                 fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
+-                return;
+             }
+-            ++progress_seq_;
+-            if ((header.flags & kRecordFlagFinalChunk) != 0U) {
+-                state_ = TrainingCsvState::ValidateNode;
+-            }
+         }
+-        // Frames before ReceiveNode remain queued by the reliable-transfer manifest path.
+     }
+@@ -346,7 +427,9 @@ class MasterTrainingCsvCoordinator {
+                         }
+                         break;
+                     case node_session_staging::NodeSessionValidationStatus::Complete:
+-                        state_ = TrainingCsvState::ConvertNodeBno;
++                        if (send_node_verify_ok(now_ms)) {
++                            state_ = TrainingCsvState::ConvertNodeBno;
++                        }
+                         break;
+@@ -390,6 +473,8 @@ class MasterTrainingCsvCoordinator {
+         (void)logger_.shutdown(now_ms);
+         (void)stager_.shutdown();
++        transfer_window_.reset();
++        node_verify_last_tx_ms_ = 0U;
+         active_node_id_ = 0U;
+@@ -432,6 +517,8 @@ class MasterTrainingCsvCoordinator {
+         (void)logger_.shutdown(now_ms);
+         (void)stager_.shutdown();
++        transfer_window_.reset();
++        node_verify_last_tx_ms_ = 0U;
+         if (logger_.has_open_file()) {
+@@ -474,6 +561,104 @@ class MasterTrainingCsvCoordinator {
+     void fail_durability() { fail(TrainingCsvState::CsvError, TrainingFailSite::Site20); }
+ 
+ private:
++    bool send_reliable_control(RecordReliableType type, uint8_t node_id,
++            uint32_t session_id, uint32_t chunk_index, const void *body,
++            uint16_t body_size, uint16_t flags = 0U)
++    {
++        uint8_t frame[sizeof(RecordReliableFrameHeader) +
++                sizeof(RecordReliableVerifyPayload)]{};
++        if (body_size > sizeof(RecordReliableVerifyPayload)) {
++            return false;
++        }
++        RecordReliableFrameHeader header{};
++        header.command = RecordCommand::ReliableFrame;
++        header.proto_version = kRecordReliableProtoVersion;
++        header.magic = kRecordReliableMagic;
++        header.frame_type = static_cast<uint8_t>(type);
++        header.source_id = node_id;
++        header.session_id = session_id;
++        header.chunk_index = chunk_index;
++        header.byte_offset = chunk_index *
++                static_cast<uint32_t>(kRecordReliableDefaultChunkSize);
++        header.payload_len = body_size;
++        header.payload_crc16 = blepipe_crc16_ccitt(
++                static_cast<const uint8_t *>(body), body_size);
++        header.flags = flags;
++        memcpy(frame, &header, sizeof(header));
++        if (body != nullptr && body_size != 0U) {
++            memcpy(frame + sizeof(header), body, body_size);
++        }
++        return exo_master_node_control_send(node_id, frame,
++                static_cast<uint16_t>(sizeof(header) + body_size)) != 0U;
++    }
++
++    bool send_ack_window(uint8_t node_id, uint32_t session_id,
++            uint32_t next_chunk, uint8_t credit)
++    {
++        RecordReliableAckWindowPayload ack{};
++        ack.source_id = node_id;
++        ack.session_id = session_id;
++        ack.next_chunk_index = next_chunk;
++        ack.credit = credit;
++        return send_reliable_control(RecordReliableType::AckWindow, node_id,
++                session_id, next_chunk, &ack, sizeof(ack));
++    }
++
++    bool send_nack(uint8_t node_id, uint32_t session_id, uint32_t first_chunk)
++    {
++        RecordReliableNackRangePayload nack{};
++        nack.source_id = node_id;
++        nack.session_id = session_id;
++        nack.first_chunk_index = first_chunk;
++        nack.chunk_count = 1U;
++        return send_reliable_control(RecordReliableType::NackRange, node_id,
++                session_id, first_chunk, &nack, sizeof(nack),
++                kRecordFlagRetransmit);
++    }
++
++    bool send_pause(uint8_t node_id, uint32_t session_id)
++    {
++        return send_reliable_control(RecordReliableType::Pause, node_id,
++                session_id, transfer_window_.next_chunk(), nullptr, 0U,
++                kRecordFlagStorageMissing);
++    }
++
++    bool send_node_verify_ok(uint32_t now_ms)
++    {
++        if (!stager_.validated() || active_node_id_ < 1U || active_node_id_ > 4U) {
++            return false;
++        }
++        if (node_verify_last_tx_ms_ != 0U &&
++                (now_ms - node_verify_last_tx_ms_) < 250U) {
++            return false;
++        }
++        node_verify_last_tx_ms_ = now_ms;
++        RecordReliableVerifyPayload verify{};
++        verify.source_id = active_node_id_;
++        verify.session_id = active_session_id_;
++        verify.file_crc32 = stager_.header().payload_crc32;
++        return send_reliable_control(RecordReliableType::VerifyOk,
++                active_node_id_, active_session_id_, transfer_window_.next_chunk(),
++                &verify, sizeof(verify));
++    }
++
+     void clear_failure()
+@@ -572,6 +757,13 @@ private:
+     void complete_source(uint8_t source_id, uint32_t now_ms, bool discard_stage)
+     {
++        const uint32_t node_crc = (source_id >= 1U && source_id <= 4U) ?
++                stager_.header().payload_crc32 : 0U;
+         if (!logger_.mark_source_complete(source_id, now_ms)) {
+@@ -587,6 +779,11 @@ private:
+             return;
+         }
++        if (source_id >= 1U && source_id <= 4U) {
++            exo_master_node_source_complete(source_id, active_session_id_, node_crc);
++            transfer_window_.reset();
++            node_verify_last_tx_ms_ = 0U;
++        }
+         active_node_id_ = 0U;
+@@ -616,6 +813,8 @@ private:
+     uint8_t active_node_id_ = 0U;
+     bool master_ledger_matches_ = false;
++    MasterNodeTransferWindow transfer_window_{};
++    uint32_t node_verify_last_tx_ms_ = 0U;
+     uint32_t last_progress_ms_ = 0U;
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -228,6 +228,33 @@ namespace {
+ 		return send_reliable_record_frame(exo::RecordReliableType::Manifest,
+ 				source_id,
+ 				session_id,
+@@ -236,6 +278,47 @@ namespace {
+ 				static_cast<uint16_t>(sizeof(manifest)));
+ 	}
++
++	static bool send_node_manifest_ack(const exo::RecordDoneMessage &done)
++	{
++		exo::RecordReliableManifestAckPayload ack{};
++		ack.source_id = done.node_id;
++		ack.session_id = done.session_id;
++		ack.accepted_chunk_size = kRecordChunkPayloadBytes;
++		ack.credit = 1U;
++		ack.status = 0U;
++		uint8_t frame[sizeof(exo::RecordReliableFrameHeader) + sizeof(ack)]{};
++		exo::RecordReliableFrameHeader header{};
++		header.command = exo::RecordCommand::ReliableFrame;
++		header.proto_version = exo::kRecordReliableProtoVersion;
++		header.magic = exo::kRecordReliableMagic;
++		header.frame_type = static_cast<uint8_t>(exo::RecordReliableType::ManifestAck);
++		header.source_id = done.node_id;
++		header.session_id = done.session_id;
++		header.payload_len = static_cast<uint16_t>(sizeof(ack));
++		header.payload_crc16 = blepipe_crc16_ccitt(
++				reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
++		memcpy(frame, &header, sizeof(header));
++		memcpy(frame + sizeof(header), &ack, sizeof(ack));
++		return exo_hub_central_client_send_blepipe_to_node(
++				static_cast<uint8_t>(done.node_id),
++				BLEPIPE_MSG_COMMAND,
++				BLEPIPE_ID_HUB,
++				frame,
++				static_cast<uint16_t>(sizeof(frame))) != 0U;
++	}
+ 
+ 	static void master_blepipe_send_topology(const blepipe_hdr_t *request_hdr);
+@@ -1192,6 +1234,20 @@ namespace {
+ 	{
+ 		return static_cast<uint8_t>(g_pending_node_done_count + (g_have_pending_node_done ? 1U : 0U));
+ 	}
++
++	static void activate_remote_node_transfer(const exo::RecordDoneMessage &done)
++	{
++		g_remote_transfer_active = true;
++		g_remote_transfer_source_id = done.node_id;
++		g_remote_transfer_session_id = done.session_id;
++		g_have_pending_node_done = false;
++		g_pending_node_manifest_last_tick = 0U;
++		EXO_LOG("[BLE][REC][REL][MASTER_OWNER] active source=%u session=%lu queue=%u\r\n",
++				static_cast<unsigned>(done.node_id),
++				static_cast<unsigned long>(done.session_id),
++				static_cast<unsigned>(pending_node_done_depth()));
++	}
+ 
+ 	static void pending_node_done_clear()
+
+@@ -1298,25 +1381,31 @@ namespace {
+ 				static_cast<unsigned long>(g_pending_node_done.total_size),
+ 				static_cast<unsigned>(pending_node_done_depth()));
+-		const bool node_manifest_ok = send_reliable_manifest(
++		(void)send_reliable_manifest(
+ 				g_pending_node_done.node_id,
+ 				g_pending_node_done.session_id,
+ 				g_pending_node_done.total_size,
+ 				g_pending_node_done.payload_crc32,
+ 				g_pending_node_done.actual_duration_ms);
+-		if (node_manifest_ok) {
++		if (send_node_manifest_ack(g_pending_node_done)) {
++			const exo::RecordDoneMessage active_done = g_pending_node_done;
+ 			g_pending_node_manifest_last_tick = HAL_GetTick();
+-			EXO_LOG("[BLE][REC][REL] MANIFEST source=%u session=%lu size=%lu crc=0x%08lX immediate=1\r\n",
+-					static_cast<unsigned>(g_pending_node_done.node_id),
+-					static_cast<unsigned long>(g_pending_node_done.session_id),
+-					static_cast<unsigned long>(g_pending_node_done.total_size),
+-					static_cast<unsigned long>(g_pending_node_done.payload_crc32));
++			activate_remote_node_transfer(active_done);
++			EXO_LOG("[BLE][REC][REL][MASTER_OWNER] ManifestAck source=%u session=%lu credit=1 immediate=1\r\n",
++					static_cast<unsigned>(active_done.node_id),
++					static_cast<unsigned long>(active_done.session_id));
+ 		}
+ 	}
+@@ -2860,25 +2949,30 @@ int main(void)
+ 					master_training_csv_node_manifest_ready(g_pending_node_done) &&
+ 					(g_pending_node_manifest_last_tick == 0U || (HAL_GetTick() - g_pending_node_manifest_last_tick) >= 500U)) {
+-				const bool node_manifest_ok = send_reliable_manifest(
++				(void)send_reliable_manifest(
+ 						g_pending_node_done.node_id,
+ 						g_pending_node_done.session_id,
+ 						g_pending_node_done.total_size,
+ 						g_pending_node_done.payload_crc32,
+ 						g_pending_node_done.actual_duration_ms);
+-				if (node_manifest_ok) {
++				if (send_node_manifest_ack(g_pending_node_done)) {
++					const exo::RecordDoneMessage active_done = g_pending_node_done;
+ 					g_pending_node_manifest_last_tick = HAL_GetTick();
+-					EXO_LOG("[BLE][REC][REL] MANIFEST source=%u session=%lu size=%lu crc=0x%08lX\r\n",
+-							static_cast<unsigned>(g_pending_node_done.node_id),
+-							static_cast<unsigned long>(g_pending_node_done.session_id),
+-							static_cast<unsigned long>(g_pending_node_done.total_size),
+-							static_cast<unsigned long>(g_pending_node_done.payload_crc32));
++					activate_remote_node_transfer(active_done);
++					EXO_LOG("[BLE][REC][REL][MASTER_OWNER] ManifestAck source=%u session=%lu credit=1\r\n",
++							static_cast<unsigned>(active_done.node_id),
++							static_cast<unsigned long>(active_done.session_id));
+ 				}
+ 			}
+@@ -3376,6 +3470,14 @@ extern "C" uint8_t exo_hub_leaf_record_done_ingest(const uint8_t *payload, uint16_t length)
+ 		g_training_node_done[training_index] = message;
+ 		g_training_node_done_valid[training_index] = true;
+ 	}
++	if (g_remote_transfer_active &&
++			g_remote_transfer_source_id == message.node_id &&
++			g_remote_transfer_session_id == message.session_id) {
++		(void)send_node_manifest_ack(message);
++		EXO_LOG("[BLE][REC][REL][MASTER_OWNER] resume source=%u session=%lu\r\n",
++				static_cast<unsigned>(message.node_id),
++				static_cast<unsigned long>(message.session_id));
++		return 1U;
++	}
+ 	master_training_csv_coordinator.on_node_record_done(message);
+@@ -3423,6 +3525,41 @@ extern "C" void exo_hub_leaf_record_frame_ingest(uint8_t node_id,
+ 	master_training_csv_coordinator.on_node_reliable_frame(node_id, payload, payload_len);
+ }
++
++extern "C" uint8_t exo_master_node_control_send(uint8_t node_id,
++		const uint8_t *payload, uint16_t payload_len)
++{
++	if (node_id < 1U || node_id > 4U || payload == nullptr ||
++			payload_len == 0U || payload_len > 255U) {
++		return 0U;
++	}
++	return exo_hub_central_client_send_blepipe_to_node(node_id,
++			BLEPIPE_MSG_COMMAND, BLEPIPE_ID_HUB, payload, payload_len);
++}
++
++extern "C" void exo_master_node_source_complete(uint8_t node_id,
++		uint32_t session_id, uint32_t payload_crc32)
++{
++	if (g_remote_transfer_active &&
++			g_remote_transfer_source_id == node_id &&
++			g_remote_transfer_session_id == session_id) {
++		g_remote_transfer_active = false;
++		g_remote_transfer_source_id = 0U;
++		g_remote_transfer_session_id = 0U;
++	}
++	master_rs485_recording.on_ble_reliable_verify_ok(session_id, node_id,
++			payload_crc32);
++	exo::RecordReliableVerifyPayload verified{};
++	verified.source_id = node_id;
++	verified.session_id = session_id;
++	verified.file_crc32 = payload_crc32;
++	(void)send_reliable_record_frame(exo::RecordReliableType::CommitDone,
++			node_id, session_id, 0U, 0U,
++			reinterpret_cast<const uint8_t*>(&verified),
++			static_cast<uint16_t>(sizeof(verified)));
++	EXO_LOG("[BLE][REC][REL][MASTER_OWNER] complete source=%u session=%lu queue=%u\r\n",
++			static_cast<unsigned>(node_id),
++			static_cast<unsigned long>(session_id),
++			static_cast<unsigned>(pending_node_done_depth()));
++	start_next_pending_node_manifest_now();
++}
+ 
+ extern "C" void exo_hub_leaf_control_ingest(uint8_t node_id,
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -1110,6 +1110,7 @@
+   const RECORD_REL = {
+     PROTO: 6,
+     MAGIC: 0x5845,
++    MASTER_OWNS_NODE_UPLOAD: true,
+     HEADER_SIZE: 25,
+@@ -4120,6 +4121,13 @@
+   function queueReliableControl(transfer, frameType, payload, chunkIndex = 0, byteOffset = 0, flags = 0) {
+     if (!getRecordAckWriteChar() || !transfer) {
+       return;
+     }
++    if (RECORD_REL.MASTER_OWNS_NODE_UPLOAD &&
++        transfer.nodeId >= 1 && transfer.nodeId <= 4) {
++      transfer.masterOwned = true;
++      transfer.outcome = transfer.outcome || "Master SD ingest";
++      return;
++    }
+     const raw = new Uint8Array(RECORD_REL.HEADER_SIZE + payload.length);
+diff --git a/Docs/MultiNode_Master_Owned_Transfer.md b/Docs/MultiNode_Master_Owned_Transfer.md
+new file mode 100644
+--- /dev/null
++++ b/Docs/MultiNode_Master_Owned_Transfer.md
+@@ -0,0 +1,66 @@
++# Four-Node Master-Owned Recording Transfer
++
++## Scope
++
++This implementation supports the Master plus Nodes 1–4 in one recording
++session. Every source records locally. The Master writes its own binary directly
++to SD; each Node writes to external flash and uploads after recording.
++
++## Transfer ownership
++
++The Master owns Node upload control. The desktop HTML client observes and plots
++Node frames but does not issue ManifestAck, AckWindow, NackRange, Pause, or
++VerifyOk for Node sources. The existing browser-controlled transfer remains
++available for the Master's own source.
++
++## Sequence
++
++1. All selected Nodes must be transport-ready and recorder-ready.
++2. The Master sends PrepareRecord and waits for every selected Node.
++3. The Master sends CommitPreparedRecord and starts its local recorder.
++4. Each Node records to external flash.
++5. RecordDone messages are queued by the Master.
++6. Nodes upload sequentially in queue order, with one credit at a time.
++7. Every chunk is checked for source, session, offset, chunk index, bounds, and
++   CRC16 before being written.
++8. Exact duplicates are accepted only if they match the bytes already staged.
++9. Gaps and corrupt chunks generate NackRange without destroying the staged
++   file.
++10. The completed staged binary is checked using header CRC and payload CRC32.
++11. The Master sends VerifyOk only after the SD copy passes validation.
++12. The Node may erase flash only after VerifyOk.
++13. The Master converts the retained raw source file into the combined training
++    CSV, marks the source complete, and advances to the next Node.
++
++## Resume behavior
++
++A Node retains its session after disconnect. It periodically resends RecordDone.
++When the Master receives RecordDone for the active source and session, it
++resends ManifestAck. The Node keeps its existing upload cursor for the same
++session; the next AckWindow or NackRange re-establishes the exact contiguous
++position.
++
++## Durability rules
++
++- Raw Master and Node binaries remain on SD.
++- A Node is never erased on browser verification.
++- A forward gap is recoverable and does not immediately fail the session.
++- A mismatched duplicate, SD write failure, invalid header, or final CRC
++  mismatch remains a hard staging failure.
++- The combined CSV is complete only when the expected source mask is complete.
++
++## Validation
++
++The host test `Firmware/HostTests/test_master_node_transfer_window.cpp` covers
++sequential chunks, exact duplicates, forward gaps, corrupt payloads, wrong
++sources, final completion, and reset behavior.
++
++On-device acceptance still requires four programmed Nodes and the Master:
++
++- repeated short sessions;
++- five-minute sessions;
++- browser disconnect during Node ingestion;
++- Node disconnect/reconnect during upload;
++- deliberate RF interference;
++- long-duration soak testing;
++- SD-full and SD-write failure tests.
