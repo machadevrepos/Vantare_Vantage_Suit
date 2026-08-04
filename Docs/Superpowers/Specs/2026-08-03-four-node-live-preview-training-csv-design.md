@@ -148,6 +148,7 @@ The existing raw columns remain. Schema version 2 adds deterministic, reproducib
 - `source_dropped_count`
 - `source_loss_flags`
 - `source_payload_crc32`
+- `timestamp_quality_flags`
 
 ### BNO85 raw and calibrated columns
 

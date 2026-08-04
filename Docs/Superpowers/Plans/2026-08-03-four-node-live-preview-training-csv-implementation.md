@@ -183,7 +183,7 @@ Add delta/rate, target/attempted/captured/dropped counts, loss flags, payload CR
 
 - [ ] **Step 4: Add deterministic derived features**
 
-Use normalized quaternion `(x,y,z,w)` with right-handed intrinsic XYZ / roll-pitch-yaw formulas. Add Euler degrees and BNO/ICM vector magnitudes. Invalid quaternions produce empty Euler cells rather than fabricated zeroes.
+Use normalized quaternion `(x,y,z,w)` with a right-handed intrinsic Z-Y-X yaw-pitch-roll convention, reported as roll, pitch, and yaw. Add Euler degrees and BNO/ICM vector magnitudes. Invalid quaternions produce empty Euler cells rather than fabricated zeroes.
 
 - [ ] **Step 5: Track metadata and timestamps in the logger**
 

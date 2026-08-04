@@ -141,11 +141,6 @@ RGB_LED rgb(led_r, led_g, led_b, 0);
 
 #include <ANALOG.h>
 
-//#include <RS485.h>
-//DIG_PIN rs485_1_rede(RS485_1_DE_GPIO_Port, RS485_1_DE_Pin, 1);
-//DIG_PIN rs485_2_rede(RS485_2_DE_GPIO_Port, RS485_2_DE_Pin, 1);
-
-//RS485 rs485_1(&huart1, rs485_1_rede, USART1_IRQn);
 //RS485 rs485_2(&huart2, rs485_2_rede, USART2_IRQn);
 
 //RS485 esp_rs485(&huart3, rs485_2_rede, USART3_IRQn);

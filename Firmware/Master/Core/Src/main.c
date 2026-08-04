@@ -44,7 +44,6 @@
 #include <MASTER_IMU_SWO_TELEMETRY.h>
 #include <MASTER_SD_SESSION_RECORDER.h>
 #include <MASTER_TRAINING_CSV_COORDINATOR.h>
-#include <RECORDING_BRIDGE.h>
 #include <RECORDING_TYPES.h>
 #include "HUB_LEAF_BLE_MANAGER.h"
 #include "blepipe_proto.h"
@@ -109,9 +108,7 @@ static bool master_training_csv_reported_partial = false;
 #if EXO_MASTER_IMU_BACKGROUND_CSV_ENABLE
 static bool master_imu_csv_error_reported = false;
 #endif
-static bool HubRs485BleSend(const uint8_t *payload, uint8_t length);
-static void HubRs485TxDone();
-static exo::ble_hub::HubLeafBleManager master_rs485_recording;
+static exo::ble_hub::HubLeafBleManager leaf_ble_manager;
 
 /* USER CODE END PV */
 
@@ -119,7 +116,6 @@ static exo::ble_hub::HubLeafBleManager master_rs485_recording;
 void SystemClock_Config(void);
 void PeriphCommonClock_Config(void);
 /* USER CODE BEGIN PFP */
-static void MasterRs485_StartUartDmaRx();
 
 /* USER CODE END PFP */
 
@@ -212,21 +208,6 @@ static uint32_t SpiNextFasterPrescaler(uint32_t current)
 	}
 }
 
-static bool HubRs485BleSend(const uint8_t *payload, uint8_t length)
-		{
-	(void) payload;
-	(void) length;
-	return true;
-}
-
-static void HubRs485TxDone()
-{
-}
-
-static void MasterRs485_StartUartDmaRx()
-{
-	/* RS485 removed in BLE-only architecture. */
-}
 
 namespace {
 	constexpr uint32_t kDefaultStreamIntervalMs = 20U;
@@ -524,13 +505,13 @@ namespace {
 				static_cast<unsigned long>(d.sd_write.over_10ms),
 				static_cast<unsigned long>(d.sd_write.over_20ms),
 				static_cast<unsigned long>(d.sd_write.over_100ms));
-		EXO_LOG("[ACQ][DIAG] comms ble_max_us=%lu ble_gt5=%lu central_max_us=%lu central_gt5=%lu rs485_max_us=%lu rs485_gt5=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] comms ble_max_us=%lu ble_gt5=%lu central_max_us=%lu central_gt5=%lu leaf_max_us=%lu leaf_gt5=%lu\r\n",
 				static_cast<unsigned long>(d.comms_ble.max_us),
 				static_cast<unsigned long>(d.comms_ble.over_5ms),
 				static_cast<unsigned long>(d.comms_central.max_us),
 				static_cast<unsigned long>(d.comms_central.over_5ms),
-				static_cast<unsigned long>(d.comms_rs485.max_us),
-				static_cast<unsigned long>(d.comms_rs485.over_5ms));
+				static_cast<unsigned long>(d.comms_leaf.max_us),
+				static_cast<unsigned long>(d.comms_leaf.over_5ms));
 		EXO_LOG("[ACQ][DIAG] modes sd_suppress=%u quiet_comms=%u icm_only=%u bno_only=%u bno_rv_only=%u summaries=%lu\r\n",
 				static_cast<unsigned>(EXO_ACQ_DIAG_SUPPRESS_SD),
 				static_cast<unsigned>(EXO_ACQ_DIAG_QUIET_COMMS),
@@ -554,7 +535,7 @@ namespace {
 
 	enum class RecoveryJobKind : uint8_t {
 		MasterLocalRetx,
-		NodeUartRetx,
+		NodeTransferRetx,
 		VerifyRetx
 	};
 
@@ -961,23 +942,22 @@ namespace {
 	static void drain_leaf_stream_passthrough()
 	{
 		exo::ble_hub::HubLeafBleManager::LiveSample sample { };
-		if (!master_rs485_recording.peek_next_live_sample(sample)) {
+		const uint32_t now_ms = HAL_GetTick();
+		if (!leaf_ble_manager.peek_next_live_sample(sample, now_ms)) {
 			return;
 		}
 		if (!g_ble_stream_enabled || g_ble_record_transfer_mode) {
-			(void)master_rs485_recording.discard_next_live_sample();
+			(void)leaf_ble_manager.discard_next_live_sample();
 			return;
 		}
 		if (!send_ble_v2_sample(sample.node_id,
 				sample.sensor_id,
 				sample.payload,
 				sample.payload_len)) {
-			// Keep the queued sample until the peripheral BLE stack accepts it.
-			// This prevents transient phone-link backpressure from becoming a
-			// visible gap in the Node trace.
+			leaf_ble_manager.on_live_sample_send_result(false, now_ms);
 			return;
 		}
-		(void)master_rs485_recording.discard_next_live_sample();
+		leaf_ble_manager.on_live_sample_send_result(true, now_ms);
 	}
 
 	static bool is_duplicate_start_record(const exo::StartRecordMessage &message)
@@ -1079,7 +1059,7 @@ namespace {
 	static void local_record_finish_without_transfer()
 	{
 		g_local_record_phase = LocalRecordPhase::Finished;
-		master_rs485_recording.set_transfer_hold(false);
+		leaf_ble_manager.set_transfer_hold(false);
 	}
 
 	static void local_record_pause_for_resume()
@@ -1120,7 +1100,7 @@ namespace {
 				return;
 			}
 
-			master_rs485_recording.on_ble_reliable_nack_range(job.session_id,
+			leaf_ble_manager.on_ble_reliable_nack_range(job.session_id,
 					job.source_id,
 					job.first_chunk,
 					job.count == 0U ? 1U : job.count);
@@ -1135,10 +1115,6 @@ namespace {
 		}
 	}
 
-	static void MasterRs485_RecoverUartRx()
-	{
-		/* RS485 removed in BLE-only architecture. */
-	}
 
 	static bool local_reliable_transfer_owns_ble()
 	{
@@ -1268,7 +1244,7 @@ namespace {
 	{
 		exo::RecordDoneMessage done { };
 		while (g_pending_node_done_count < kPendingNodeDoneQueueSize &&
-				master_rs485_recording.pop_next_record_done(done)) {
+				leaf_ble_manager.pop_next_record_done(done)) {
 			(void) pending_node_done_push(done);
 		}
 	}
@@ -1370,7 +1346,7 @@ namespace {
 		g_remote_transfer_source_id = 0U;
 		g_remote_transfer_session_id = 0U;
 		local_record_reset();
-		const bool ok = master_rs485_recording.reset_and_abort_all(erase_remote);
+		const bool ok = leaf_ble_manager.reset_and_abort_all(erase_remote);
 		if (ok) {
 			g_last_master_reset_tick_ms = HAL_GetTick();
 			g_have_last_master_reset_tick = true;
@@ -1384,7 +1360,7 @@ namespace {
 	static void ble_send_discovered_nodes_report()
 	{
 		uint8_t discovered[8] = { 0U };
-		const uint8_t count = master_rs485_recording.copy_discovered_node_ids(
+		const uint8_t count = leaf_ble_manager.copy_discovered_node_ids(
 				discovered, static_cast<uint8_t>(sizeof(discovered)));
 		uint8_t report[9] = { 0U };
 		report[0] = count;
@@ -1649,7 +1625,7 @@ namespace {
 			return 0U;
 		}
 		g_ble_start_or_record_in_progress = true;
-		const uint8_t ok = master_rs485_recording.start_from_ble(g_record_sync.message) ? 1U : 0U;
+		const uint8_t ok = leaf_ble_manager.start_from_ble(g_record_sync.message) ? 1U : 0U;
 		g_ble_record_transfer_mode = false;
 		if (ok == 0U) {
 			EXO_LOG("[BLE][HUB][SYNC] local start failed session=%lu\r\n",
@@ -1657,7 +1633,7 @@ namespace {
 			record_sync_abort(1U);
 			return 0U;
 		}
-		master_rs485_recording.set_transfer_hold(false);
+		leaf_ble_manager.set_transfer_hold(false);
 		const exo::StartRecordMessage &message = g_record_sync.message;
 		if (!local_record_start(g_record_sync.message, true)) {
 			EXO_LOG("[TRAIN][CSV] skipped session=%lu reason=master_binary_start\r\n",
@@ -1952,7 +1928,7 @@ namespace {
 	static void master_blepipe_send_topology(const blepipe_hdr_t *request_hdr)
 			{
 		uint8_t discovered[8] = { 0U };
-		const uint8_t count = master_rs485_recording.copy_discovered_node_ids(
+		const uint8_t count = leaf_ble_manager.copy_discovered_node_ids(
 				discovered,
 				static_cast<uint8_t>(sizeof(discovered)));
 		uint8_t payload[9] = { 0U };
@@ -2046,7 +2022,7 @@ namespace {
 						master_blepipe_send_ack(hdr, 1U, payload[0]);
 						return true;
 					}
-					const uint8_t ok = master_rs485_recording.provision_node_id(current_id, new_id) ? 1U : 0U;
+					const uint8_t ok = leaf_ble_manager.provision_node_id(current_id, new_id) ? 1U : 0U;
 					const uint8_t response[4] = { 0xB0U, current_id, new_id, ok };
 					master_blepipe_send_command_resp(hdr, response, static_cast<uint16_t>(sizeof(response)));
 					master_blepipe_send_topology(&hdr);
@@ -2068,7 +2044,7 @@ namespace {
 						return true;
 					}
 					uint8_t resolved_id = 0U;
-					const uint8_t ok = master_rs485_recording.request_node_id(requested_id, resolved_id) ? 1U : 0U;
+					const uint8_t ok = leaf_ble_manager.request_node_id(requested_id, resolved_id) ? 1U : 0U;
 					const uint8_t response[4] = { 0xB1U, requested_id, resolved_id, ok };
 					master_blepipe_send_command_resp(hdr, response, static_cast<uint16_t>(sizeof(response)));
 					master_blepipe_send_ack(hdr, ok, payload[0]);
@@ -2079,7 +2055,7 @@ namespace {
 			}
 			case 0xB2U:
 				exo_hub_central_client_request_scan();
-				master_rs485_recording.rediscover_nodes();
+				leaf_ble_manager.rediscover_nodes();
 				master_blepipe_send_topology(&hdr);
 				master_blepipe_send_ack(hdr, 1U, payload[0]);
 				return true;
@@ -2244,7 +2220,7 @@ namespace {
 			const uint8_t *payload,
 			uint8_t length)
 	{
-		master_rs485_recording.on_ble_reliable_verify_ok(verify.session_id,
+		leaf_ble_manager.on_ble_reliable_verify_ok(verify.session_id,
 				verify.source_id,
 				verify.file_crc32);
 		if (g_remote_transfer_active &&
@@ -2444,7 +2420,7 @@ namespace {
 		g_local_done.total_size = g_local_session_size;
 		g_local_done.payload_crc32 = session_header.payload_crc32;
 		g_local_record_phase = LocalRecordPhase::Manifest;
-		master_rs485_recording.set_transfer_hold(true);
+		leaf_ble_manager.set_transfer_hold(true);
 	}
 }
 
@@ -2607,12 +2583,11 @@ int main(void)
 	EXO_LOG("[BUILD][MASTER] ble-mtu-node-log-fix active\r\n");
 	EXO_LOG("BLE stream init: frame=v2 interval_ms=%lu\r\n",
 			static_cast<unsigned long>(kDefaultStreamIntervalMs));
-	MasterRs485_StartUartDmaRx();
-	master_rs485_recording.begin();
+	leaf_ble_manager.begin();
 	exo_hub_central_client_init();
 	{
 		uint8_t discovered[8] = { 0U };
-		const uint8_t count = master_rs485_recording.copy_discovered_node_ids(discovered, static_cast<uint8_t>(sizeof(discovered)));
+		const uint8_t count = leaf_ble_manager.copy_discovered_node_ids(discovered, static_cast<uint8_t>(sizeof(discovered)));
 		EXO_LOG("BLE leaf discovery: found %u node(s)\r\n", static_cast<unsigned>(count));
 		for (uint8_t i = 0U; i < count; ++i) {
 			EXO_LOG("BLE leaf[%u]=%u\r\n",
@@ -2709,15 +2684,15 @@ int main(void)
 			acq_diag_emit_summary();
 		}
 		{
-			EXO_ACQ_DIAG_SCOPE(g_acq_diag.comms_rs485);
-			master_rs485_recording.process();
+			EXO_ACQ_DIAG_SCOPE(g_acq_diag.comms_leaf);
+			leaf_ble_manager.process();
 		}
 		{
 			EXO_ACQ_DIAG_SCOPE(g_acq_diag.comms_central);
 			exo_hub_central_client_process();
 		}
 #else
-		master_rs485_recording.process();
+		leaf_ble_manager.process();
 		exo_hub_central_client_process();
 #endif
 		record_sync_process();
@@ -2806,7 +2781,7 @@ int main(void)
 		master_training_csv_reported_completed_mask = training_completed_mask;
 		if (g_ble_start_or_record_in_progress &&
 				!g_ble_record_transfer_mode &&
-				!master_rs485_recording.start_or_record_active()) {
+				!leaf_ble_manager.start_or_record_active()) {
 			g_ble_start_or_record_in_progress = false;
 		}
 		if (g_ble_touch_test_active && static_cast<int32_t>(HAL_GetTick() - g_ble_touch_test_until_ms) >= 0) {
@@ -2831,7 +2806,7 @@ int main(void)
 			send_touch_status(kMasterNodeId, kTouchStatusTurningOff);
 			poweroff_pcb_and_wait_for_release();
 		}
-		if (g_ble_record_transfer_mode || master_rs485_recording.start_or_record_active()) {
+		if (g_ble_record_transfer_mode || leaf_ble_manager.start_or_record_active()) {
 			drain_pending_node_record_done();
 			if (pending_node_done_depth() > 0U) {
 				g_ble_record_transfer_mode = true;
@@ -2987,7 +2962,7 @@ int main(void)
 				if (!g_remote_transfer_active &&
 						!g_have_pending_node_done &&
 						g_pending_node_done_count == 0U &&
-						!master_rs485_recording.start_or_record_active()) {
+						!leaf_ble_manager.start_or_record_active()) {
 					g_ble_record_transfer_mode = false;
 					g_ble_start_or_record_in_progress = false;
 					local_record_reset();
@@ -3371,7 +3346,7 @@ extern "C" uint8_t exo_hub_leaf_stream_ingest(uint8_t node_id,
 		const uint8_t *payload,
 		uint8_t payload_len)
 		{
-	const uint8_t ok = master_rs485_recording.push_leaf_sample(node_id,
+	const uint8_t ok = leaf_ble_manager.push_leaf_sample(node_id,
 			sensor_id,
 			payload,
 			payload_len) ? 1U : 0U;
@@ -3412,7 +3387,7 @@ extern "C" uint8_t exo_hub_leaf_record_done_ingest(const uint8_t *payload, uint1
 				static_cast<unsigned long>(message.total_size));
 		return 1U;
 	}
-	const uint8_t ok = master_rs485_recording.queue_record_done(message) ? 1U : 0U;
+	const uint8_t ok = leaf_ble_manager.queue_record_done(message) ? 1U : 0U;
 	if (ok != 0U) {
 		seen_node_done_remember(message);
 		g_ble_record_transfer_mode = true;
@@ -3469,9 +3444,9 @@ extern "C" void exo_hub_leaf_control_ingest(uint8_t node_id,
 extern "C" void exo_hub_leaf_topology_touch(uint8_t node_id)
 		{
 	static uint32_t last_topology_mask = 0xFFFFFFFFUL;
-	master_rs485_recording.touch_node(node_id);
+	leaf_ble_manager.touch_node(node_id);
 	uint8_t discovered[8] = { 0U };
-	const uint8_t count = master_rs485_recording.copy_discovered_node_ids(
+	const uint8_t count = leaf_ble_manager.copy_discovered_node_ids(
 			discovered,
 			static_cast<uint8_t>(sizeof(discovered)));
 	uint32_t mask = 0UL;
@@ -3677,7 +3652,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 					(void) Custom_APP_SendCmdAck(payload, length, 1U);
 					return 1U;
 				}
-				const uint8_t ok = master_rs485_recording.provision_node_id(current_id, new_id) ? 1U : 0U;
+				const uint8_t ok = leaf_ble_manager.provision_node_id(current_id, new_id) ? 1U : 0U;
 				uint8_t report[3] = { current_id, new_id, ok };
 				(void) Custom_APP_SendCmdReport(0xC0U, report, 3U);
 				(void) Custom_APP_SendCmdAck(payload, length, ok);
@@ -3699,7 +3674,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 					return 1U;
 				}
 				uint8_t resolved_id = 0U;
-				const uint8_t ok = master_rs485_recording.request_node_id(target_id, resolved_id) ? 1U : 0U;
+				const uint8_t ok = leaf_ble_manager.request_node_id(target_id, resolved_id) ? 1U : 0U;
 				uint8_t report[3] = { target_id, resolved_id, ok };
 				(void) Custom_APP_SendCmdReport(0xC1U, report, 3U);
 				(void) Custom_APP_SendCmdAck(payload, length, ok);
@@ -3707,7 +3682,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 			}
 		case 0xB2U: /* force rediscovery of all nodes */
 			exo_hub_central_client_request_scan();
-			master_rs485_recording.rediscover_nodes();
+			leaf_ble_manager.rediscover_nodes();
 			ble_send_discovered_nodes_report();
 			(void) Custom_APP_SendCmdAck(payload, length, 1U);
 			return 1U;
@@ -3791,7 +3766,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 										static_cast<unsigned>(ack.credit),
 										static_cast<unsigned>(pending_node_done_depth()));
 							}
-							master_rs485_recording.on_ble_reliable_ack_window(ack.session_id,
+							leaf_ble_manager.on_ble_reliable_ack_window(ack.session_id,
 									ack.source_id,
 									0U,
 									sanitize_receiver_credit(ack.credit));
@@ -3857,7 +3832,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							g_local_record_phase = LocalRecordPhase::TransferActive;
 							g_local_waiting_verify = false;
 						} else {
-							master_rs485_recording.on_ble_reliable_ack_window(ack.session_id,
+							leaf_ble_manager.on_ble_reliable_ack_window(ack.session_id,
 									ack.source_id,
 									ack.next_chunk_index,
 									sanitize_receiver_credit(ack.credit));
@@ -3927,7 +3902,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 										static_cast<unsigned>(nack_count));
 							}
 						} else {
-							(void) recovery_queue_push(RecoveryJobKind::NodeUartRetx,
+							(void) recovery_queue_push(RecoveryJobKind::NodeTransferRetx,
 									nack.source_id,
 									nack.session_id,
 									nack.first_chunk_index,
@@ -3951,7 +3926,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							g_local_record_phase = LocalRecordPhase::TransferActive;
 						}
 					} else {
-						master_rs485_recording.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
+						leaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
 						(void) forward_remote_record_control(hdr.source_id, payload, length);
 					}
 					(void) Custom_APP_SendCmdAck(payload, length, 1U);
@@ -3973,7 +3948,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 									0U,
 									reinterpret_cast<const uint8_t*>(&verify),
 									static_cast<uint16_t>(sizeof(verify)));
-							master_rs485_recording.set_transfer_hold(false);
+							leaf_ble_manager.set_transfer_hold(false);
 							EXO_LOG("[MASTER][REC][REL] VERIFY_OK session=%lu crc=0x%08lX\r\n",
 									static_cast<unsigned long>(verify.session_id),
 									static_cast<unsigned long>(verify.file_crc32));
@@ -3998,7 +3973,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								hdr.chunk_index,
 								1U);
 					} else {
-						(void) recovery_queue_push(RecoveryJobKind::NodeUartRetx,
+						(void) recovery_queue_push(RecoveryJobKind::NodeTransferRetx,
 								hdr.source_id,
 								hdr.session_id,
 								hdr.chunk_index,
@@ -4035,7 +4010,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 					g_local_record_phase = LocalRecordPhase::Finished;
 					g_local_receiver_credit = 0U;
 					g_local_waiting_verify = false;
-					master_rs485_recording.set_transfer_hold(false);
+					leaf_ble_manager.set_transfer_hold(false);
 					EXO_LOG("[BLE][REC][REL][NODEQ] master complete queue=%u\r\n",
 							static_cast<unsigned>(pending_node_done_depth()));
 					start_next_pending_node_manifest_now();
@@ -4103,7 +4078,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 					(void) Custom_APP_SendCmdAck(payload, length, 1U);
 					return 1U;
 				}
-				master_rs485_recording.on_ble_chunk_ack(session_id, source_id, next_offset);
+				leaf_ble_manager.on_ble_chunk_ack(session_id, source_id, next_offset);
 				if (source_id != 0U && source_id != kMasterNodeId) {
 					(void) forward_remote_record_control(source_id, payload, length);
 				}

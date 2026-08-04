@@ -33,6 +33,9 @@ public:
   }
 
   bool pop_next_record_done(exo::RecordDoneMessage &out) {
+    if (active_source_id_ != 0U) {
+      return false;
+    }
     if (queued_done_count_ == 0U) {
       start_or_record_active_ = transfer_hold_ || active_source_id_ != 0U ||
           pending_live_count_ != 0U;
@@ -91,6 +94,36 @@ public:
     out = live_slots_[static_cast<uint8_t>(selected)].sample;
     return true;
   }
+
+  bool peek_next_live_sample(LiveSample &out, uint32_t now_ms) const {
+    return live_preview_due_(now_ms) && peek_next_live_sample(out);
+  }
+
+  void on_live_sample_send_result(bool sent, uint32_t now_ms) {
+    if (sent) {
+      (void)discard_next_live_sample();
+      if (live_preview_congested_ &&
+          static_cast<uint32_t>(now_ms - last_live_failure_ms_) >= kCongestionRecoveryMs) {
+        live_preview_congested_ = false;
+      }
+      next_live_attempt_ms_ = now_ms +
+          (live_preview_congested_ ? kCongestedPreviewIntervalMs : kNormalPreviewIntervalMs);
+      return;
+    }
+    const int8_t selected = select_next_live_index_();
+    if (selected >= 0) {
+      const uint8_t source = live_slots_[static_cast<uint8_t>(selected)].sample.node_id;
+      if (source >= 1U && source <= kMaxLeaves) {
+        next_preview_source_ = source == kMaxLeaves ? 1U : static_cast<uint8_t>(source + 1U);
+      }
+    }
+    selected_live_index_ = kNoLiveSelection;
+    live_preview_congested_ = true;
+    last_live_failure_ms_ = now_ms;
+    next_live_attempt_ms_ = now_ms + kCongestedPreviewIntervalMs;
+  }
+
+  bool live_preview_congested() const { return live_preview_congested_; }
 
   bool discard_next_live_sample() {
     const int8_t selected = select_next_live_index_();
@@ -154,6 +187,9 @@ public:
     pending_live_count_ = 0U;
     next_preview_source_ = 1U;
     selected_live_index_ = kNoLiveSelection;
+    next_live_attempt_ms_ = 0U;
+    last_live_failure_ms_ = 0U;
+    live_preview_congested_ = false;
     active_source_id_ = 0U;
     active_session_id_ = 0U;
     next_chunk_index_ = 0U;
@@ -285,6 +321,9 @@ private:
   static constexpr uint8_t kSensorsPerLeaf = 2U;
   static constexpr uint8_t kLiveSlotCount = kMaxLeaves * kSensorsPerLeaf;
   static constexpr int8_t kNoLiveSelection = -1;
+  static constexpr uint32_t kNormalPreviewIntervalMs = 40U;
+  static constexpr uint32_t kCongestedPreviewIntervalMs = 80U;
+  static constexpr uint32_t kCongestionRecoveryMs = 5000U;
 
   static uint8_t live_slot_index_(uint8_t node_id, uint8_t sensor_id) {
     return static_cast<uint8_t>((node_id - 1U) * kSensorsPerLeaf + (sensor_id - 1U));
@@ -317,6 +356,11 @@ private:
     }
     selected_live_index_ = kNoLiveSelection;
     return -1;
+  }
+
+  bool live_preview_due_(uint32_t now_ms) const {
+    return next_live_attempt_ms_ == 0U ||
+        static_cast<int32_t>(now_ms - next_live_attempt_ms_) >= 0;
   }
 
   bool owns_transfer_(uint32_t session_id, uint16_t source_id) const {
@@ -366,6 +410,9 @@ private:
   uint8_t pending_live_count_ = 0U;
   uint8_t next_preview_source_ = 1U;
   mutable int8_t selected_live_index_ = kNoLiveSelection;
+  uint32_t next_live_attempt_ms_ = 0U;
+  uint32_t last_live_failure_ms_ = 0U;
+  bool live_preview_congested_ = false;
   bool start_or_record_active_ = false;
   bool transfer_hold_ = false;
   uint16_t active_source_id_ = 0U;

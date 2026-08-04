@@ -65,7 +65,6 @@ public:
         if (!payload_crc_ok ||
                 static_cast<uint64_t>(byte_offset) + payload_size > total_size_) {
             result.decision = NodeTransferDecision::NackCorrupt;
-            result.request_chunk = chunk_index;
             return result;
         }
         if (byte_offset < next_offset_) {

@@ -71,7 +71,7 @@ public:
         body.next_chunk_index = next_chunk;
         body.credit = sanitize_credit(credit);
         return queue_frame(RecordReliableType::AckWindow, next_chunk,
-                next_chunk * static_cast<uint32_t>(chunk_size_),
+                chunk_byte_offset_(next_chunk, chunk_size_),
                 reinterpret_cast<const uint8_t*>(&body), sizeof(body), 1U);
     }
 
@@ -86,7 +86,7 @@ public:
         body.chunk_count = count == 0U ? 1U : count;
         body.flags = flags;
         return queue_frame(RecordReliableType::NackRange, first_chunk,
-                first_chunk * static_cast<uint32_t>(chunk_size_),
+                chunk_byte_offset_(first_chunk, chunk_size_),
                 reinterpret_cast<const uint8_t*>(&body), sizeof(body), 3U);
     }
 
@@ -154,6 +154,12 @@ private:
     {
         if (credit == 0U) return 1U;
         return credit > 24U ? 24U : credit;
+    }
+
+    static uint32_t chunk_byte_offset_(uint32_t chunk_index, uint16_t chunk_size)
+    {
+        const uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;
+        return offset > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<uint32_t>(offset);
     }
 
     bool queue_frame(RecordReliableType type, uint32_t chunk_index,

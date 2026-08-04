@@ -57,11 +57,12 @@ The expected upload order is:
 
 During one test run:
 
-1. Wait until one Node upload is active.
+1. Wait until one Node upload is active, then record the active Node ID and next expected chunk.
 2. Disconnect or close the browser.
-3. Leave the Master and Nodes powered.
-4. Reconnect the browser after several seconds.
-5. Confirm the Master resumes from its next expected chunk rather than restarting the complete session or discarding validated data.
+3. Leave the Master and Nodes powered while the browser remains disconnected.
+4. Before reconnecting, confirm from the Master diagnostics that the next expected chunk advanced or that the active Node moved into the validated state.
+5. Reconnect the browser after several seconds.
+6. Confirm the Master continues from the advanced transfer state rather than restarting the complete session or discarding validated data.
 
 Required behavior:
 

@@ -201,7 +201,7 @@ struct AcquisitionDiagnostics {
     /* 5. Communications */
     LatencyStat comms_ble;
     LatencyStat comms_central;
-    LatencyStat comms_rs485;
+    LatencyStat comms_leaf;
 
     /* Session bookkeeping */
     bool capturing = false;

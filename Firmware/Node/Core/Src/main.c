@@ -42,7 +42,6 @@
 #if EXO_NODE_FLASH_ENABLED
 #include <NODE_RECORDING_APP.h>
 #endif
-#include <RECORDING_BRIDGE.h>
 #ifndef EXO_NODE_SENSOR_TEST_ENABLE
 #define EXO_NODE_SENSOR_TEST_ENABLE 0
 #endif
@@ -77,10 +76,6 @@
 
 #ifndef EXO_PROFILE_MINIMAL
 #define EXO_PROFILE_MINIMAL (EXO_PROFILE_DIAG ? 0 : 1)
-#endif
-
-#ifndef EXO_NODE_UART_RS485_MODE
-#define EXO_NODE_UART_RS485_MODE 0
 #endif
 
 #ifndef EXO_NODE_BLE_FORWARD_ENABLE
@@ -137,32 +132,8 @@ static const exo::NodeRecordingConfig NODE_RECORDING_CONFIG = {
 static exo::NodeRecordingApp node_recording_app(NODE_RECORDING_CONFIG, hi2c1, hi2c3, hspi1,
 		EXO_NODE_FLASH_CS_GPIO_Port, EXO_NODE_FLASH_CS_Pin);
 #endif
-namespace {
-class BleOnlyNodeResponder {
-public:
-	void set_node_id(uint8_t node_id) { node_id_ = node_id; }
-	void begin() {
-		stream_enabled_ = false;
-		stream_interval_ms_ = 20U;
-	}
-	void process() {}
-	void on_uart_rx_byte() {}
-	void on_uart_rx_idle_event(uint16_t) {}
-	void on_uart_error() {}
-	void set_stream_enabled(bool enabled) { stream_enabled_ = enabled; }
-	bool stream_enabled() const { return stream_enabled_; }
-	void set_stream_interval_ms(uint8_t interval_ms) {
-		stream_interval_ms_ = interval_ms == 0U ? 1U : interval_ms;
-	}
-	uint8_t stream_interval_ms() const { return stream_interval_ms_; }
-
-private:
-	uint8_t node_id_ = EXO_NODE_ID;
-	bool stream_enabled_ = false;
-	uint8_t stream_interval_ms_ = 20U;
-};
-}
-static BleOnlyNodeResponder node_rs485_recording;
+static bool node_stream_enabled = false;
+static uint8_t node_stream_interval_ms = 20U;
 
 /* USER CODE END PV */
 
@@ -768,8 +739,8 @@ static void node_blepipe_send_stream_status(const blepipe_hdr_t &request_hdr,
 	const uint8_t payload[4] = {
 		command_id,
 		static_cast<uint8_t>(node_blepipe_current_id()),
-		node_rs485_recording.stream_enabled() ? 1U : 0U,
-		node_rs485_recording.stream_interval_ms()
+		node_stream_enabled ? 1U : 0U,
+		node_stream_interval_ms
 	};
 	node_blepipe_send_response(request_hdr, payload, static_cast<uint16_t>(sizeof(payload)));
 }
@@ -950,7 +921,7 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 	switch (payload[0]) {
 	case 0xA0U:
 		if (length == 1U) {
-			node_rs485_recording.set_stream_enabled(true);
+			node_stream_enabled = true;
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_live_stream_enabled(true);
 #endif
@@ -962,7 +933,7 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 		return false;
 	case 0xA1U:
 		if (length == 1U) {
-			node_rs485_recording.set_stream_enabled(false);
+			node_stream_enabled = false;
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_live_stream_enabled(false);
 #endif
@@ -974,7 +945,7 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 		return false;
 	case 0xA2U:
 		if (length >= 2U) {
-			node_rs485_recording.set_stream_interval_ms(payload[1]);
+			node_stream_interval_ms = payload[1] == 0U ? 1U : payload[1];
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_live_interval_ms(payload[1]);
 #endif
@@ -1136,7 +1107,6 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 #if EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_node_id(new_id);
 #endif
-			node_rs485_recording.set_node_id(new_id);
 			const uint8_t response[4] = { 0xB0U, requested_id, new_id, 1U };
 			node_blepipe_send_response(hdr, response, static_cast<uint16_t>(sizeof(response)));
 			node_blepipe_send_ack(hdr, 1U, payload[0]);
@@ -1571,20 +1541,20 @@ int main(void)
 	node_prepare_touch_wakeup_before_poweroff();
 	HAL_Delay(200);
 	{
-		GPIO_InitTypeDef rs485_rx_cfg = {0};
-		rs485_rx_cfg.Pin = GPIO_PIN_3;
-		rs485_rx_cfg.Mode = GPIO_MODE_AF_PP;
-		rs485_rx_cfg.Pull = GPIO_PULLUP;
-		rs485_rx_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-		rs485_rx_cfg.Alternate = GPIO_AF8_LPUART1;
-		HAL_GPIO_Init(GPIOA, &rs485_rx_cfg);
+		GPIO_InitTypeDef lpuart_rx_cfg = {0};
+		lpuart_rx_cfg.Pin = GPIO_PIN_3;
+		lpuart_rx_cfg.Mode = GPIO_MODE_AF_PP;
+		lpuart_rx_cfg.Pull = GPIO_PULLUP;
+		lpuart_rx_cfg.Speed = GPIO_SPEED_FREQ_LOW;
+		lpuart_rx_cfg.Alternate = GPIO_AF8_LPUART1;
+		HAL_GPIO_Init(GPIOA, &lpuart_rx_cfg);
 	}
 	RGB.OFF();
 	ERM_PWM.SET_PERCENT(0U);
 	BUZZER.SET_PERCENT(0U);
 
 	EXO_LOG("[BUILD][NODE] ble-rx-log-bridge active\r\n");
-	EXO_LOG("UART RS485 transport: removed, BLE-only mode active\r\n");
+	EXO_LOG("UART callbacks idle; BLE-only transport active\r\n");
 #if EXO_PROFILE_DIAG
 	{
 		uint8_t devices_on_i2c1 = I2C_ScanBus(&hi2c1);
@@ -1608,7 +1578,6 @@ int main(void)
 				node_recording_app.detected_flash_capacity());
 		const uint8_t runtime_node_id = exo::node_runtime_config::load_node_id(EXO_NODE_ID);
 		node_recording_app.set_node_id(runtime_node_id);
-		node_rs485_recording.set_node_id(runtime_node_id);
 		EXO_LOG("Node ID runtime=%u (default=%u)\r\n",
 				static_cast<unsigned>(runtime_node_id),
 				static_cast<unsigned>(EXO_NODE_ID));
@@ -1618,7 +1587,6 @@ int main(void)
 	}
 	else
 	{
-		node_rs485_recording.set_node_id(EXO_NODE_ID);
 		EXO_LOG("Node ID runtime fallback=%u (flash unavailable)\r\n",
 				static_cast<unsigned>(EXO_NODE_ID));
 	}
@@ -1644,7 +1612,6 @@ int main(void)
 	}
 #endif
 #else
-	node_rs485_recording.set_node_id(EXO_NODE_ID);
 	EXO_LOG("Node recording disabled until flash SPI/CS CubeMX setup is complete\r\n");
 #endif
 
@@ -1652,8 +1619,6 @@ int main(void)
 	const bool hub_sensor_test_ready = hub_sensor_test_app.begin();
 	EXO_LOG("Hub sensor test: %s\r\n", hub_sensor_test_ready ? "ready" : "not ready");
 #endif
-	node_rs485_recording.begin();
-
   /* USER CODE END 2 */
 
   /* Init code for STM32_WPAN */
@@ -2062,7 +2027,6 @@ extern "C" uint8_t exo_node_ble_write(const uint8_t *payload, uint8_t length)
 			return 0U;
 		}
 		node_recording_app.set_node_id(new_id);
-		node_rs485_recording.set_node_id(new_id);
 		EXO_LOG("[BLE][CFG] set-node-id ok=%u (reboot not required)\r\n", (unsigned) new_id);
 		return 1U;
 	}
@@ -2086,23 +2050,18 @@ extern "C" uint8_t exo_node_ble_write(const uint8_t *payload, uint8_t length)
 
 extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-	if (huart == &hlpuart1) {
-		node_rs485_recording.on_uart_rx_byte();
-	}
+	(void)huart;
 }
 
 extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-	if (huart == &hlpuart1) {
-		node_rs485_recording.on_uart_rx_idle_event(Size);
-	}
+	(void)huart;
+	(void)Size;
 }
 
 extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
-	if (huart == &hlpuart1) {
-		node_rs485_recording.on_uart_error();
-	}
+	(void)huart;
 }
 
 /* USER CODE END 4 */

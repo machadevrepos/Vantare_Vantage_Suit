@@ -108,12 +108,9 @@ public:
             return set_terminal(training_csv::TrainingCsvLogOperation::InvalidExpectedMask,
                     FR_INVALID_PARAMETER);
         }
-        for (uint8_t source = 0U; source < kSourceCount; ++source) {
-            if ((expected_source_mask_ & static_cast<uint8_t>(1U << source)) != 0U) {
-                metadata_valid_[source][0] = true;
-                metadata_valid_[source][1] = true;
-            }
-        }
+        // Every source, including the Master, must register its validated
+        // SessionHeader before rows are accepted. reset_runtime() leaves all
+        // metadata validity flags clear.
 
         FRESULT result = ops_->mkdir_fn("/SESSIONS");
         if (result != FR_OK && result != FR_EXIST) {
@@ -261,17 +258,21 @@ public:
         if (completed_source_mask_ != expected_source_mask_) return false;
         if (published_) return true;
         if (file_open_ || path_[0] == '\0') return false;
-        const FRESULT rename_result = ops_->rename_fn(path_, csv_path_);
-        if (rename_result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::Rename, rename_result);
-        memcpy(path_, csv_path_, sizeof(path_));
-        published_ = true;
+        const bool already_renamed = strcmp(path_, csv_path_) == 0;
+        if (!already_renamed) {
+            const FRESULT rename_result = ops_->rename_fn(path_, csv_path_);
+            if (rename_result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::Rename, rename_result);
+            memcpy(path_, csv_path_, sizeof(path_));
+        }
         FIL marker{};
-        FRESULT result = ops_->open_fn(&marker, ok_path_, static_cast<BYTE>(FA_CREATE_NEW | FA_WRITE));
+        const BYTE marker_mode = static_cast<BYTE>((already_renamed ? FA_OPEN_ALWAYS : FA_CREATE_NEW) | FA_WRITE);
+        FRESULT result = ops_->open_fn(&marker, ok_path_, marker_mode);
         if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerOpen, result);
         result = ops_->sync_fn(&marker);
         if (result != FR_OK) { (void)ops_->close_fn(&marker); return set_terminal(training_csv::TrainingCsvLogOperation::MarkerSync, result); }
         result = ops_->close_fn(&marker);
         if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerClose, result);
+        published_ = true;
         return true;
     }
 

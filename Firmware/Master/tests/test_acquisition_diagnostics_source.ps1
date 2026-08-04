@@ -127,7 +127,7 @@ if ($recorder -notmatch 'd->sd_write\.note\(') {
 # --- Comms instrumentation covers the three major superloop service calls.
 foreach ($pair in @(
         @('comms_ble', 'MX_APPE_Process\(\)'),
-        @('comms_rs485', 'master_rs485_recording\.process\(\)'),
+        @('comms_leaf', 'leaf_ble_manager\.process\(\)'),
         @('comms_central', 'exo_hub_central_client_process\(\)'))) {
     $stat = $pair[0]
     $call = $pair[1]
@@ -137,7 +137,7 @@ foreach ($pair in @(
 }
 
 # --- The disabled build must keep the original call sequence.
-if ($main -notmatch '#else\s*\r?\n\s*master_rs485_recording\.process\(\);\s*\r?\n\s*exo_hub_central_client_process\(\);\s*\r?\n#endif') {
+if ($main -notmatch '#else\s*\r?\n\s*leaf_ble_manager\.process\(\);\s*\r?\n\s*exo_hub_central_client_process\(\);\s*\r?\n#endif') {
     $failures.Add('A diagnostics-disabled build must preserve the untimed service call sequence.')
 }
 if ($main -notmatch '#else\s*\r?\n\s*MX_APPE_Process\(\);\s*\r?\n#endif') {

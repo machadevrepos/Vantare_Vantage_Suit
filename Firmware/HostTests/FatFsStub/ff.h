@@ -1,20 +1,4 @@
-#!/usr/bin/env python3
-from __future__ import annotations
-
-from pathlib import Path
-
-import apply_validated_firmware_cleanup as cleanup
-import run_manual_validated_cleanup as manual
-
-
-_original_copy_preserved_files = manual.copy_preserved_files
-
-
-def copy_preserved_files() -> None:
-    _original_copy_preserved_files()
-    stub_dir = cleanup.WORK / 'Firmware/HostTests/FatFsStub'
-    stub_dir.mkdir(parents=True, exist_ok=True)
-    (stub_dir / 'ff.h').write_text(r'''#ifndef EXO_HOST_FF_H_
+#ifndef EXO_HOST_FF_H_
 #define EXO_HOST_FF_H_
 
 #include <stdint.h>
@@ -71,13 +55,3 @@ static inline FRESULT f_close(FIL*) { return FR_OK; }
 static inline FRESULT f_rename(const TCHAR*, const TCHAR*) { return FR_OK; }
 
 #endif
-''')
-
-
-def ff_include_dir() -> Path:
-    return cleanup.WORK / 'Firmware/HostTests/FatFsStub'
-
-
-manual.copy_preserved_files = copy_preserved_files
-cleanup.ff_include_dir = ff_include_dir
-raise SystemExit(manual.main())

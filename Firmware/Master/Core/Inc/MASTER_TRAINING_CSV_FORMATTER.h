@@ -133,7 +133,8 @@ inline bool append_double(CsvRowWriter &writer, double value)
 }
 inline bool append_double_or_blank(CsvRowWriter &writer, double value)
 {
-    return !finite_value(value) ? true : append_double(writer, value);
+    if (!finite_value(value) || value > 1000000.0 || value < -1000000.0) return true;
+    return append_double(writer, value);
 }
 inline bool append_field_double_or_blank(CsvRowWriter &writer, double value)
 {
