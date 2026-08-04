@@ -1,0 +1,103 @@
+name: Execute validated firmware cleanup v2
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/execute-validated-cleanup-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out cleanup branch
+        uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Run hash-verified cleanup and regression suite
+        id: cleanup
+        shell: bash
+        run: |
+          set -uo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/apply_validated_firmware_cleanup.py')
+          text = path.read_text()
+          old = '''    for name in PARTS:
+        raw = subprocess.check_output(
+            ['git', 'show', f'{APPLY_REF}:.cleanup-patch/{name}'],
+            cwd=REPO,
+        )
+        wanted = PART_BLOBS[name]
+        actual = git_blob_sha(raw)
+        if name != 'part-06b.b64' and actual != wanted:
+            raise RuntimeError(f'{name}: expected blob {wanted}, got {actual}')
+        if name == 'part-06b.b64' and actual != wanted:
+'''
+          new = '''    for name in PARTS:
+        wanted = PART_BLOBS[name]
+        if name == 'part-06b.b64':
+            raw = subprocess.check_output(
+                ['git', 'show', f'{APPLY_REF}:.cleanup-patch/{name}'],
+                cwd=REPO,
+            )
+        else:
+            raw = subprocess.check_output(
+                ['git', 'cat-file', 'blob', wanted],
+                cwd=REPO,
+            )
+        actual = git_blob_sha(raw)
+        if name != 'part-06b.b64' and actual != wanted:
+            raise RuntimeError(f'{name}: expected blob {wanted}, got {actual}')
+        if name == 'part-06b.b64' and actual != wanted:
+'''
+          if text.count(old) != 1:
+              raise SystemExit('cleanup reconstruction block missing')
+          text = text.replace(old, new, 1)
+
+          anchor = "        '.github/workflows/run-validated-firmware-cleanup.yml',\n"
+          additions = (
+              "        '.github/workflows/execute-validated-cleanup-v2.yml',\n"
+              "        '.github/workflows/actions-probe.yml',\n"
+              "        '.github/scripts/materialize_validated_firmware_cleanup.py',\n"
+              "        'actions-probe.txt',\n"
+              "        'cleanup-executor.log',\n"
+          )
+          if text.count(anchor) != 1:
+              raise SystemExit('cleanup transport-removal anchor missing')
+          path.write_text(text.replace(anchor, anchor + additions, 1))
+          PY
+          set +e
+          python3 .github/scripts/apply_validated_firmware_cleanup.py > /tmp/cleanup-executor.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/cleanup-executor.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish diagnostic log on failure
+        if: steps.cleanup.outputs.status != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin ble-only-firmware-cleanup
+          git reset --hard origin/ble-only-firmware-cleanup
+          cp /tmp/cleanup-executor.log cleanup-executor.log
+          rm -f .github/workflows/execute-validated-cleanup-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'ci: record validated cleanup v2 failure'
+          git push origin HEAD:ble-only-firmware-cleanup
+
+      - name: Fail workflow after diagnostic is published
+        if: steps.cleanup.outputs.status != '0'
+        run: exit 1
