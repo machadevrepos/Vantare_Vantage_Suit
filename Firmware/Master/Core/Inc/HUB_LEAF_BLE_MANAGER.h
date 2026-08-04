@@ -60,6 +60,8 @@ public:
     next_offset_ = 0U;
     receiver_credit_ = 0U;
     paused_ = false;
+    verified_crc32_ = 0U;
+    crc_valid_ = false;
     start_or_record_active_ = true;
     return true;
   }
@@ -202,6 +204,8 @@ public:
     next_offset_ = 0U;
     receiver_credit_ = 0U;
     paused_ = false;
+    verified_crc32_ = 0U;
+    crc_valid_ = false;
     start_or_record_active_ = false;
     transfer_hold_ = false;
     return true;
@@ -299,6 +303,8 @@ public:
     active_session_id_ = 0U;
     receiver_credit_ = 0U;
     paused_ = false;
+    verified_crc32_ = 0U;
+    crc_valid_ = false;
     if (queued_done_count_ == 0U && !transfer_hold_ && pending_live_count_ == 0U)
       start_or_record_active_ = false;
     return true;
@@ -308,6 +314,7 @@ public:
                                  uint32_t payload_crc32) {
     if (!owns_transfer_(session_id, source_id)) return false;
     verified_crc32_ = payload_crc32;
+    crc_valid_ = true;
     paused_ = false;
     return true;
   }
@@ -315,11 +322,13 @@ public:
   bool on_ble_session_complete(uint32_t session_id, uint16_t source_id,
                                 uint32_t payload_crc32) {
     if (!owns_transfer_(session_id, source_id)) return false;
-    if (verified_crc32_ != payload_crc32) return false;
+    if (!crc_valid_ || verified_crc32_ != payload_crc32) return false;
     active_source_id_ = 0U;
     active_session_id_ = 0U;
     receiver_credit_ = 0U;
     paused_ = false;
+    verified_crc32_ = 0U;
+    crc_valid_ = false;
     if (queued_done_count_ == 0U && !transfer_hold_ && pending_live_count_ == 0U)
       start_or_record_active_ = false;
     return true;
@@ -454,6 +463,7 @@ private:
   uint32_t next_chunk_index_ = 0U;
   uint32_t next_offset_ = 0U;
   uint32_t verified_crc32_ = 0U;
+  bool crc_valid_ = false;
   uint8_t receiver_credit_ = 0U;
   bool paused_ = false;
   uint32_t discovery_generation_ = 0U;

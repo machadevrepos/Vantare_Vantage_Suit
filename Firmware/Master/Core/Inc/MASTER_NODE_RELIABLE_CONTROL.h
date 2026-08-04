@@ -65,6 +65,7 @@ public:
     bool ack_window(uint32_t next_chunk, uint8_t credit = kDefaultCredit)
     {
         if (!active()) return false;
+        if (!chunk_offset_valid_(next_chunk, chunk_size_)) return false;
         RecordReliableAckWindowPayload body{};
         body.source_id = node_id_;
         body.session_id = session_id_;
@@ -79,6 +80,7 @@ public:
             uint16_t flags = 0U)
     {
         if (!active()) return false;
+        if (!chunk_offset_valid_(first_chunk, chunk_size_)) return false;
         RecordReliableNackRangePayload body{};
         body.source_id = node_id_;
         body.session_id = session_id_;
@@ -154,6 +156,12 @@ private:
     {
         if (credit == 0U) return 1U;
         return credit > 24U ? 24U : credit;
+    }
+
+    static bool chunk_offset_valid_(uint32_t chunk_index, uint16_t chunk_size)
+    {
+        const uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;
+        return offset <= 0xFFFFFFFFULL;
     }
 
     static uint32_t chunk_byte_offset_(uint32_t chunk_index, uint16_t chunk_size)
