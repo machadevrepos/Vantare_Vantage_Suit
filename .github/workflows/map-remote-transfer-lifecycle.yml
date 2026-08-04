@@ -1,0 +1,64 @@
+name: Map remote transfer lifecycle
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/map-remote-transfer-lifecycle.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Build lifecycle map
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          targets = [
+              Path('Firmware/Master/Core/Src/main.c'),
+              Path('Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h'),
+          ]
+          terms = [
+              'g_remote_transfer_',
+              'on_ble_reliable_pause',
+              'on_ble_reliable_verify_ok',
+              'SessionCompleteAck',
+              'pop_next_record_done',
+              'reset_and_abort_all',
+          ]
+          out = []
+          for path in targets:
+              lines = path.read_text(encoding='utf-8').splitlines()
+              out.extend([f'# {path}', ''])
+              matches = [i for i, line in enumerate(lines) if any(term in line for term in terms)]
+              emitted = set()
+              for i in matches:
+                  for j in range(max(0, i - 8), min(len(lines), i + 9)):
+                      if j in emitted:
+                          continue
+                      out.append(f'{">" if j == i else " "}{j + 1:5d}: {lines[j]}')
+                      emitted.add(j)
+                  out.append('')
+          Path('remote-transfer-map.txt').write_text('\n'.join(out) + '\n', encoding='utf-8')
+          PY
+      - name: Commit map and remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/map-remote-transfer-lifecycle.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'ci: record remote transfer lifecycle map'
+          git push origin HEAD:ble-only-firmware-cleanup
