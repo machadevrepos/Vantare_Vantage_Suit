@@ -4,8 +4,8 @@
 + git worktree add --detach /tmp/vantage-validated-firmware-cleanup origin/2nd_Branch
 Preparing worktree (detached HEAD 3c1137d)
 HEAD is now at 3c1137d docs: add four-node live and CSV validation procedure
-+ git rev-parse e6bc2f3cb6b602e899069e4d95cf97fe1e64428e
-+ g++ -std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc Firmware/HostTests/test_coderabbit_firmware_regressions.cpp -o /tmp/test_coderabbit_firmware_regressions_red
++ git rev-parse 85a5198dec6466bcb0ce9d542e30d329187978b1
++ g++ -std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc -I Firmware/Master/FATFS/Target Firmware/HostTests/test_coderabbit_firmware_regressions.cpp -o /tmp/test_coderabbit_firmware_regressions_red
 + /tmp/test_coderabbit_firmware_regressions_red
 Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:84: expected corrupt.request_chunk == 1U
 Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:97: expected frame_header(transport.frame).byte_offset == 0xFFFFFFFFU
@@ -15,22 +15,27 @@ Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:113: expected manage
 Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:117: expected exo::training_csv::append_double_or_blank(writer, 1.0e30)
 Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:128: expected exo::training_csv::format_bno_row(row, sizeof(row), written, 1U, 0U, 0U, 0U, 1000U, row_context, false, 0U, extreme)
 Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:148: expected CongestionProbe<exo::ble_hub::HubLeafBleManager>::run()
-+ g++ -std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc -I /tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp -o /tmp/test_coderabbit_csv_logger_regressions_red
-In file included from Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_LOGGER.h:8,
++ g++ -std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc -I /tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src -I Firmware/Master/FATFS/Target Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp -o /tmp/test_coderabbit_csv_logger_regressions_red
+In file included from Firmware/Master/FATFS/Target/ffconf.h:25,
+                 from /tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src/ff.h:29,
+                 from Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_LOGGER.h:8,
                  from Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp:5:
-/tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src/ff.h:29:10: fatal error: ffconf.h: No such file or directory
-   29 | #include "ffconf.h"             /* FatFs configuration options */
-      |          ^~~~~~~~~~
+Firmware/Master/Core/Inc/main.h:30:10: fatal error: stm32wbxx_hal.h: No such file or directory
+   30 | #include "stm32wbxx_hal.h"
+      |          ^~~~~~~~~~~~~~~~~
 compilation terminated.
 Traceback (most recent call last):
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_manual_validated_cleanup.py", line 411, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_manual_validated_cleanup_v2.py", line 23, in <module>
+    raise SystemExit(manual.main())
+                     ^^^^^^^^^^^^^
   File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_manual_validated_cleanup.py", line 398, in main
     cleanup.verify_red()
   File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 419, in verify_red
     logger = compile_test(
              ^^^^^^^^^^^^^
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_manual_validated_cleanup_v2.py", line 19, in compile_test
+    return _original_compile_test(source, extra=includes, suffix=suffix)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 406, in compile_test
     run(*command, cwd=WORK)
   File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 50, in run
@@ -38,4 +43,4 @@ Traceback (most recent call last):
            ^^^^^^^^^^^^^^^
   File "/usr/lib/python3.12/subprocess.py", line 571, in run
     raise CalledProcessError(retcode, process.args,
-subprocess.CalledProcessError: Command '('g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', 'Firmware/LIBRARY/CUSTOM', '-I', 'Firmware/Master/Core/Inc', '-I', '/tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src', 'Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp', '-o', '/tmp/test_coderabbit_csv_logger_regressions_red')' returned non-zero exit status 1.
+subprocess.CalledProcessError: Command '('g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', 'Firmware/LIBRARY/CUSTOM', '-I', 'Firmware/Master/Core/Inc', '-I', '/tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src', '-I', 'Firmware/Master/FATFS/Target', 'Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp', '-o', '/tmp/test_coderabbit_csv_logger_regressions_red')' returned non-zero exit status 1.
