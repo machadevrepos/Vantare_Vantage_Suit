@@ -62,6 +62,14 @@ int main()
     EXPECT_TRUE(metadata_logger.set_source_metadata(1U, metadata(1U, 9U)));
     EXPECT_TRUE(metadata_logger.append_bno(1U, 2000U, sample, false, 0U, 2U));
 
+    exo::MasterTrainingCsvLogger zero_row_logger(&ops);
+    EXPECT_TRUE(zero_row_logger.begin(11U, 0x03U, 0U));
+    EXPECT_TRUE(!zero_row_logger.mark_source_complete(1U, 1U));
+    EXPECT_TRUE(zero_row_logger.last_operation() ==
+        exo::training_csv::TrainingCsvLogOperation::InvalidSourceMetadata);
+    EXPECT_TRUE(zero_row_logger.set_source_metadata(1U, metadata(1U, 11U)));
+    EXPECT_TRUE(zero_row_logger.mark_source_complete(1U, 2U));
+
     marker_open_failures = 1;
     marker_open_calls = 0;
     rename_calls = 0;
@@ -75,6 +83,10 @@ int main()
     EXPECT_TRUE(rename_calls == 1);
     EXPECT_TRUE(publish_logger.publish());
     EXPECT_TRUE(publish_logger.published());
+    EXPECT_TRUE(!publish_logger.terminal_error());
+    EXPECT_TRUE(publish_logger.last_operation() ==
+        exo::training_csv::TrainingCsvLogOperation::None);
+    EXPECT_TRUE(publish_logger.last_result() == FR_OK);
     EXPECT_TRUE(rename_calls == 1);
     EXPECT_TRUE(marker_open_calls == 2);
     return failures == 0 ? 0 : 1;
