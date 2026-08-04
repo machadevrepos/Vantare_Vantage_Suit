@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard the Master remote Pause/Resume/Cancel runtime ownership lifecycle."""
+"""Guard remote lifecycle and scheduler/coordinator ownership alignment."""
 
 from pathlib import Path
 
@@ -10,6 +10,38 @@ MASTER_MAIN = ROOT / "Firmware" / "Master" / "Core" / "Src" / "main.c"
 
 def main() -> int:
     text = MASTER_MAIN.read_text(encoding="utf-8")
+
+    ingest_start = text.find(
+        'extern "C" uint8_t exo_hub_leaf_record_done_ingest'
+    )
+    ingest_end = text.find(
+        'extern "C" void exo_hub_leaf_record_frame_ingest', ingest_start
+    )
+    if ingest_start < 0 or ingest_end < 0:
+        raise SystemExit("leaf RecordDone ingest block was not found")
+
+    ingest = text[ingest_start:ingest_end]
+    if "master_training_csv_coordinator.on_node_record_done(message);" in ingest:
+        raise SystemExit(
+            "RecordDone ingest starts CSV before scheduler ownership is selected"
+        )
+
+    queue_pos = ingest.find("leaf_ble_manager.queue_record_done(message)")
+    cache_pos = ingest.find("g_training_node_done[training_index] = message;")
+    if queue_pos < 0 or cache_pos < 0 or cache_pos < queue_pos:
+        raise SystemExit(
+            "RecordDone metadata must be cached only after scheduler queue acceptance"
+        )
+
+    replay_token = (
+        "master_training_csv_coordinator.on_node_record_done("
+        "g_training_node_done[index]);"
+    )
+    if replay_token not in text:
+        raise SystemExit(
+            "selected scheduler owner is not replayed into CSV coordinator"
+        )
+
     write_start = text.find('extern "C" uint8_t exo_hub_ble_write')
     dispatch_start = text.find(
         "case exo::RecordReliableType::Pause:", write_start
@@ -50,7 +82,7 @@ def main() -> int:
             "remote Cancel runtime ownership must be released after forwarding control"
         )
 
-    print("remote transfer lifecycle source checks passed")
+    print("remote transfer lifecycle and owner alignment source checks passed")
     return 0
 
 
