@@ -225,6 +225,12 @@ public:
             return set_nonterminal(training_csv::TrainingCsvLogOperation::DuplicateSource,
                     FR_INVALID_PARAMETER);
         }
+        if (!metadata_valid_[source_id][kBnoSensorIndex] ||
+                !metadata_valid_[source_id][kIcmSensorIndex]) {
+            return set_nonterminal(
+                    training_csv::TrainingCsvLogOperation::InvalidSourceMetadata,
+                    FR_INVALID_PARAMETER);
+        }
         if (!flush_buffer() || !synchronize(now_ms)) return false;
         completed_source_mask_ = static_cast<uint8_t>(completed_source_mask_ | source_bit);
         return true;
@@ -272,6 +278,9 @@ public:
         if (result != FR_OK) { (void)ops_->close_fn(&marker); return set_terminal(training_csv::TrainingCsvLogOperation::MarkerSync, result); }
         result = ops_->close_fn(&marker);
         if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerClose, result);
+        terminal_error_ = false;
+        last_operation_ = training_csv::TrainingCsvLogOperation::None;
+        last_result_ = FR_OK;
         published_ = true;
         return true;
     }

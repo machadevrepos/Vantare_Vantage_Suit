@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <BLE_RECORD_PROTOCOL.h>
+#include <RECORDING_TYPES.h>
 
 namespace exo::ble_hub {
 
@@ -160,7 +161,12 @@ public:
   uint8_t pending_live_sample_count() const { return pending_live_count_; }
 
   bool queue_record_done(const exo::RecordDoneMessage &message) {
-    if (message.node_id < 1U || message.node_id > kMaxLeaves) return false;
+    if (message.command != exo::RecordCommand::RecordDone ||
+        message.node_id < 1U || message.node_id > kMaxLeaves ||
+        message.session_id == 0U ||
+        message.total_size < sizeof(exo::SessionHeader)) {
+      return false;
+    }
     touch_node(static_cast<uint8_t>(message.node_id));
     if (active_source_id_ == message.node_id && active_session_id_ == message.session_id) {
       start_or_record_active_ = true;
@@ -321,8 +327,10 @@ private:
   static constexpr uint8_t kSensorsPerLeaf = 2U;
   static constexpr uint8_t kLiveSlotCount = kMaxLeaves * kSensorsPerLeaf;
   static constexpr int8_t kNoLiveSelection = -1;
-  static constexpr uint32_t kNormalPreviewIntervalMs = 40U;
-  static constexpr uint32_t kCongestedPreviewIntervalMs = 80U;
+  // Aggregate round-robin cadence. With four ready Nodes this yields
+  // 40 ms per source normally and 80 ms per source under backpressure.
+  static constexpr uint32_t kNormalPreviewIntervalMs = 10U;
+  static constexpr uint32_t kCongestedPreviewIntervalMs = 20U;
   static constexpr uint32_t kCongestionRecoveryMs = 5000U;
 
   static uint8_t live_slot_index_(uint8_t node_id, uint8_t sensor_id) {

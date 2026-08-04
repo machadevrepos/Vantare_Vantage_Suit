@@ -84,6 +84,15 @@ def main() -> int:
     if "node_stream_enabled" not in node_main:
         failures.append("Node main.c does not expose direct BLE stream state")
 
+    record_done_guards = (
+        "message.command != exo::RecordCommand::RecordDone",
+        "message.session_id == 0U",
+        "message.total_size < sizeof(exo::SessionHeader)",
+    )
+    for guard in record_done_guards:
+        if guard not in master_main:
+            failures.append(f"Master record-done ingest lacks guard: {guard}")
+
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)

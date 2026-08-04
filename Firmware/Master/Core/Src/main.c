@@ -3366,13 +3366,15 @@ extern "C" uint8_t exo_hub_leaf_record_done_ingest(const uint8_t *payload, uint1
 	}
 	exo::RecordDoneMessage message { };
 	memcpy(&message, payload, sizeof(message));
-	if (message.command == exo::RecordCommand::RecordDone &&
-			message.node_id >= 1U && message.node_id <= 4U &&
-			message.total_size >= sizeof(exo::SessionHeader)) {
-		const uint8_t training_index = static_cast<uint8_t>(message.node_id - 1U);
-		g_training_node_done[training_index] = message;
-		g_training_node_done_valid[training_index] = true;
+	if (message.command != exo::RecordCommand::RecordDone ||
+			message.node_id < 1U || message.node_id > 4U ||
+			message.session_id == 0U ||
+			message.total_size < sizeof(exo::SessionHeader)) {
+		return 0U;
 	}
+	const uint8_t training_index = static_cast<uint8_t>(message.node_id - 1U);
+	g_training_node_done[training_index] = message;
+	g_training_node_done_valid[training_index] = true;
 	master_training_csv_coordinator.on_node_record_done(message);
 	if (master_training_csv_coordinator.state() == exo::TrainingCsvState::ReceiveNode &&
 			master_training_csv_coordinator.active_session_id() == message.session_id &&

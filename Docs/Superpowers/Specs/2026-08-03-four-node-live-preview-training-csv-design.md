@@ -150,6 +150,8 @@ The existing raw columns remain. Schema version 2 adds deterministic, reproducib
 - `source_payload_crc32`
 - `timestamp_quality_flags`
 
+`timestamp_quality_flags` is a bitmask. Bit `0x00000001` means the current timestamp repeated or decreased relative to the previous accepted sample for that source and sensor. Additional quality conditions use distinct bits; producers combine simultaneous conditions with bitwise OR and consumers must test individual bits rather than compare the full field to one value.
+
 ### BNO85 raw and calibrated columns
 
 Retain the existing quaternion, linear-acceleration, gravity, angular-velocity, and availability fields.

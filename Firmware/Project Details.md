@@ -14,7 +14,7 @@ The firmware uses one **Master** and up to four commissioned **Nodes**.
 
 Each device samples its local BNO85 and ICM45686 sensors. Nodes retain the latest pending value per sensor and forward preview samples to the Master. The Master services Node/sensor slots fairly and forwards the five-source BLE V2 stream to the browser. Recording remains independent of preview delivery.
 
-The Master uses a shared preview pacing gate: 40 ms under normal conditions and 80 ms after BLE backpressure. A failed latest-value sample is retained, other ready sources remain eligible, and normal cadence resumes after a stable recovery period.
+The Master uses a shared round-robin pacing gate at 10 ms normally and 20 ms after BLE backpressure. With four ready Nodes, this preserves 40 ms and 80 ms per-source cadence respectively. A failed latest-value sample is retained, other ready sources remain eligible, and normal cadence resumes after a stable recovery period.
 
 ## Recording and transfer
 

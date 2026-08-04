@@ -1,2 +1,0 @@
-firmware_status=1
-logger_status=1
