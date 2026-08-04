@@ -1,0 +1,61 @@
+name: Map BLE cleanup source targets
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/map-cleanup-source.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Collect source map
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '# BLE cleanup active-source map'
+            echo
+            echo '## Forbidden identifiers and includes'
+            rg -n -C 4 --glob '*.{c,cc,cpp,h,hpp,inc}' \
+              'MasterRs485_|HubRs485|master_rs485_recording|node_rs485_recording|comms_rs485|RS485_RECORD_|EXO_NODE_UART_RS485_MODE|#\s*include\s*[<"](?:RS485(?:_FRAME_PROTOCOL|_RECORD_MASTER_APP|_RECORD_NODE_APP)?|RECORDING_BRIDGE)\.h[>"]' \
+              Firmware/Master/Core Firmware/Master/STM32_WPAN Firmware/Node/Core Firmware/Node/STM32_WPAN Firmware/LIBRARY/CUSTOM || true
+            echo
+            echo '## RS485 references in Master and Node main files'
+            rg -n -C 6 -i 'rs485|recording_bridge|BleOnlyNodeResponder|uart.*mode|mode.*uart' \
+              Firmware/Master/Core/Src/main.c Firmware/Node/Core/Src/main.c || true
+            echo
+            echo '## References to files approved for deletion'
+            rg -n -C 2 'RECORDING_BRIDGE|RECORDING_INTEGRATION_NOTES|RS485_FRAME_PROTOCOL|RS485_RECORD_MASTER_APP|RS485_RECORD_NODE_APP|[<"]RS485\.h[>"]' Firmware Docs || true
+            echo
+            echo '## Approved deletion paths'
+            for path in \
+              Firmware/LIBRARY/CUSTOM/RECORDING_BRIDGE.h \
+              Firmware/LIBRARY/CUSTOM/RECORDING_INTEGRATION_NOTES.md \
+              Firmware/LIBRARY/CUSTOM/RS485.h \
+              Firmware/LIBRARY/CUSTOM/RS485_FRAME_PROTOCOL.h \
+              Firmware/LIBRARY/CUSTOM/RS485_RECORD_MASTER_APP.h \
+              Firmware/LIBRARY/CUSTOM/RS485_RECORD_NODE_APP.h; do
+              if test -e "$path"; then
+                wc -l -c "$path"
+              else
+                echo "missing $path"
+              fi
+            done
+          } > cleanup-source-map.txt
+          rm -f .github/workflows/map-cleanup-source.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'ci: record BLE cleanup source map'
+          git push origin HEAD:ble-only-firmware-cleanup
