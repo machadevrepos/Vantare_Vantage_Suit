@@ -18,7 +18,7 @@ The Master uses a shared round-robin pacing gate at 10 ms normally and 20 ms aft
 
 ## Recording and transfer
 
-The Master records its own full-rate sensor data to SD. Each Node records full-rate sensor data to local flash. At recording completion, the Master owns reliable sequential collection from Nodes 1 through 4 using manifests, ACK windows, NACK ranges, CRC validation, and VerifyOk completion. Browser connectivity is not required for an active Node upload to progress.
+The Master records its own full-rate sensor data to SD. Each Node records full-rate sensor data to local flash. At recording completion, the Master owns reliable sequential collection of each selected or queued Node in order using manifests, ACK windows, NACK ranges, CRC validation, and VerifyOk completion. Browser connectivity is not required for an active Node upload to progress.
 
 Validated Node binaries remain on Master SD before conversion. Transfer ownership is not replaced until the active source completes verification.
 

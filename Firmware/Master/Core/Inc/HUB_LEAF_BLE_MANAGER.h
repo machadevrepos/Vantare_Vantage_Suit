@@ -285,10 +285,11 @@ public:
     paused_ = false;
   }
 
-  void on_ble_reliable_pause(uint32_t session_id, uint16_t source_id) {
-    if (!owns_transfer_(session_id, source_id)) return;
+  bool on_ble_reliable_pause(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return false;
     paused_ = true;
     receiver_credit_ = 0U;
+    return true;
   }
 
   bool on_ble_reliable_resume(uint32_t session_id, uint16_t source_id) {

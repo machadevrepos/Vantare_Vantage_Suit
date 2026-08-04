@@ -3913,14 +3913,24 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							g_local_record_phase = LocalRecordPhase::TransferActive;
 						}
 					} else {
+						bool remote_state_accepted = false;
 						if (type == exo::RecordReliableType::Pause) {
-							leaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
+							remote_state_accepted = leaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
 						} else if (type == exo::RecordReliableType::Resume) {
-							leaf_ble_manager.on_ble_reliable_resume(hdr.session_id, hdr.source_id);
+							remote_state_accepted = leaf_ble_manager.on_ble_reliable_resume(hdr.session_id, hdr.source_id);
 						} else {
-							leaf_ble_manager.on_ble_reliable_cancel(hdr.session_id, hdr.source_id);
+							remote_state_accepted = leaf_ble_manager.on_ble_reliable_cancel(hdr.session_id, hdr.source_id);
 						}
 						(void) forward_remote_record_control(hdr.source_id, payload, length);
+						if (type == exo::RecordReliableType::Cancel && remote_state_accepted &&
+								g_remote_transfer_active &&
+								g_remote_transfer_source_id == hdr.source_id &&
+								g_remote_transfer_session_id == hdr.session_id) {
+							g_remote_transfer_active = false;
+							g_remote_transfer_source_id = 0U;
+							g_remote_transfer_session_id = 0U;
+							start_next_pending_node_manifest_now();
+						}
 					}
 					(void) Custom_APP_SendCmdAck(payload, length, 1U);
 					return 1U;

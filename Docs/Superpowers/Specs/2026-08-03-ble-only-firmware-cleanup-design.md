@@ -10,7 +10,7 @@ Create a hardware-untested cleanup branch that preserves the current BLE sensing
 - Working branch: `ble-only-firmware-cleanup`.
 - Do not modify `main` or `2nd_Branch`.
 - Keep the cleanup pull request draft and unmerged until Master and Node STM32 builds and physical regression tests are available.
-- Preserve all STM32CubeMX generated sections and peripheral initialization unless a generated item is proven removable and separately regenerated in CubeMX.
+- Preserve all STM32CubeMX-generated sections and peripheral initialization unless a generated item is proven removable and separately regenerated in CubeMX.
 
 ## Approved scope
 
