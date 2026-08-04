@@ -1,0 +1,279 @@
+# Firmware/Node/Core/Src/main.c
+
+    40: #define EXO_NODE_FLASH_ENABLED 1
+    41: #endif
+    42: #if EXO_NODE_FLASH_ENABLED
+    43: #include <NODE_RECORDING_APP.h>
+    44: #endif
+>   45: #include <RECORDING_BRIDGE.h>
+    46: #ifndef EXO_NODE_SENSOR_TEST_ENABLE
+    47: #define EXO_NODE_SENSOR_TEST_ENABLE 0
+    48: #endif
+    49: #if EXO_NODE_SENSOR_TEST_ENABLE
+    50: #include <HUB_SENSOR_TEST_APP.h>
+
+    77: 
+    78: #ifndef EXO_PROFILE_MINIMAL
+    79: #define EXO_PROFILE_MINIMAL (EXO_PROFILE_DIAG ? 0 : 1)
+    80: #endif
+    81: 
+>   82: #ifndef EXO_NODE_UART_RS485_MODE
+    83: #define EXO_NODE_UART_RS485_MODE 0
+    84: #endif
+    85: 
+    86: #ifndef EXO_NODE_BLE_FORWARD_ENABLE
+    87: #define EXO_NODE_BLE_FORWARD_ENABLE 1
+
+    88: #endif
+
+   136: };
+   137: static exo::NodeRecordingApp node_recording_app(NODE_RECORDING_CONFIG, hi2c1, hi2c3, hspi1,
+   138: 		EXO_NODE_FLASH_CS_GPIO_Port, EXO_NODE_FLASH_CS_Pin);
+   139: #endif
+   140: namespace {
+>  141: class BleOnlyNodeResponder {
+   142: public:
+   143: 	void set_node_id(uint8_t node_id) { node_id_ = node_id; }
+   144: 	void begin() {
+   145: 		stream_enabled_ = false;
+   146: 		stream_interval_ms_ = 20U;
+
+   147: 	}
+   148: 	void process() {}
+>  149: 	void on_uart_rx_byte() {}
+   150: 	void on_uart_rx_idle_event(uint16_t) {}
+   151: 	void on_uart_error() {}
+   152: 	void set_stream_enabled(bool enabled) { stream_enabled_ = enabled; }
+   153: 	bool stream_enabled() const { return stream_enabled_; }
+   154: 	void set_stream_interval_ms(uint8_t interval_ms) {
+
+   155: 		stream_interval_ms_ = interval_ms == 0U ? 1U : interval_ms;
+
+   156: 	}
+
+   160: 	uint8_t node_id_ = EXO_NODE_ID;
+   161: 	bool stream_enabled_ = false;
+   162: 	uint8_t stream_interval_ms_ = 20U;
+   163: };
+   164: }
+>  165: static BleOnlyNodeResponder node_rs485_recording;
+   166: 
+   167: /* USER CODE END PV */
+   168: 
+   169: /* Private function prototypes -----------------------------------------------*/
+   170: void SystemClock_Config(void);
+
+   766: 		uint8_t command_id)
+   767: {
+   768: 	const uint8_t payload[4] = {
+   769: 		command_id,
+   770: 		static_cast<uint8_t>(node_blepipe_current_id()),
+>  771: 		node_rs485_recording.stream_enabled() ? 1U : 0U,
+   772: 		node_rs485_recording.stream_interval_ms()
+   773: 	};
+   774: 	node_blepipe_send_response(request_hdr, payload, static_cast<uint16_t>(sizeof(payload)));
+   775: }
+   776: 
+
+   777: static bool node_blepipe_send_record_ready_status(bool force)
+
+   948: 			static_cast<unsigned>(length),
+   949: 			static_cast<unsigned>(node_blepipe_current_id()));
+   950: 	switch (payload[0]) {
+   951: 	case 0xA0U:
+   952: 		if (length == 1U) {
+>  953: 			node_rs485_recording.set_stream_enabled(true);
+   954: #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
+   955: 			node_recording_app.set_live_stream_enabled(true);
+   956: #endif
+   957: 			node_blepipe_send_stream_status(hdr, payload[0]);
+   958: 			node_blepipe_send_ack(hdr, 1U, payload[0]);
+
+   960: 		}
+   961: 		node_blepipe_send_ack(hdr, 0U, payload[0]);
+   962: 		return false;
+   963: 	case 0xA1U:
+   964: 		if (length == 1U) {
+>  965: 			node_rs485_recording.set_stream_enabled(false);
+   966: #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
+   967: 			node_recording_app.set_live_stream_enabled(false);
+   968: #endif
+   969: 			node_blepipe_send_stream_status(hdr, payload[0]);
+   970: 			node_blepipe_send_ack(hdr, 1U, payload[0]);
+
+   972: 		}
+   973: 		node_blepipe_send_ack(hdr, 0U, payload[0]);
+   974: 		return false;
+   975: 	case 0xA2U:
+   976: 		if (length >= 2U) {
+>  977: 			node_rs485_recording.set_stream_interval_ms(payload[1]);
+   978: #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
+   979: 			node_recording_app.set_live_interval_ms(payload[1]);
+   980: #endif
+   981: 			node_blepipe_send_stream_status(hdr, payload[0]);
+   982: 			node_blepipe_send_ack(hdr, 1U, payload[0]);
+
+  1134: 				return false;
+  1135: 			}
+  1136: #if EXO_NODE_FLASH_ENABLED
+  1137: 			node_recording_app.set_node_id(new_id);
+  1138: #endif
+> 1139: 			node_rs485_recording.set_node_id(new_id);
+  1140: 			const uint8_t response[4] = { 0xB0U, requested_id, new_id, 1U };
+  1141: 			node_blepipe_send_response(hdr, response, static_cast<uint16_t>(sizeof(response)));
+  1142: 			node_blepipe_send_ack(hdr, 1U, payload[0]);
+  1143: 			return true;
+  1144: 		}
+
+  1544:   MX_DMA_Init();
+  1545:   MX_RTC_Init();
+  1546:   MX_ADC1_Init();
+  1547:   MX_I2C1_Init();
+  1548:   MX_I2C3_Init();
+> 1549:   MX_LPUART1_UART_Init();
+  1550:   MX_USART1_UART_Init();
+  1551:   MX_SPI1_Init();
+  1552:   MX_TIM1_Init();
+  1553:   MX_RF_Init();
+  1554:   /* USER CODE BEGIN 2 */
+
+  1555: 	{
+
+  1569: 
+  1570: 	HAL_GPIO_WritePin(PWR_EN_GPIO_Port, PWR_EN_Pin, GPIO_PIN_SET);
+  1571: 	node_prepare_touch_wakeup_before_poweroff();
+  1572: 	HAL_Delay(200);
+  1573: 	{
+> 1574: 		GPIO_InitTypeDef rs485_rx_cfg = {0};
+  1575: 		rs485_rx_cfg.Pin = GPIO_PIN_3;
+  1576: 		rs485_rx_cfg.Mode = GPIO_MODE_AF_PP;
+  1577: 		rs485_rx_cfg.Pull = GPIO_PULLUP;
+  1578: 		rs485_rx_cfg.Speed = GPIO_SPEED_FREQ_LOW;
+  1579: 		rs485_rx_cfg.Alternate = GPIO_AF8_LPUART1;
+
+  1580: 		HAL_GPIO_Init(GPIOA, &rs485_rx_cfg);
+
+  1581: 	}
+
+  1582: 	RGB.OFF();
+
+  1583: 	ERM_PWM.SET_PERCENT(0U);
+
+  1584: 	BUZZER.SET_PERCENT(0U);
+
+  1585: 
+
+  1586: 	EXO_LOG("[BUILD][NODE] ble-rx-log-bridge active\r\n");
+> 1587: 	EXO_LOG("UART RS485 transport: removed, BLE-only mode active\r\n");
+  1588: #if EXO_PROFILE_DIAG
+  1589: 	{
+  1590: 		uint8_t devices_on_i2c1 = I2C_ScanBus(&hi2c1);
+  1591: 		uint8_t devices_on_i2c3 = I2C_ScanBus(&hi2c3);
+  1592: 		EXO_LOG("I2C1: %d device(s) found\r\n", devices_on_i2c1);
+
+  1606: 		exo::node_runtime_config::set_storage_hooks(&NodeFlashRead, &NodeFlashWrite, &NodeFlashErase);
+  1607: 		(void)exo::node_runtime_config::set_flash_capacity(
+  1608: 				node_recording_app.detected_flash_capacity());
+  1609: 		const uint8_t runtime_node_id = exo::node_runtime_config::load_node_id(EXO_NODE_ID);
+  1610: 		node_recording_app.set_node_id(runtime_node_id);
+> 1611: 		node_rs485_recording.set_node_id(runtime_node_id);
+  1612: 		EXO_LOG("Node ID runtime=%u (default=%u)\r\n",
+  1613: 				static_cast<unsigned>(runtime_node_id),
+  1614: 				static_cast<unsigned>(EXO_NODE_ID));
+  1615: 		EXO_LOG("Node flash capacity=%lu max_duration_ms=%lu\r\n",
+  1616: 				static_cast<unsigned long>(node_recording_app.detected_flash_capacity()),
+
+  1617: 				static_cast<unsigned long>(node_recording_app.maximum_duration_ms()));
+  1618: 	}
+  1619: 	else
+  1620: 	{
+> 1621: 		node_rs485_recording.set_node_id(EXO_NODE_ID);
+  1622: 		EXO_LOG("Node ID runtime fallback=%u (flash unavailable)\r\n",
+  1623: 				static_cast<unsigned>(EXO_NODE_ID));
+  1624: 	}
+  1625: 	if (!node_recording_ready)
+  1626: 	{
+
+  1642: 	{
+  1643: 		(void)RunFlashTest128();
+  1644: 	}
+  1645: #endif
+  1646: #else
+> 1647: 	node_rs485_recording.set_node_id(EXO_NODE_ID);
+  1648: 	EXO_LOG("Node recording disabled until flash SPI/CS CubeMX setup is complete\r\n");
+  1649: #endif
+  1650: 
+  1651: #if EXO_NODE_SENSOR_TEST_ENABLE
+  1652: 	const bool hub_sensor_test_ready = hub_sensor_test_app.begin();
+
+  1653: 	EXO_LOG("Hub sensor test: %s\r\n", hub_sensor_test_ready ? "ready" : "not ready");
+  1654: #endif
+> 1655: 	node_rs485_recording.begin();
+  1656: 
+  1657:   /* USER CODE END 2 */
+  1658: 
+  1659:   /* Init code for STM32_WPAN */
+  1660:   MX_APPE_Init();
+
+  1907: 	if (written > 0) {
+  1908: 		EXO_LOG("%s", message);
+  1909: 	}
+  1910: }
+  1911: 
+> 1912: extern "C" uint8_t exo_node_ble_write(const uint8_t *payload, uint8_t length)
+  1913: {
+  1914: 	if (payload == nullptr || length == 0U) {
+  1915: 		EXO_LOG("[BLE][WRITE] empty payload len=%u\r\n", (unsigned) length);
+  1916: 		return 0U;
+  1917: 	}
+
+  2060: 		if (!exo::node_runtime_config::store_node_id(new_id)) {
+  2061: 			EXO_LOG("[BLE][CFG] set-node-id persist failed id=%u\r\n", (unsigned) new_id);
+  2062: 			return 0U;
+  2063: 		}
+  2064: 		node_recording_app.set_node_id(new_id);
+> 2065: 		node_rs485_recording.set_node_id(new_id);
+  2066: 		EXO_LOG("[BLE][CFG] set-node-id ok=%u (reboot not required)\r\n", (unsigned) new_id);
+  2067: 		return 1U;
+  2068: 	}
+  2069: 	case 0xB1U: /* get node id */
+  2070: 	{
+
+  2082: 	(void)length;
+  2083: #endif
+  2084: 	return 0U;
+  2085: }
+  2086: 
+> 2087: extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+  2088: {
+  2089: 	if (huart == &hlpuart1) {
+  2090: 		node_rs485_recording.on_uart_rx_byte();
+  2091: 	}
+  2092: }
+
+  2093: 
+  2094: extern "C" void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+
+  2095: {
+
+  2096: 	if (huart == &hlpuart1) {
+  2097: 		node_rs485_recording.on_uart_rx_idle_event(Size);
+  2098: 	}
+  2099: }
+
+  2100: 
+  2101: extern "C" void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+
+  2102: {
+
+  2103: 	if (huart == &hlpuart1) {
+  2104: 		node_rs485_recording.on_uart_error();
+  2105: 	}
+  2106: }
+
+  2107: 
+  2108: /* USER CODE END 4 */
+
+  2109: 
+
+Matches: 39
