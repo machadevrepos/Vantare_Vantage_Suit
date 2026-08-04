@@ -35,6 +35,7 @@ exo::RecordReliableFrameHeader frame_header(const std::vector<uint8_t> &frame)
 template<typename Manager, typename = void>
 struct CongestionProbe {
     static bool run() { return false; }
+    static bool four_node_rate() { return false; }
 };
 
 template<typename Manager>
@@ -54,21 +55,46 @@ struct CongestionProbe<Manager, std::void_t<
         if (!manager.peek_next_live_sample(sample, 0U) || sample.node_id != 1U) return false;
         manager.on_live_sample_send_result(false, 0U);
         if (!manager.live_preview_congested()) return false;
-        if (manager.peek_next_live_sample(sample, 79U)) return false;
-        if (!manager.peek_next_live_sample(sample, 80U) || sample.node_id != 2U) return false;
-        manager.on_live_sample_send_result(true, 80U);
-        if (manager.peek_next_live_sample(sample, 159U)) return false;
-        if (!manager.peek_next_live_sample(sample, 160U) || sample.node_id != 1U) return false;
-        manager.on_live_sample_send_result(true, 160U);
+        if (manager.peek_next_live_sample(sample, 19U)) return false;
+        if (!manager.peek_next_live_sample(sample, 20U) || sample.node_id != 2U) return false;
+        manager.on_live_sample_send_result(true, 20U);
+        if (manager.peek_next_live_sample(sample, 39U)) return false;
+        if (!manager.peek_next_live_sample(sample, 40U) || sample.node_id != 1U) return false;
+        manager.on_live_sample_send_result(true, 40U);
         value = 3U;
         if (!manager.push_leaf_sample(3U, 1U, &value, 1U)) return false;
-        if (!manager.peek_next_live_sample(sample, 5080U) || sample.node_id != 3U) return false;
-        manager.on_live_sample_send_result(true, 5080U);
+        if (!manager.peek_next_live_sample(sample, 5000U) || sample.node_id != 3U) return false;
+        manager.on_live_sample_send_result(true, 5000U);
         if (manager.live_preview_congested()) return false;
         value = 4U;
         if (!manager.push_leaf_sample(4U, 1U, &value, 1U)) return false;
-        if (manager.peek_next_live_sample(sample, 5119U)) return false;
-        return manager.peek_next_live_sample(sample, 5120U) && sample.node_id == 4U;
+        if (manager.peek_next_live_sample(sample, 5009U)) return false;
+        return manager.peek_next_live_sample(sample, 5010U) && sample.node_id == 4U;
+    }
+
+    static bool four_node_rate()
+    {
+        Manager manager;
+        uint8_t value = 1U;
+        for (uint8_t node = 1U; node <= 4U; ++node) {
+            value = node;
+            if (!manager.push_leaf_sample(node, 1U, &value, 1U)) return false;
+        }
+
+        uint8_t per_source_count[5]{};
+        typename Manager::LiveSample sample{};
+        for (uint32_t now_ms = 0U; now_ms < 400U; now_ms += 10U) {
+            if (!manager.peek_next_live_sample(sample, now_ms)) return false;
+            if (sample.node_id < 1U || sample.node_id > 4U) return false;
+            ++per_source_count[sample.node_id];
+            manager.on_live_sample_send_result(true, now_ms);
+            value = static_cast<uint8_t>(value + 1U);
+            if (!manager.push_leaf_sample(sample.node_id, 1U, &value, 1U)) return false;
+        }
+        for (uint8_t node = 1U; node <= 4U; ++node) {
+            if (per_source_count[node] < 10U) return false;
+        }
+        return true;
     }
 };
 }
@@ -86,6 +112,7 @@ int main()
     Transport transport;
     exo::MasterNodeReliableControl control(&Transport::send, &transport);
     exo::RecordDoneMessage done{};
+    done.command = exo::RecordCommand::RecordDone;
     done.node_id = 1U;
     done.session_id = 42U;
     done.total_size = 1000U;
@@ -101,9 +128,23 @@ int main()
 
     exo::ble_hub::HubLeafBleManager manager;
     exo::RecordDoneMessage done1{};
-    done1.node_id = 1U; done1.session_id = 77U; done1.total_size = 100U; done1.payload_crc32 = 1U;
+    done1.command = exo::RecordCommand::RecordDone;
+    done1.node_id = 1U;
+    done1.session_id = 77U;
+    done1.total_size = static_cast<uint32_t>(sizeof(exo::SessionHeader));
+    done1.payload_crc32 = 1U;
+    exo::RecordDoneMessage invalid = done1;
+    invalid.command = exo::RecordCommand::StartRecord;
+    EXPECT_TRUE(!manager.queue_record_done(invalid));
+    invalid = done1;
+    invalid.session_id = 0U;
+    EXPECT_TRUE(!manager.queue_record_done(invalid));
+    invalid = done1;
+    invalid.total_size = static_cast<uint32_t>(sizeof(exo::SessionHeader) - 1U);
+    EXPECT_TRUE(!manager.queue_record_done(invalid));
     exo::RecordDoneMessage done2 = done1;
-    done2.node_id = 2U; done2.payload_crc32 = 2U;
+    done2.node_id = 2U;
+    done2.payload_crc32 = 2U;
     EXPECT_TRUE(manager.queue_record_done(done1));
     EXPECT_TRUE(manager.queue_record_done(done2));
     exo::RecordDoneMessage selected{};
@@ -146,5 +187,6 @@ int main()
     EXPECT_TRUE(std::fabs(derived.yaw_deg - 10.0) < 0.001);
 
     EXPECT_TRUE(CongestionProbe<exo::ble_hub::HubLeafBleManager>::run());
+    EXPECT_TRUE(CongestionProbe<exo::ble_hub::HubLeafBleManager>::four_node_rate());
     return failures == 0 ? 0 : 1;
 }
