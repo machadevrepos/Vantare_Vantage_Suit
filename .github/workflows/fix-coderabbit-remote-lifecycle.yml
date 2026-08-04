@@ -1,0 +1,397 @@
+name: Fix CodeRabbit remote transfer lifecycle
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/fix-coderabbit-remote-lifecycle.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-coderabbit-remote-lifecycle
+  cancel-in-progress: false
+
+jobs:
+  patch-test-and-commit:
+    if: github.repository == 'machadevrepos/Vantare_Vantage_Suit' && github.ref_name == 'ble-only-firmware-cleanup'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out cleanup branch
+        uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify exact reviewed inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h)" = "254c4040459bcc0b22d93492b3675a647e41a415"
+          test "$(git hash-object Firmware/Master/Core/Src/main.c)" = "8478d47fc410564874067286edd67e18f6ab55f5"
+          test "$(git hash-object Firmware/HostTests/test_coderabbit_firmware_regressions.cpp)" = "ff299b7e3aa6e529afaa78c2cf20e3f04b39f1b7"
+          test "$(git hash-object Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md)" = "3395097165cd74bf56981c11656127e33e79b05b"
+          test "$(git hash-object Docs/Superpowers/Specs/2026-08-03-ble-only-firmware-cleanup-design.md)" = "cd82bcb2270727dc3ef379866cf9487e704cd77b"
+
+      - name: Prove lifecycle regression test is red
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('Firmware/HostTests/test_coderabbit_firmware_regressions.cpp')
+          text = path.read_text()
+          anchor = '''    EXPECT_TRUE(manager.active_source_id() == 1U && manager.active_session_id() == 77U);
+
+    char numeric[32]{};
+'''
+          replacement = '''    EXPECT_TRUE(manager.active_source_id() == 1U && manager.active_session_id() == 77U);
+    manager.on_ble_reliable_pause(77U, 1U);
+    EXPECT_TRUE(manager.paused());
+    EXPECT_TRUE(!manager.on_ble_reliable_resume(78U, 1U));
+    EXPECT_TRUE(manager.paused());
+    EXPECT_TRUE(manager.on_ble_reliable_resume(77U, 1U));
+    EXPECT_TRUE(!manager.paused());
+    EXPECT_TRUE(!manager.on_ble_reliable_cancel(78U, 1U));
+    EXPECT_TRUE(manager.active_source_id() == 1U);
+    EXPECT_TRUE(manager.on_ble_reliable_cancel(77U, 1U));
+    EXPECT_TRUE(manager.active_source_id() == 0U && manager.active_session_id() == 0U);
+    EXPECT_TRUE(manager.pop_next_record_done(selected));
+    EXPECT_TRUE(selected.node_id == 2U);
+
+    exo::ble_hub::HubLeafBleManager completion_manager;
+    EXPECT_TRUE(completion_manager.queue_record_done(done1));
+    EXPECT_TRUE(completion_manager.queue_record_done(done2));
+    EXPECT_TRUE(completion_manager.pop_next_record_done(selected));
+    EXPECT_TRUE(selected.node_id == 1U);
+    EXPECT_TRUE(!completion_manager.on_ble_session_complete(78U, 1U));
+    EXPECT_TRUE(completion_manager.active_source_id() == 1U);
+    EXPECT_TRUE(completion_manager.on_ble_session_complete(77U, 1U));
+    EXPECT_TRUE(completion_manager.active_source_id() == 0U && completion_manager.active_session_id() == 0U);
+    EXPECT_TRUE(completion_manager.pop_next_record_done(selected));
+    EXPECT_TRUE(selected.node_id == 2U);
+
+    char numeric[32]{};
+'''
+          if text.count(anchor) != 1:
+              raise SystemExit('regression test anchor mismatch')
+          Path('/tmp/test_coderabbit_firmware_regressions_red.cpp').write_text(
+              text.replace(anchor, replacement, 1)
+          )
+          PY
+          if g++ -std=c++17 -Wall -Wextra -Werror \
+              -I Firmware/Master/Core/Inc \
+              -I Firmware/LIBRARY/CUSTOM \
+              /tmp/test_coderabbit_firmware_regressions_red.cpp \
+              -o /tmp/test_coderabbit_firmware_regressions_red \
+              2>/tmp/red-build.log; then
+            echo 'Expected lifecycle regression test to fail before production fix' >&2
+            exit 1
+          fi
+          grep -Eq 'on_ble_reliable_resume|on_ble_reliable_cancel|on_ble_session_complete' /tmp/red-build.log
+
+      - name: Apply minimal lifecycle and documentation fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path_name: str, old: str, new: str) -> None:
+              path = Path(path_name)
+              text = path.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path_name}: expected one replacement anchor, found {text.count(old)}')
+              path.write_text(text.replace(old, new, 1))
+
+          header = 'Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h'
+          replace_once(
+              header,
+              '''  void on_ble_reliable_pause(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return;
+    paused_ = true;
+    receiver_credit_ = 0U;
+  }
+
+  void on_ble_reliable_verify_ok(uint32_t session_id, uint16_t source_id,
+''',
+              '''  void on_ble_reliable_pause(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return;
+    paused_ = true;
+    receiver_credit_ = 0U;
+  }
+
+  bool on_ble_reliable_resume(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return false;
+    paused_ = false;
+    return true;
+  }
+
+  bool on_ble_reliable_cancel(uint32_t session_id, uint16_t source_id) {
+    return release_active_transfer_(session_id, source_id);
+  }
+
+  bool on_ble_session_complete(uint32_t session_id, uint16_t source_id) {
+    return release_active_transfer_(session_id, source_id);
+  }
+
+  void on_ble_reliable_verify_ok(uint32_t session_id, uint16_t source_id,
+''')
+          replace_once(
+              header,
+              '''  bool owns_transfer_(uint32_t session_id, uint16_t source_id) const {
+    return active_source_id_ == source_id && active_session_id_ == session_id;
+  }
+''',
+              '''  bool release_active_transfer_(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return false;
+    active_source_id_ = 0U;
+    active_session_id_ = 0U;
+    next_chunk_index_ = 0U;
+    next_offset_ = 0U;
+    receiver_credit_ = 0U;
+    paused_ = false;
+    start_or_record_active_ = queued_done_count_ != 0U || transfer_hold_ ||
+        pending_live_count_ != 0U;
+    return true;
+  }
+
+  bool owns_transfer_(uint32_t session_id, uint16_t source_id) const {
+    return active_source_id_ == source_id && active_session_id_ == session_id;
+  }
+''')
+
+          main = 'Firmware/Master/Core/Src/main.c'
+          replace_once(
+              main,
+              '''\t\t\t\t\t} else {
+\t\t\t\t\t\tleaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
+\t\t\t\t\t\t(void) forward_remote_record_control(hdr.source_id, payload, length);
+\t\t\t\t\t}
+''',
+              '''\t\t\t\t\t} else {
+\t\t\t\t\t\tbool released_remote_transfer = false;
+\t\t\t\t\t\tif (type == exo::RecordReliableType::Pause) {
+\t\t\t\t\t\t\tleaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
+\t\t\t\t\t\t} else if (type == exo::RecordReliableType::Resume) {
+\t\t\t\t\t\t\t(void) leaf_ble_manager.on_ble_reliable_resume(hdr.session_id, hdr.source_id);
+\t\t\t\t\t\t} else {
+\t\t\t\t\t\t\treleased_remote_transfer = leaf_ble_manager.on_ble_reliable_cancel(
+\t\t\t\t\t\t\t\t\thdr.session_id, hdr.source_id);
+\t\t\t\t\t\t}
+\t\t\t\t\t\t(void) forward_remote_record_control(hdr.source_id, payload, length);
+\t\t\t\t\t\tif (released_remote_transfer && g_remote_transfer_active &&
+\t\t\t\t\t\t\t\tg_remote_transfer_source_id == hdr.source_id &&
+\t\t\t\t\t\t\t\tg_remote_transfer_session_id == hdr.session_id) {
+\t\t\t\t\t\t\tg_remote_transfer_active = false;
+\t\t\t\t\t\t\tg_remote_transfer_source_id = 0U;
+\t\t\t\t\t\t\tg_remote_transfer_session_id = 0U;
+\t\t\t\t\t\t\tstart_next_pending_node_manifest_now();
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+''')
+          replace_once(
+              main,
+              '''\t\t\t\t\tif (g_remote_transfer_active &&
+\t\t\t\t\t\t\t\tg_remote_transfer_source_id == source_id &&
+\t\t\t\t\t\t\t\tg_remote_transfer_session_id == ack.session_id) {
+\t\t\t\t\t\tg_remote_transfer_active = false;
+\t\t\t\t\t\tg_remote_transfer_source_id = 0U;
+\t\t\t\t\t\tg_remote_transfer_session_id = 0U;
+\t\t\t\t\t\tEXO_LOG("[BLE][REC][REL][NODEQ] node transfer complete source=%u session=%lu queue=%u\\r\\n",
+\t\t\t\t\t\t\t\tstatic_cast<unsigned>(source_id),
+\t\t\t\t\t\t\t\tstatic_cast<unsigned long>(ack.session_id),
+\t\t\t\t\t\t\t\tstatic_cast<unsigned>(pending_node_done_depth()));
+\t\t\t\t\t}
+\t\t\t\t\t(void) forward_remote_record_control(source_id, payload, length);
+''',
+              '''\t\t\t\t\tbool completed_remote_transfer = false;
+\t\t\t\t\tif (g_remote_transfer_active &&
+\t\t\t\t\t\t\t\tg_remote_transfer_source_id == source_id &&
+\t\t\t\t\t\t\t\tg_remote_transfer_session_id == ack.session_id) {
+\t\t\t\t\t\tcompleted_remote_transfer = leaf_ble_manager.on_ble_session_complete(
+\t\t\t\t\t\t\t\tack.session_id, source_id);
+\t\t\t\t\t\tif (completed_remote_transfer) {
+\t\t\t\t\t\t\tg_remote_transfer_active = false;
+\t\t\t\t\t\t\tg_remote_transfer_source_id = 0U;
+\t\t\t\t\t\t\tg_remote_transfer_session_id = 0U;
+\t\t\t\t\t\t\tEXO_LOG("[BLE][REC][REL][NODEQ] node transfer complete source=%u session=%lu queue=%u\\r\\n",
+\t\t\t\t\t\t\t\t\tstatic_cast<unsigned>(source_id),
+\t\t\t\t\t\t\t\t\tstatic_cast<unsigned long>(ack.session_id),
+\t\t\t\t\t\t\t\t\tstatic_cast<unsigned>(pending_node_done_depth()));
+\t\t\t\t\t\t}
+\t\t\t\t\t}
+\t\t\t\t\t(void) forward_remote_record_control(source_id, payload, length);
+\t\t\t\t\tif (completed_remote_transfer) {
+\t\t\t\t\t\tstart_next_pending_node_manifest_now();
+\t\t\t\t\t}
+''')
+
+          test_path = Path('Firmware/HostTests/test_coderabbit_firmware_regressions.cpp')
+          test_text = test_path.read_text()
+          anchor = '''    EXPECT_TRUE(manager.active_source_id() == 1U && manager.active_session_id() == 77U);
+
+    char numeric[32]{};
+'''
+          replacement = '''    EXPECT_TRUE(manager.active_source_id() == 1U && manager.active_session_id() == 77U);
+    manager.on_ble_reliable_pause(77U, 1U);
+    EXPECT_TRUE(manager.paused());
+    EXPECT_TRUE(!manager.on_ble_reliable_resume(78U, 1U));
+    EXPECT_TRUE(manager.paused());
+    EXPECT_TRUE(manager.on_ble_reliable_resume(77U, 1U));
+    EXPECT_TRUE(!manager.paused());
+    EXPECT_TRUE(!manager.on_ble_reliable_cancel(78U, 1U));
+    EXPECT_TRUE(manager.active_source_id() == 1U);
+    EXPECT_TRUE(manager.on_ble_reliable_cancel(77U, 1U));
+    EXPECT_TRUE(manager.active_source_id() == 0U && manager.active_session_id() == 0U);
+    EXPECT_TRUE(manager.pop_next_record_done(selected));
+    EXPECT_TRUE(selected.node_id == 2U);
+
+    exo::ble_hub::HubLeafBleManager completion_manager;
+    EXPECT_TRUE(completion_manager.queue_record_done(done1));
+    EXPECT_TRUE(completion_manager.queue_record_done(done2));
+    EXPECT_TRUE(completion_manager.pop_next_record_done(selected));
+    EXPECT_TRUE(selected.node_id == 1U);
+    EXPECT_TRUE(!completion_manager.on_ble_session_complete(78U, 1U));
+    EXPECT_TRUE(completion_manager.active_source_id() == 1U);
+    EXPECT_TRUE(completion_manager.on_ble_session_complete(77U, 1U));
+    EXPECT_TRUE(completion_manager.active_source_id() == 0U && completion_manager.active_session_id() == 0U);
+    EXPECT_TRUE(completion_manager.pop_next_record_done(selected));
+    EXPECT_TRUE(selected.node_id == 2U);
+
+    char numeric[32]{};
+'''
+          if test_text.count(anchor) != 1:
+              raise SystemExit('persistent regression test anchor mismatch')
+          test_path.write_text(test_text.replace(anchor, replacement, 1))
+
+          plan = 'Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md'
+          replace_once(
+              plan,
+              '**Architecture:** Apply the uploaded cleanup patch only after confirming its preimage hashes match the branch. Keep generated STM32 code intact, replace transport-era names with BLE/leaf names inside USER CODE regions, delete unreferenced headers atomically, and add source-level checks that prevent RS485 code from returning.\n',
+              '**Architecture:** Rebuild from the exact `2nd_Branch` base and apply reviewed source edits directly. The uploaded compressed transport was incomplete and was rejected without application. Any future patch application is blocked until its immutable compressed SHA-256 and a trusted per-file preimage/target blob manifest are recorded and verified; every mismatch aborts before modification. Keep generated STM32 code intact, replace transport-era names with BLE/leaf names inside USER CODE regions, delete unreferenced headers atomically, and add source-level checks that prevent RS485 code from returning.\n')
+          replace_once(
+              plan,
+              '- Every deletion requires a repository-wide consumer check.\n',
+              '- Every deletion requires an active-firmware consumer check; historical references are allowed only in the two cleanup documents named below, and temporary `.cleanup-patch/**` artifacts must be removed before the final tree.\n')
+          replace_once(
+              plan,
+              '''- [ ] Confirm the patch preimage blob IDs match the current branch files.
+- [ ] Reconstruct and hash the patch target files; require the target hashes from the patch headers.
+- [ ] Apply the patch changes atomically on the cleanup branch.
+''',
+              '''- [ ] Record the exact base commit and reviewed preimage blob IDs before direct edits.
+- [ ] Record patch status as `NOT APPLIED`: the uploaded compressed transport was incomplete, so no complete immutable compressed SHA-256 or trusted target-blob manifest existed.
+- [ ] Block any future patch application until the complete compressed artifact SHA-256 and trusted per-file preimage/target blob IDs are recorded and all values match; abort before modification on any mismatch.
+- [ ] Apply the reviewed direct source changes atomically on the cleanup branch.
+''')
+          replace_once(
+              plan,
+              '''- [ ] Scan active firmware sources for `RS485_RECORD_`, `MasterRs485_`, `HubRs485`, `master_rs485_recording`, `node_rs485_recording`, and `comms_rs485`.
+- [ ] Permit historical mentions only inside the uploaded patch or cleanup documentation when explicitly excluded from the active-source scan.
+''',
+              '''- [ ] Scan active firmware sources under `Firmware/Master`, `Firmware/Node`, and `Firmware/LIBRARY/CUSTOM` for `RS485_RECORD_`, `MasterRs485_`, `HubRs485`, `master_rs485_recording`, `node_rs485_recording`, and `comms_rs485`.
+- [ ] In the same active-source scan, reject `RS485.h`, `RS485_FRAME_PROTOCOL.h`, `RS485_RECORD_MASTER_APP.h`, `RS485_RECORD_NODE_APP.h`, and `RECORDING_BRIDGE.h`, including `#include` and other reference forms.
+- [ ] Allow historical mentions only in `Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md` and `Docs/Superpowers/Specs/2026-08-03-ble-only-firmware-cleanup-design.md`; temporary `.cleanup-patch/**` artifacts are allowed only during reconstruction and must be absent from the final tree.
+''')
+          replace_once(
+              plan,
+              '''- [ ] Run Python syntax checks and BLE-only cleanup regression checks.
+- [ ] Run available PowerShell and C++ host tests.
+- [ ] Compare the cleanup branch against `2nd_Branch` and inspect every changed file.
+- [ ] Verify `main` and `2nd_Branch` are unchanged.
+- [ ] Create a draft PR from `ble-only-firmware-cleanup` to `2nd_Branch` with hardware validation requirements.
+- [ ] Record exact passed checks and unresolved STM32/hardware validation boundaries.
+''',
+              '''- [ ] Run Python syntax checks and BLE-only cleanup regression checks; record `PASS` or `NOT RUN` with a reason.
+- [ ] Run available PowerShell and C++ host tests; record `PASS` or `NOT RUN` with a reason.
+- [ ] Build the Master project in STM32CubeIDE after host checks; current status: `NOT RUN` because STM32CubeIDE and its target toolchain are unavailable in the portable review environment.
+- [ ] Build the Node project in STM32CubeIDE after host checks; current status: `NOT RUN` because STM32CubeIDE and its target toolchain are unavailable in the portable review environment.
+- [ ] Compare the cleanup branch against `2nd_Branch` and inspect every changed file.
+- [ ] Verify `main` and `2nd_Branch` are unchanged.
+- [ ] Keep firmware flashing and the physical Master/Node BLE workflow as separate pre-merge gates; current status: `NOT RUN` because target hardware is unavailable.
+- [ ] Create a draft PR from `ble-only-firmware-cleanup` to `2nd_Branch` with hardware validation requirements.
+- [ ] Record exact passed checks and unresolved STM32/hardware validation boundaries.
+''')
+
+          spec = 'Docs/Superpowers/Specs/2026-08-03-ble-only-firmware-cleanup-design.md'
+          replace_once(
+              spec,
+              '1. Apply the uploaded BLE-only patch where it matches the current branch.\n',
+              '1. Rebuild from the exact `2nd_Branch` base and apply reviewed direct source edits; the incomplete uploaded compressed transport is rejected and not applied.\n')
+          replace_once(
+              spec,
+              '''- Uploaded patch preimage hashes match the branch files before modification.
+- Patch target hashes match reconstructed Master and Node files.
+- Repository-wide searches find no references to deleted RS485 headers or obsolete runtime identifiers.
+- Existing host tests and cleanup source tests pass where the required host toolchain is available.
+''',
+              '''- Patch status is recorded as `NOT APPLIED` because the uploaded compressed transport was incomplete; no complete immutable compressed artifact or trusted target-blob manifest existed.
+- Any future patch application is a blocking operation that requires the immutable compressed SHA-256 plus trusted per-file preimage and target blob IDs, with an abort before modification on every mismatch.
+- Active-source scans under `Firmware/Master`, `Firmware/Node`, and `Firmware/LIBRARY/CUSTOM` reject obsolete runtime identifiers and all references or includes for `RS485.h`, `RS485_FRAME_PROTOCOL.h`, `RS485_RECORD_MASTER_APP.h`, `RS485_RECORD_NODE_APP.h`, and `RECORDING_BRIDGE.h`.
+- Historical mentions are allowlisted only in `Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md` and `Docs/Superpowers/Specs/2026-08-03-ble-only-firmware-cleanup-design.md`; temporary `.cleanup-patch/**` files must be absent from the final tree.
+- Existing host tests and cleanup source tests pass where the required host toolchain is available.
+- Master and Node STM32CubeIDE builds are recorded independently as `PASS` or `NOT RUN` with a reason before completion; flashing and physical validation remain separate pre-merge gates.
+''')
+          PY
+
+      - name: Verify green host behavior
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I Firmware/Master/Core/Inc \
+            -I Firmware/LIBRARY/CUSTOM \
+            Firmware/HostTests/test_coderabbit_firmware_regressions.cpp \
+            -o /tmp/test_coderabbit_firmware_regressions
+          /tmp/test_coderabbit_firmware_regressions
+
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I Firmware/Master/Core/Inc \
+            -I Firmware/LIBRARY/CUSTOM \
+            Firmware/HostTests/test_hub_leaf_ble_manager.cpp \
+            -o /tmp/test_hub_leaf_ble_manager
+          /tmp/test_hub_leaf_ble_manager
+
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -I Firmware/HostTests/FatFsStub \
+            -I Firmware/Master/Core/Inc \
+            -I Firmware/LIBRARY/CUSTOM \
+            Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp \
+            -o /tmp/test_coderabbit_csv_logger_regressions
+          /tmp/test_coderabbit_csv_logger_regressions
+
+          python3 -B Firmware/HostTests/test_ble_only_cleanup.py
+          python3 -m py_compile Firmware/HostTests/*.py
+          git diff --check
+          test ! -d __pycache__
+          find Firmware -type d -name __pycache__ -print -quit | grep -q . && exit 1 || true
+
+          grep -Fq 'on_ble_reliable_resume' Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+          grep -Fq 'on_ble_reliable_cancel' Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+          grep -Fq 'on_ble_session_complete' Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+          grep -Fq 'current status: `NOT RUN` because STM32CubeIDE' Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md
+
+      - name: Remove temporary workflow and diagnostic map
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/fix-coderabbit-remote-lifecycle.yml
+          rm -f remote-transfer-map.txt
+
+      - name: Commit verified fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: synchronize remote transfer lifecycle state'
+          git push origin HEAD:ble-only-firmware-cleanup
