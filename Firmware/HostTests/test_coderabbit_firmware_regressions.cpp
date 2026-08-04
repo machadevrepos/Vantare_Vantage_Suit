@@ -97,6 +97,62 @@ struct CongestionProbe<Manager, std::void_t<
         return true;
     }
 };
+
+template<typename Manager, typename = void>
+struct RemoteLifecycleProbe {
+    static bool run() { return false; }
+};
+
+template<typename Manager>
+struct RemoteLifecycleProbe<Manager, std::void_t<
+    decltype(std::declval<Manager &>().on_ble_reliable_pause(uint32_t{}, uint16_t{})),
+    decltype(std::declval<Manager &>().on_ble_reliable_resume(uint32_t{}, uint16_t{})),
+    decltype(std::declval<Manager &>().on_ble_reliable_cancel(uint32_t{}, uint16_t{})),
+    decltype(std::declval<Manager &>().on_ble_reliable_verify_ok(
+        uint32_t{}, uint16_t{}, uint32_t{})),
+    decltype(std::declval<Manager &>().on_ble_session_complete(
+        uint32_t{}, uint16_t{}, uint32_t{}))>> {
+    static exo::RecordDoneMessage record_done(uint8_t node_id, uint32_t crc)
+    {
+        exo::RecordDoneMessage done{};
+        done.command = exo::RecordCommand::RecordDone;
+        done.node_id = node_id;
+        done.session_id = 77U;
+        done.total_size = static_cast<uint32_t>(sizeof(exo::SessionHeader));
+        done.payload_crc32 = crc;
+        return done;
+    }
+
+    static bool run()
+    {
+        const exo::RecordDoneMessage first = record_done(1U, 0x11111111U);
+        const exo::RecordDoneMessage second = record_done(2U, 0x22222222U);
+        exo::RecordDoneMessage selected{};
+
+        Manager cancelled;
+        if (!cancelled.queue_record_done(first) || !cancelled.queue_record_done(second)) return false;
+        if (!cancelled.pop_next_record_done(selected) || selected.node_id != 1U) return false;
+        if (cancelled.on_ble_reliable_pause(77U, 2U)) return false;
+        if (!cancelled.on_ble_reliable_pause(77U, 1U) || !cancelled.paused()) return false;
+        if (!cancelled.on_ble_reliable_resume(77U, 1U) || cancelled.paused()) return false;
+        if (cancelled.on_ble_session_complete(77U, 1U, first.payload_crc32)) return false;
+        if (!cancelled.on_ble_reliable_cancel(77U, 1U)) return false;
+        if (cancelled.active_source_id() != 0U || cancelled.active_session_id() != 0U) return false;
+        if (!cancelled.pop_next_record_done(selected) || selected.node_id != 2U) return false;
+
+        Manager completed;
+        if (!completed.queue_record_done(first) || !completed.queue_record_done(second)) return false;
+        if (!completed.pop_next_record_done(selected) || selected.node_id != 1U) return false;
+        if (completed.on_ble_reliable_verify_ok(77U, 1U, 0xDEADBEEFU)) return false;
+        if (!completed.on_ble_reliable_verify_ok(77U, 1U, first.payload_crc32)) return false;
+        if (completed.active_source_id() != 1U || completed.active_session_id() != 77U) return false;
+        if (completed.on_ble_session_complete(77U, 1U, 0xDEADBEEFU)) return false;
+        if (completed.active_source_id() != 1U) return false;
+        if (!completed.on_ble_session_complete(77U, 1U, first.payload_crc32)) return false;
+        if (completed.active_source_id() != 0U || completed.active_session_id() != 0U) return false;
+        return completed.pop_next_record_done(selected) && selected.node_id == 2U;
+    }
+};
 }
 
 int main()
@@ -188,5 +244,6 @@ int main()
 
     EXPECT_TRUE(CongestionProbe<exo::ble_hub::HubLeafBleManager>::run());
     EXPECT_TRUE(CongestionProbe<exo::ble_hub::HubLeafBleManager>::four_node_rate());
+    EXPECT_TRUE(RemoteLifecycleProbe<exo::ble_hub::HubLeafBleManager>::run());
     return failures == 0 ? 0 : 1;
 }
