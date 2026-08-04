@@ -1,0 +1,94 @@
+name: Apply final CodeRabbit firmware fixes
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/apply-final-coderabbit-fixes.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply reviewed fixes
+        run: python3 .github/scripts/apply_final_coderabbit_fixes.py
+
+      - name: Run warning-clean host suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMON=(-std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc)
+          compile_run() {
+            local source="$1"
+            local output="/tmp/$(basename "${source%.cpp}")"
+            shift
+            g++ "${COMMON[@]}" "$@" "$source" -o "$output"
+            "$output"
+          }
+
+          compile_run Firmware/HostTests/test_coderabbit_firmware_regressions.cpp
+          compile_run Firmware/HostTests/test_master_node_transfer_window.cpp
+          compile_run Firmware/HostTests/test_master_node_reliable_control.cpp
+          compile_run Firmware/HostTests/test_hub_leaf_ble_manager.cpp
+          compile_run Firmware/HostTests/test_master_training_csv_formatter_v2.cpp
+          compile_run Firmware/HostTests/test_node_live_sample_queue.cpp
+          compile_run Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp \
+            -I Firmware/HostTests/FatFsStub
+          compile_run Firmware/HostTests/test_master_training_csv_logger_v2.cpp \
+            -I Firmware/HostTests/FatFsStub
+
+          g++ -std=c++17 -Wall -Wextra -Werror -DEXO_ACQ_DIAG_HOST_TEST=1 \
+            -I Firmware/LIBRARY/CUSTOM \
+            Firmware/Master/tests/acquisition_diagnostics_test.cpp \
+            -o /tmp/acquisition_diagnostics_test
+          /tmp/acquisition_diagnostics_test
+
+      - name: Run source and Python guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in sorted(Path('Firmware/HostTests').glob('*.py')):
+              compile(path.read_text(encoding='utf-8'), str(path), 'exec')
+          PY
+          PYTHONDONTWRITEBYTECODE=1 python3 Firmware/HostTests/test_ble_only_cleanup.py
+
+      - name: Remove temporary execution files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-final-coderabbit-fixes.yml
+          rm -f .github/scripts/apply_final_coderabbit_fixes.py
+          rm -f final-review-red.txt
+          find Firmware/HostTests -type d -name __pycache__ -prune -exec rm -rf {} +
+          if test -d .github/scripts && ! find .github/scripts -mindepth 1 -print -quit | grep -q .; then
+            rmdir .github/scripts
+          fi
+          if test -d .github/workflows && ! find .github/workflows -mindepth 1 -print -quit | grep -q .; then
+            rmdir .github/workflows
+          fi
+          if test -d .github && ! find .github -mindepth 1 -print -quit | grep -q .; then
+            rmdir .github
+          fi
+          git diff --check
+
+      - name: Commit verified fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: address final CodeRabbit firmware findings'
+          git push origin HEAD:ble-only-firmware-cleanup
