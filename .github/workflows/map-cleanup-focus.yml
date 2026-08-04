@@ -1,0 +1,31 @@
+name: Map focused firmware cleanup
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/map-cleanup-focus.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+      - run: python3 .github/scripts/map_cleanup_focus.py
+      - shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/map-cleanup-focus.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'ci: record focused firmware cleanup map'
+          git push origin HEAD:ble-only-firmware-cleanup
