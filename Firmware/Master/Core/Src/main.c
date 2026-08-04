@@ -2201,14 +2201,9 @@ namespace {
 		pending.length = length;
 		memcpy(pending.frame, payload, length);
 		pending.valid = true;
-		if (g_remote_transfer_active &&
-				g_remote_transfer_source_id == verify.source_id &&
-				g_remote_transfer_session_id == verify.session_id) {
-			g_remote_transfer_active = false;
-			g_remote_transfer_source_id = 0U;
-			g_remote_transfer_session_id = 0U;
-			start_next_pending_node_manifest_now();
-		}
+		leaf_ble_manager.on_ble_reliable_verify_ok(verify.session_id,
+				verify.source_id,
+				verify.file_crc32);
 		EXO_LOG("[TRAIN][CSV] VerifyOk held source=%u session=%lu completed=0x%02X\r\n",
 				static_cast<unsigned>(verify.source_id),
 				static_cast<unsigned long>(verify.session_id),
@@ -2223,17 +2218,6 @@ namespace {
 		leaf_ble_manager.on_ble_reliable_verify_ok(verify.session_id,
 				verify.source_id,
 				verify.file_crc32);
-		if (g_remote_transfer_active &&
-				g_remote_transfer_source_id == verify.source_id &&
-				g_remote_transfer_session_id == verify.session_id) {
-			g_remote_transfer_active = false;
-			g_remote_transfer_source_id = 0U;
-			g_remote_transfer_session_id = 0U;
-			EXO_LOG("[BLE][REC][REL][NODEQ] node transfer complete source=%u session=%lu queue=%u\r\n",
-					static_cast<unsigned>(verify.source_id),
-					static_cast<unsigned long>(verify.session_id),
-					static_cast<unsigned>(pending_node_done_depth()));
-		}
 		(void) send_reliable_record_frame(exo::RecordReliableType::CommitDone,
 				verify.source_id,
 				verify.session_id,
@@ -3928,7 +3912,13 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							g_local_record_phase = LocalRecordPhase::TransferActive;
 						}
 					} else {
-						leaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
+						if (type == exo::RecordReliableType::Pause) {
+							leaf_ble_manager.on_ble_reliable_pause(hdr.session_id, hdr.source_id);
+						} else if (type == exo::RecordReliableType::Resume) {
+							leaf_ble_manager.on_ble_reliable_resume(hdr.session_id, hdr.source_id);
+						} else {
+							leaf_ble_manager.on_ble_reliable_cancel(hdr.session_id, hdr.source_id);
+						}
 						(void) forward_remote_record_control(hdr.source_id, payload, length);
 					}
 					(void) Custom_APP_SendCmdAck(payload, length, 1U);
@@ -4017,16 +4007,19 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							static_cast<unsigned>(pending_node_done_depth()));
 					start_next_pending_node_manifest_now();
 				} else if (source_id != 0U) {
-					if (g_remote_transfer_active &&
-							g_remote_transfer_source_id == source_id &&
-							g_remote_transfer_session_id == ack.session_id) {
-						g_remote_transfer_active = false;
-						g_remote_transfer_source_id = 0U;
-						g_remote_transfer_session_id = 0U;
-						EXO_LOG("[BLE][REC][REL][NODEQ] node transfer complete source=%u session=%lu queue=%u\r\n",
-								static_cast<unsigned>(source_id),
-								static_cast<unsigned long>(ack.session_id),
-								static_cast<unsigned>(pending_node_done_depth()));
+					if (leaf_ble_manager.on_ble_session_complete(ack.session_id, source_id, ack.payload_crc32)) {
+						if (g_remote_transfer_active &&
+								g_remote_transfer_source_id == source_id &&
+								g_remote_transfer_session_id == ack.session_id) {
+							g_remote_transfer_active = false;
+							g_remote_transfer_source_id = 0U;
+							g_remote_transfer_session_id = 0U;
+							EXO_LOG("[BLE][REC][REL][NODEQ] node transfer complete source=%u session=%lu queue=%u\r\n",
+									static_cast<unsigned>(source_id),
+									static_cast<unsigned long>(ack.session_id),
+									static_cast<unsigned>(pending_node_done_depth()));
+							start_next_pending_node_manifest_now();
+						}
 					}
 					(void) forward_remote_record_control(source_id, payload, length);
 				}

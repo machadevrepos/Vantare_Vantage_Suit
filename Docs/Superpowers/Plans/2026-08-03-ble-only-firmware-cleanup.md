@@ -36,8 +36,8 @@
 - Consumes: existing BLE bridge functions `exo_hub_ble_write()` and `exo_node_ble_write()`.
 - Produces: `leaf_ble_manager` naming and `AcquisitionDiagnostics::comms_leaf`.
 
-- [ ] Confirm the patch preimage blob IDs match the current branch files.
-- [ ] Reconstruct and hash the patch target files; require the target hashes from the patch headers.
+- [ ] Record and validate the immutable compressed patch SHA-256.
+- [ ] Validate trusted per-file preimage and target blob IDs before any patch application, aborting on mismatch.
 - [ ] Apply the patch changes atomically on the cleanup branch.
 - [ ] Verify no deleted header remains included or referenced.
 - [ ] Commit with `chore: remove RS485 dead code and rename BLE leaf paths`.
@@ -67,7 +67,8 @@
 - Produces: a zero-dependency source check that fails on deleted includes, RS485 runtime identifiers, stale diagnostics names, or missing BLE leaf names.
 
 - [ ] Add assertions that deleted files do not exist.
-- [ ] Scan active firmware sources for `RS485_RECORD_`, `MasterRs485_`, `HubRs485`, `master_rs485_recording`, `node_rs485_recording`, and `comms_rs485`.
+- [ ] Explicitly scan active firmware sources for deleted headers RS485.h, RS485_FRAME_PROTOCOL.h, RS485_RECORD_MASTER_APP.h, RS485_RECORD_NODE_APP.h, and RECORDING_BRIDGE.h, including their include/reference forms.
+- [ ] Scan active firmware sources for runtime identifiers `RS485_RECORD_`, `MasterRs485_`, `HubRs485`, `master_rs485_recording`, `node_rs485_recording`, and `comms_rs485`.
 - [ ] Permit historical mentions only inside the uploaded patch or cleanup documentation when explicitly excluded from the active-source scan.
 - [ ] Require `leaf_ble_manager` and `comms_leaf` in the expected active files.
 - [ ] Run `python Firmware/HostTests/test_ble_only_cleanup.py` and require PASS.
@@ -96,9 +97,12 @@
 **Interfaces:**
 - Produces: an auditable, hardware-untested cleanup branch.
 
-- [ ] Run Python syntax checks and BLE-only cleanup regression checks.
-- [ ] Run available PowerShell and C++ host tests.
+- [ ] Run Python syntax checks and BLE-only cleanup regression checks (PASS/NOT RUN with reason).
+- [ ] Run available PowerShell and C++ host tests (PASS/NOT RUN with reason).
+- [ ] Execute explicit Master STM32CubeIDE build (PASS/NOT RUN with reason).
+- [ ] Execute explicit Node STM32CubeIDE build (PASS/NOT RUN with reason).
 - [ ] Compare the cleanup branch against `2nd_Branch` and inspect every changed file.
 - [ ] Verify `main` and `2nd_Branch` are unchanged.
 - [ ] Create a draft PR from `ble-only-firmware-cleanup` to `2nd_Branch` with hardware validation requirements.
-- [ ] Record exact passed checks and unresolved STM32/hardware validation boundaries.
+- [ ] Keep firmware flashing and physical workflow validation as separate pre-merge gates.
+- [ ] Record exact passed checks (PASS/NOT RUN with reason) and unresolved STM32/hardware validation boundaries.

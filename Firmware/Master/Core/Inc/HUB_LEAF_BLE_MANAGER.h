@@ -287,16 +287,42 @@ public:
     receiver_credit_ = 0U;
   }
 
-  void on_ble_reliable_verify_ok(uint32_t session_id, uint16_t source_id,
-                                 uint32_t payload_crc32) {
-    if (!owns_transfer_(session_id, source_id)) return;
-    verified_crc32_ = payload_crc32;
+  bool on_ble_reliable_resume(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return false;
+    paused_ = false;
+    return true;
+  }
+
+  bool on_ble_reliable_cancel(uint32_t session_id, uint16_t source_id) {
+    if (!owns_transfer_(session_id, source_id)) return false;
     active_source_id_ = 0U;
     active_session_id_ = 0U;
     receiver_credit_ = 0U;
     paused_ = false;
     if (queued_done_count_ == 0U && !transfer_hold_ && pending_live_count_ == 0U)
       start_or_record_active_ = false;
+    return true;
+  }
+
+  bool on_ble_reliable_verify_ok(uint32_t session_id, uint16_t source_id,
+                                 uint32_t payload_crc32) {
+    if (!owns_transfer_(session_id, source_id)) return false;
+    verified_crc32_ = payload_crc32;
+    paused_ = false;
+    return true;
+  }
+
+  bool on_ble_session_complete(uint32_t session_id, uint16_t source_id,
+                                uint32_t payload_crc32) {
+    if (!owns_transfer_(session_id, source_id)) return false;
+    if (verified_crc32_ != payload_crc32) return false;
+    active_source_id_ = 0U;
+    active_session_id_ = 0U;
+    receiver_credit_ = 0U;
+    paused_ = false;
+    if (queued_done_count_ == 0U && !transfer_hold_ && pending_live_count_ == 0U)
+      start_or_record_active_ = false;
+    return true;
   }
 
   void on_ble_chunk_ack(uint32_t session_id, uint16_t source_id,
