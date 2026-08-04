@@ -51,9 +51,9 @@ The cleanup must not change:
 
 Without hardware, completion requires:
 
-- Immutable compressed patch SHA-256 is recorded and validated.
-- Trusted per-file preimage and target blob IDs are validated as artifact digest and hash manifest completion criteria.
-- Active firmware source searches (scoped to active firmware sources, not repository-wide) find no references to deleted headers RS485.h, RS485_FRAME_PROTOCOL.h, RS485_RECORD_MASTER_APP.h, RS485_RECORD_NODE_APP.h, and RECORDING_BRIDGE.h, or obsolete runtime identifiers, with explicit historical allowlist for patch and documentation artifacts.
+- Immutable compressed patch SHA-256 is recorded and validated as artifact digest completion criteria.
+- Trusted per-file preimage and target blob IDs are validated as hash manifest completion criteria.
+- Active firmware source searches (explicitly scoped to active firmware sources, not repository-wide) find no references to deleted headers RS485.h, RS485_FRAME_PROTOCOL.h, RS485_RECORD_MASTER_APP.h, RS485_RECORD_NODE_APP.h, and RECORDING_BRIDGE.h (including their include/reference forms), or obsolete runtime identifiers, with explicit historical allowlist for patch and documentation artifacts.
 - Existing host tests and cleanup source tests pass where the required host toolchain is available.
 - C/C++ syntax/static checks run against changed portable headers and source-level invariants.
 - The branch diff is reviewed for accidental generated-code changes, protocol changes, or sensor/recording behavior changes.

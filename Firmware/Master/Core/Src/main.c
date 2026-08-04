@@ -2249,7 +2249,6 @@ namespace {
 					static_cast<unsigned long>(approved.verify.session_id),
 					static_cast<unsigned>(completed_mask));
 			release_remote_node_verify_ok(approved.verify, approved.frame, approved.length);
-			start_next_pending_node_manifest_now();
 			return;
 		}
 	}
