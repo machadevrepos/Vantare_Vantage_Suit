@@ -4,30 +4,38 @@
 + git worktree add --detach /tmp/vantage-validated-firmware-cleanup origin/2nd_Branch
 Preparing worktree (detached HEAD 3c1137d)
 HEAD is now at 3c1137d docs: add four-node live and CSV validation procedure
-+ git rev-parse f18fe7af887fdafeb3959032165f55c6fbc25b4c
-part-01.b64: bytes=9000
-part-02.b64: bytes=16764
-part-03.b64: bytes=18000
-part-04.b64: bytes=18000
-part-05.b64: bytes=18000
-part-06.b64: bytes=17999
-part-07.b64: bytes=18000
-part-08.b64: bytes=18000
-part-09.b64: bytes=768
-part-06a.b64: bytes=9000
-part-06b1.b64: bytes=3995
-part-06b2.b64: bytes=5003
-part-06b.b64: bytes=8998
-combined-06: decode failed: Incorrect padding
-split-06a-06b1-06b2: decode failed: Invalid base64-encoded string: number of data characters (134529) cannot be 1 more than a multiple of 4
-split-06a-06b: decode failed: Invalid base64-encoded string: number of data characters (134529) cannot be 1 more than a multiple of 4
++ git rev-parse e6bc2f3cb6b602e899069e4d95cf97fe1e64428e
++ g++ -std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc Firmware/HostTests/test_coderabbit_firmware_regressions.cpp -o /tmp/test_coderabbit_firmware_regressions_red
++ /tmp/test_coderabbit_firmware_regressions_red
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:84: expected corrupt.request_chunk == 1U
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:97: expected frame_header(transport.frame).byte_offset == 0xFFFFFFFFU
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:100: expected frame_header(transport.frame).byte_offset == 0xFFFFFFFFU
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:112: expected !manager.pop_next_record_done(selected)
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:113: expected manager.active_source_id() == 1U && manager.active_session_id() == 77U
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:117: expected exo::training_csv::append_double_or_blank(writer, 1.0e30)
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:128: expected exo::training_csv::format_bno_row(row, sizeof(row), written, 1U, 0U, 0U, 0U, 1000U, row_context, false, 0U, extreme)
+Firmware/HostTests/test_coderabbit_firmware_regressions.cpp:148: expected CongestionProbe<exo::ble_hub::HubLeafBleManager>::run()
++ g++ -std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc -I /tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp -o /tmp/test_coderabbit_csv_logger_regressions_red
+In file included from Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_LOGGER.h:8,
+                 from Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp:5:
+/tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src/ff.h:29:10: fatal error: ffconf.h: No such file or directory
+   29 | #include "ffconf.h"             /* FatFs configuration options */
+      |          ^~~~~~~~~~
+compilation terminated.
 Traceback (most recent call last):
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v6.py", line 122, in <module>
-    raise SystemExit(cleanup.main())
-                     ^^^^^^^^^^^^^^
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 613, in main
-    patch_path = reconstruct_cleanup_patch()
-                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v6.py", line 78, in reconstruct_cleanup_patch
-    raise RuntimeError(
-RuntimeError: none of the redundant uploaded layouts reconstructed the recorded patch SHA-256 539c0486217bfdacd2cfb1adc857350ce58dbda2dde3797bd94e5d60fcdd8116
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_manual_validated_cleanup.py", line 411, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_manual_validated_cleanup.py", line 398, in main
+    cleanup.verify_red()
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 419, in verify_red
+    logger = compile_test(
+             ^^^^^^^^^^^^^
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 406, in compile_test
+    run(*command, cwd=WORK)
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 50, in run
+    return subprocess.run(
+           ^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '('g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', 'Firmware/LIBRARY/CUSTOM', '-I', 'Firmware/Master/Core/Inc', '-I', '/tmp/vantage-validated-firmware-cleanup/Firmware/Master/Middlewares/Third_Party/FatFs/src', 'Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp', '-o', '/tmp/test_coderabbit_csv_logger_regressions_red')' returned non-zero exit status 1.
