@@ -2215,9 +2215,11 @@ namespace {
 			const uint8_t *payload,
 			uint8_t length)
 	{
-		leaf_ble_manager.on_ble_reliable_verify_ok(verify.session_id,
+		if (!leaf_ble_manager.on_ble_reliable_verify_ok(verify.session_id,
 				verify.source_id,
-				verify.file_crc32);
+				verify.file_crc32)) {
+			return;
+		}
 		(void) send_reliable_record_frame(exo::RecordReliableType::CommitDone,
 				verify.source_id,
 				verify.session_id,
