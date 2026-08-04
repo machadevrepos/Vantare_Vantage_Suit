@@ -1,0 +1,62 @@
+name: Verify final review red phase
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/verify-final-review-red.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Compile and require regression failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMON=(-std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc)
+          g++ "${COMMON[@]}" Firmware/HostTests/test_coderabbit_firmware_regressions.cpp -o /tmp/final_firmware_red
+          set +e
+          /tmp/final_firmware_red
+          firmware_status=$?
+          set -e
+          if test "$firmware_status" -eq 0; then
+            echo 'firmware regressions unexpectedly passed before fixes' >&2
+            exit 1
+          fi
+
+          g++ "${COMMON[@]}" -I Firmware/HostTests/FatFsStub \
+            Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp \
+            -o /tmp/final_logger_red
+          set +e
+          /tmp/final_logger_red
+          logger_status=$?
+          set -e
+          if test "$logger_status" -eq 0; then
+            echo 'CSV logger regressions unexpectedly passed before fixes' >&2
+            exit 1
+          fi
+
+          printf 'firmware_status=%s\nlogger_status=%s\n' \
+            "$firmware_status" "$logger_status" > final-review-red.txt
+
+      - name: Commit red-phase evidence and remove workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/verify-final-review-red.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'test: confirm final review regressions'
+          git push origin HEAD:ble-only-firmware-cleanup
