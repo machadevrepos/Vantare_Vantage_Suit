@@ -4,19 +4,30 @@
 + git worktree add --detach /tmp/vantage-validated-firmware-cleanup origin/2nd_Branch
 Preparing worktree (detached HEAD 3c1137d)
 HEAD is now at 3c1137d docs: add four-node live and CSV validation procedure
-+ git rev-parse a8389ee91263ebfcf6dd0b1bc54b7d6bb354e091
-part-02.b64: transport blob differs from recorded value (recorded=f6f61ce45f035b4802461e71bab6a2910cbd2de7, current=8bc11d18ca6e9705efcc3339569e276937b70b68); full patch hash remains mandatory
-part-06b.b64: transport blob differs from recorded value (recorded=11d59b3b3649896bc73c45961f3d49b1ee1ff95a, current=098cebe8a4f5d6388875b94f96d770289a9c4310); full patch hash remains mandatory
++ git rev-parse f18fe7af887fdafeb3959032165f55c6fbc25b4c
+part-01.b64: bytes=9000
+part-02.b64: bytes=16764
+part-03.b64: bytes=18000
+part-04.b64: bytes=18000
+part-05.b64: bytes=18000
+part-06.b64: bytes=17999
+part-07.b64: bytes=18000
+part-08.b64: bytes=18000
+part-09.b64: bytes=768
+part-06a.b64: bytes=9000
+part-06b1.b64: bytes=3995
+part-06b2.b64: bytes=5003
+part-06b.b64: bytes=8998
+combined-06: decode failed: Incorrect padding
+split-06a-06b1-06b2: decode failed: Invalid base64-encoded string: number of data characters (134529) cannot be 1 more than a multiple of 4
+split-06a-06b: decode failed: Invalid base64-encoded string: number of data characters (134529) cannot be 1 more than a multiple of 4
 Traceback (most recent call last):
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v5.py", line 151, in <module>
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v6.py", line 122, in <module>
     raise SystemExit(cleanup.main())
                      ^^^^^^^^^^^^^^
   File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/apply_validated_firmware_cleanup.py", line 613, in main
     patch_path = reconstruct_cleanup_patch()
                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v5.py", line 71, in reconstruct_cleanup_patch
-    current['part-06b.b64'] = repair_part_06b(current['part-06b.b64'])
-                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v5.py", line 42, in repair_part_06b
-    raise RuntimeError('part-06b.b64 could not be repaired to its recorded Git blob')
-RuntimeError: part-06b.b64 could not be repaired to its recorded Git blob
+  File "/home/runner/work/Vantare_Vantage_Suit/Vantare_Vantage_Suit/.github/scripts/run_validated_cleanup_v6.py", line 78, in reconstruct_cleanup_patch
+    raise RuntimeError(
+RuntimeError: none of the redundant uploaded layouts reconstructed the recorded patch SHA-256 539c0486217bfdacd2cfb1adc857350ce58dbda2dde3797bd94e5d60fcdd8116
