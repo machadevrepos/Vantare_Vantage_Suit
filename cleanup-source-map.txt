@@ -1,0 +1,15 @@
+# BLE cleanup active-source map
+
+## Forbidden identifiers and includes
+
+## RS485 references in Master and Node main files
+
+## References to files approved for deletion
+
+## Approved deletion paths
+ 17 290 Firmware/LIBRARY/CUSTOM/RECORDING_BRIDGE.h
+  27 1977 Firmware/LIBRARY/CUSTOM/RECORDING_INTEGRATION_NOTES.md
+ 270 7724 Firmware/LIBRARY/CUSTOM/RS485.h
+ 272 7698 Firmware/LIBRARY/CUSTOM/RS485_FRAME_PROTOCOL.h
+ 2017 86860 Firmware/LIBRARY/CUSTOM/RS485_RECORD_MASTER_APP.h
+ 1032 40020 Firmware/LIBRARY/CUSTOM/RS485_RECORD_NODE_APP.h
