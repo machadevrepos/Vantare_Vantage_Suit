@@ -3357,16 +3357,6 @@ extern "C" uint8_t exo_hub_leaf_record_done_ingest(const uint8_t *payload, uint1
 			message.total_size < sizeof(exo::SessionHeader)) {
 		return 0U;
 	}
-	const uint8_t training_index = static_cast<uint8_t>(message.node_id - 1U);
-	g_training_node_done[training_index] = message;
-	g_training_node_done_valid[training_index] = true;
-	master_training_csv_coordinator.on_node_record_done(message);
-	if (master_training_csv_coordinator.state() == exo::TrainingCsvState::ReceiveNode &&
-			master_training_csv_coordinator.active_session_id() == message.session_id &&
-			master_training_csv_coordinator.active_node_id() == message.node_id &&
-			message.node_id >= 1U && message.node_id <= 4U) {
-		g_training_node_done_valid[message.node_id - 1U] = false;
-	}
 	if (seen_node_done_contains(message)) {
 		EXO_LOG("[BLE][HUB][LEAF] record_done duplicate ignored node=%u session=%lu size=%lu\r\n",
 				static_cast<unsigned>(message.node_id),
@@ -3376,6 +3366,9 @@ extern "C" uint8_t exo_hub_leaf_record_done_ingest(const uint8_t *payload, uint1
 	}
 	const uint8_t ok = leaf_ble_manager.queue_record_done(message) ? 1U : 0U;
 	if (ok != 0U) {
+		const uint8_t training_index = static_cast<uint8_t>(message.node_id - 1U);
+		g_training_node_done[training_index] = message;
+		g_training_node_done_valid[training_index] = true;
 		seen_node_done_remember(message);
 		g_ble_record_transfer_mode = true;
 		g_ble_start_or_record_in_progress = true;
