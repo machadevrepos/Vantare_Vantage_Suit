@@ -1,0 +1,508 @@
+name: Apply validated CodeRabbit firmware fixes
+
+on:
+  push:
+    branches:
+      - ble-only-firmware-cleanup
+    paths:
+      - '.github/workflows/apply-coderabbit-firmware-fixes.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out cleanup branch
+        uses: actions/checkout@v4
+        with:
+          ref: ble-only-firmware-cleanup
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct and apply the verified BLE-only cleanup patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/cleanup-saved /tmp/cleanup-parts
+          for path in \
+            Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md \
+            Docs/Superpowers/Specs/2026-08-03-ble-only-firmware-cleanup-design.md \
+            Firmware/HostTests/test_ble_only_cleanup.py; do
+            if test -f "$path"; then
+              mkdir -p "/tmp/cleanup-saved/$(dirname "$path")"
+              cp "$path" "/tmp/cleanup-saved/$path"
+              rm -f "$path"
+            fi
+          done
+          rm -f .github/workflows/apply-ble-cleanup.yml
+          rm -f .github/workflows/apply-ble-cleanup-repair.yml
+
+          git fetch origin ble-only-firmware-cleanup-apply:refs/remotes/origin/ble-only-firmware-cleanup-apply
+          for name in part-01.b64 part-02.b64 part-03.b64 part-04.b64 part-05.b64 part-06a.b64 part-06b.b64 part-07.b64 part-08.b64 part-09.b64; do
+            git show "origin/ble-only-firmware-cleanup-apply:.cleanup-patch/$name" > "/tmp/cleanup-parts/$name"
+          done
+
+          python3 - <<'PY'
+          from __future__ import annotations
+          import hashlib
+          from pathlib import Path
+
+          expected = {
+              'part-01.b64': '0cffd530b67683b40796fc5d3d8a8ce1ed2aaa51',
+              'part-02.b64': 'f6f61ce45f035b4802461e71bab6a2910cbd2de7',
+              'part-03.b64': 'a6183b4f7b09865db94d6ba4fad0ed653eab6db3',
+              'part-04.b64': 'bbc6921e0604320420c665822ff4c2fed0a7ae77',
+              'part-05.b64': '776131caf22fbbb5e8b6095fe6c8cccf1ca29625',
+              'part-06a.b64': '3779523ba418e3066d09eee0521eb6db7264ce69',
+              'part-07.b64': '16b3febfdf6ce733c88046c2630a1e1a7256c736',
+              'part-08.b64': 'b579c21b18744a6d7c199f1e981dc33210c6eee8',
+              'part-09.b64': 'b7a3748d74f88099ee2fa490b85d3fccd45a066d',
+          }
+          root = Path('/tmp/cleanup-parts')
+
+          def blob_sha(data: bytes) -> str:
+              return hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest()
+
+          for name, wanted in expected.items():
+              actual = blob_sha((root / name).read_bytes())
+              if actual != wanted:
+                  raise SystemExit(f'{name}: expected blob {wanted}, got {actual}')
+
+          source = (root / 'part-06b.b64').read_bytes()
+          target = '11d59b3b3649896bc73c45961f3d49b1ee1ff95a'
+          if blob_sha(source) == target:
+              repaired = source
+          else:
+              alphabet = b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/='
+              repaired = None
+              for position in range(len(source) + 1):
+                  for value in alphabet:
+                      candidate = source[:position] + bytes((value,)) + source[position:]
+                      if blob_sha(candidate) == target:
+                          repaired = candidate
+                          break
+                  if repaired is not None:
+                      break
+              if repaired is None:
+                  raise SystemExit('unable to repair part-06b.b64')
+          (root / 'part-06b.repaired').write_bytes(repaired)
+          PY
+
+          cat \
+            /tmp/cleanup-parts/part-01.b64 \
+            /tmp/cleanup-parts/part-02.b64 \
+            /tmp/cleanup-parts/part-03.b64 \
+            /tmp/cleanup-parts/part-04.b64 \
+            /tmp/cleanup-parts/part-05.b64 \
+            /tmp/cleanup-parts/part-06a.b64 \
+            /tmp/cleanup-parts/part-06b.repaired \
+            /tmp/cleanup-parts/part-07.b64 \
+            /tmp/cleanup-parts/part-08.b64 \
+            /tmp/cleanup-parts/part-09.b64 \
+            | base64 --decode | gzip --decompress > /tmp/ble-cleanup.patch
+          test "$(sha256sum /tmp/ble-cleanup.patch | awk '{print $1}')" = "539c0486217bfdacd2cfb1adc857350ce58dbda2dde3797bd94e5d60fcdd8116"
+          git apply --check /tmp/ble-cleanup.patch
+          git apply /tmp/ble-cleanup.patch
+
+          for path in \
+            Docs/Superpowers/Plans/2026-08-03-ble-only-firmware-cleanup.md \
+            Docs/Superpowers/Specs/2026-08-03-ble-only-firmware-cleanup-design.md \
+            Firmware/HostTests/test_ble_only_cleanup.py; do
+            if ! test -f "$path" && test -f "/tmp/cleanup-saved/$path"; then
+              mkdir -p "$(dirname "$path")"
+              cp "/tmp/cleanup-saved/$path" "$path"
+            fi
+          done
+
+          test "$(git hash-object Firmware/Master/Core/Src/main.c)" = "8daf733b87ca7af9d4e61adca4dab8a71ef6abd5"
+          test "$(git hash-object Firmware/Node/Core/Src/main.c)" = "fa66d023c600f1e9dab30a8982f5a9c94db27a28"
+
+      - name: Add regression tests first
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > Firmware/HostTests/test_coderabbit_firmware_regressions.cpp <<'CPP'
+          #include <cmath>
+          #include <cstdint>
+          #include <cstring>
+          #include <iostream>
+          #include <type_traits>
+          #include <utility>
+          #include <vector>
+
+          #include "HUB_LEAF_BLE_MANAGER.h"
+          #include "MASTER_NODE_RELIABLE_CONTROL.h"
+          #include "MASTER_NODE_TRANSFER_WINDOW.h"
+          #include "MASTER_TRAINING_CSV_FORMATTER.h"
+
+          namespace {
+          int failures = 0;
+          #define EXPECT_TRUE(expr) do { if (!(expr)) { std::cerr << __FILE__ << ':' << __LINE__ << ": expected " #expr "\n"; ++failures; } } while (0)
+
+          struct Transport {
+              std::vector<uint8_t> frame;
+              static bool send(void *context, uint8_t, const uint8_t *data, uint16_t length)
+              {
+                  auto &self = *static_cast<Transport *>(context);
+                  self.frame.assign(data, data + length);
+                  return true;
+              }
+          };
+
+          exo::RecordReliableFrameHeader frame_header(const std::vector<uint8_t> &frame)
+          {
+              exo::RecordReliableFrameHeader header{};
+              if (frame.size() >= sizeof(header)) std::memcpy(&header, frame.data(), sizeof(header));
+              return header;
+          }
+
+          template<typename Manager, typename = void>
+          struct CongestionProbe {
+              static bool run() { return false; }
+          };
+
+          template<typename Manager>
+          struct CongestionProbe<Manager, std::void_t<
+              decltype(std::declval<Manager &>().peek_next_live_sample(
+                  std::declval<typename Manager::LiveSample &>(), uint32_t{})),
+              decltype(std::declval<Manager &>().on_live_sample_send_result(bool{}, uint32_t{}))>> {
+              static bool run()
+              {
+                  Manager manager;
+                  uint8_t value = 1U;
+                  if (!manager.push_leaf_sample(1U, 1U, &value, 1U)) return false;
+                  value = 2U;
+                  if (!manager.push_leaf_sample(2U, 1U, &value, 1U)) return false;
+                  typename Manager::LiveSample sample{};
+                  if (!manager.peek_next_live_sample(sample, 0U) || sample.node_id != 1U) return false;
+                  manager.on_live_sample_send_result(false, 0U);
+                  if (manager.peek_next_live_sample(sample, 79U)) return false;
+                  if (!manager.peek_next_live_sample(sample, 80U) || sample.node_id != 2U) return false;
+                  manager.on_live_sample_send_result(true, 80U);
+                  if (manager.peek_next_live_sample(sample, 159U)) return false;
+                  return manager.peek_next_live_sample(sample, 160U) && sample.node_id == 1U;
+              }
+          };
+          }
+
+          int main()
+          {
+              exo::MasterNodeTransferWindow window;
+              EXPECT_TRUE(window.begin(1U, 42U, 400U, 180U));
+              const auto first = window.inspect(1U, 42U, 0U, 0U, 180U, true, false);
+              EXPECT_TRUE(window.commit(first));
+              const auto corrupt = window.inspect(1U, 42U, 0xFFFFFFFFU, 180U, 180U, false, false);
+              EXPECT_TRUE(corrupt.decision == exo::NodeTransferDecision::NackCorrupt);
+              EXPECT_TRUE(corrupt.request_chunk == 1U);
+
+              Transport transport;
+              exo::MasterNodeReliableControl control(&Transport::send, &transport);
+              exo::RecordDoneMessage done{};
+              done.node_id = 1U;
+              done.session_id = 42U;
+              done.total_size = 1000U;
+              done.payload_crc32 = 0x12345678U;
+              EXPECT_TRUE(control.begin(done, 180U));
+              EXPECT_TRUE(control.service(1U));
+              EXPECT_TRUE(control.nack_range(0xFFFFFFFFU));
+              EXPECT_TRUE(control.service(2U));
+              EXPECT_TRUE(frame_header(transport.frame).byte_offset == 0xFFFFFFFFU);
+
+              exo::ble_hub::HubLeafBleManager manager;
+              exo::RecordDoneMessage done1{};
+              done1.node_id = 1U; done1.session_id = 77U; done1.total_size = 100U; done1.payload_crc32 = 1U;
+              exo::RecordDoneMessage done2 = done1;
+              done2.node_id = 2U; done2.payload_crc32 = 2U;
+              EXPECT_TRUE(manager.queue_record_done(done1));
+              EXPECT_TRUE(manager.queue_record_done(done2));
+              exo::RecordDoneMessage selected{};
+              EXPECT_TRUE(manager.pop_next_record_done(selected));
+              EXPECT_TRUE(selected.node_id == 1U);
+              EXPECT_TRUE(!manager.pop_next_record_done(selected));
+              EXPECT_TRUE(manager.active_source_id() == 1U && manager.active_session_id() == 77U);
+
+              char numeric[32]{};
+              exo::training_csv::CsvRowWriter writer(numeric, sizeof(numeric));
+              EXPECT_TRUE(exo::training_csv::append_double_or_blank(writer, 1.0e30));
+              EXPECT_TRUE(writer.length() == 0U);
+
+              exo::Bno85Sample sample{};
+              constexpr double pi = 3.14159265358979323846;
+              const double roll = 30.0 * pi / 180.0;
+              const double pitch = 20.0 * pi / 180.0;
+              const double yaw = 10.0 * pi / 180.0;
+              const double cr = std::cos(roll * 0.5), sr = std::sin(roll * 0.5);
+              const double cp = std::cos(pitch * 0.5), sp = std::sin(pitch * 0.5);
+              const double cy = std::cos(yaw * 0.5), sy = std::sin(yaw * 0.5);
+              sample.quat_real = static_cast<float>(cr * cp * cy + sr * sp * sy);
+              sample.quat_i = static_cast<float>(sr * cp * cy - cr * sp * sy);
+              sample.quat_j = static_cast<float>(cr * sp * cy + sr * cp * sy);
+              sample.quat_k = static_cast<float>(cr * cp * sy - sr * sp * cy);
+              const auto derived = exo::training_csv::derive_bno_features(sample);
+              EXPECT_TRUE(std::fabs(derived.roll_deg - 30.0) < 0.001);
+              EXPECT_TRUE(std::fabs(derived.pitch_deg - 20.0) < 0.001);
+              EXPECT_TRUE(std::fabs(derived.yaw_deg - 10.0) < 0.001);
+
+              EXPECT_TRUE(CongestionProbe<exo::ble_hub::HubLeafBleManager>::run());
+              return failures == 0 ? 0 : 1;
+          }
+          CPP
+
+          cat > Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp <<'CPP'
+          #include <cstdint>
+          #include <cstring>
+          #include <iostream>
+
+          #include "MASTER_TRAINING_CSV_LOGGER.h"
+
+          namespace {
+          int failures = 0;
+          int marker_open_failures = 0;
+          int marker_open_calls = 0;
+          int rename_calls = 0;
+          #define EXPECT_TRUE(expr) do { if (!(expr)) { std::cerr << __FILE__ << ':' << __LINE__ << ": expected " #expr "\n"; ++failures; } } while (0)
+
+          FRESULT mkdir_ok(const TCHAR*) { return FR_OK; }
+          FRESULT stat_missing(const TCHAR*, FILINFO*) { return FR_NO_FILE; }
+          FRESULT open_controlled(FIL*, const TCHAR *path, BYTE)
+          {
+              const char *text = reinterpret_cast<const char *>(path);
+              if (text != nullptr && std::strstr(text, ".OK") != nullptr) {
+                  ++marker_open_calls;
+                  if (marker_open_failures > 0) {
+                      --marker_open_failures;
+                      return FR_DISK_ERR;
+                  }
+              }
+              return FR_OK;
+          }
+          FRESULT write_ok(FIL*, const void*, UINT bytes, UINT *written) { *written = bytes; return FR_OK; }
+          FRESULT sync_ok(FIL*) { return FR_OK; }
+          FRESULT close_ok(FIL*) { return FR_OK; }
+          FRESULT rename_ok(const TCHAR*, const TCHAR*) { ++rename_calls; return FR_OK; }
+
+          exo::SessionHeader metadata(uint8_t source, uint32_t session)
+          {
+              exo::SessionHeader header{};
+              header.node_id = source;
+              header.session_id = session;
+              header.bno85_target_rate_hz = 100U;
+              header.bno85_attempted_count = 2U;
+              header.bno85_captured_count = 2U;
+              header.icm45686_target_rate_hz = 100U;
+              header.icm45686_attempted_count = 2U;
+              header.icm45686_captured_count = 2U;
+              header.payload_crc32 = 0x12345678U + source;
+              return header;
+          }
+          }
+
+          int main()
+          {
+              const exo::training_csv::TrainingCsvFatFsOps ops = {
+                  mkdir_ok, stat_missing, open_controlled, write_ok, sync_ok, close_ok, rename_ok
+              };
+
+              exo::MasterTrainingCsvLogger metadata_logger(&ops);
+              EXPECT_TRUE(metadata_logger.begin(9U, 0x03U, 0U));
+              exo::Bno85Sample sample{};
+              sample.quat_real = 1.0f;
+              EXPECT_TRUE(!metadata_logger.append_bno(1U, 1000U, sample, false, 0U, 1U));
+              EXPECT_TRUE(metadata_logger.last_operation() ==
+                  exo::training_csv::TrainingCsvLogOperation::InvalidSourceMetadata);
+              EXPECT_TRUE(metadata_logger.set_source_metadata(1U, metadata(1U, 9U)));
+              EXPECT_TRUE(metadata_logger.append_bno(1U, 2000U, sample, false, 0U, 2U));
+
+              marker_open_failures = 1;
+              marker_open_calls = 0;
+              rename_calls = 0;
+              exo::MasterTrainingCsvLogger publish_logger(&ops);
+              EXPECT_TRUE(publish_logger.begin(10U, 0x01U, 0U));
+              EXPECT_TRUE(publish_logger.set_source_metadata(0U, metadata(0U, 10U)));
+              EXPECT_TRUE(publish_logger.append_bno(0U, 1000U, sample, false, 0U, 1U));
+              EXPECT_TRUE(publish_logger.mark_source_complete(0U, 2U));
+              EXPECT_TRUE(!publish_logger.shutdown(3U));
+              EXPECT_TRUE(!publish_logger.published());
+              EXPECT_TRUE(rename_calls == 1);
+              EXPECT_TRUE(publish_logger.publish());
+              EXPECT_TRUE(publish_logger.published());
+              EXPECT_TRUE(rename_calls == 1);
+              EXPECT_TRUE(marker_open_calls == 2);
+              return failures == 0 ? 0 : 1;
+          }
+          CPP
+
+      - name: Verify regression tests fail before fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMON=(-std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc)
+          g++ "${COMMON[@]}" Firmware/HostTests/test_coderabbit_firmware_regressions.cpp -o /tmp/test_coderabbit_firmware_red
+          if /tmp/test_coderabbit_firmware_red; then
+            echo 'firmware regression test unexpectedly passed before fixes' >&2
+            exit 1
+          fi
+          FF_HEADER="$(find Firmware -name ff.h -print -quit)"
+          test -n "$FF_HEADER"
+          FF_DIR="$(dirname "$FF_HEADER")"
+          g++ "${COMMON[@]}" -I "$FF_DIR" Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp -o /tmp/test_coderabbit_logger_red
+          if /tmp/test_coderabbit_logger_red; then
+            echo 'logger regression test unexpectedly passed before fixes' >&2
+            exit 1
+          fi
+
+      - name: Apply minimal production fixes and documentation corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import re
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one replacement, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h',
+              '''            result.decision = NodeTransferDecision::NackCorrupt;\n            result.request_chunk = chunk_index;\n            return result;''',
+              '''            result.decision = NodeTransferDecision::NackCorrupt;\n            return result;''')
+
+          control = Path('Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h')
+          text = control.read_text()
+          text = text.replace(
+              'next_chunk * static_cast<uint32_t>(chunk_size_)',
+              'chunk_byte_offset_(next_chunk, chunk_size_)')
+          text = text.replace(
+              'first_chunk * static_cast<uint32_t>(chunk_size_)',
+              'chunk_byte_offset_(first_chunk, chunk_size_)')
+          anchor = '''    bool queue_frame(RecordReliableType type, uint32_t chunk_index,\n'''
+          helper = '''    static uint32_t chunk_byte_offset_(uint32_t chunk_index, uint16_t chunk_size)\n    {\n        const uint64_t offset = static_cast<uint64_t>(chunk_index) * chunk_size;\n        return offset > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<uint32_t>(offset);\n    }\n\n'''
+          if text.count('chunk_byte_offset_(') != 2 or text.count(anchor) != 1:
+              raise SystemExit('MASTER_NODE_RELIABLE_CONTROL.h: unexpected offset replacement state')
+          control.write_text(text.replace(anchor, helper + anchor, 1))
+
+          hub_path = Path('Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h')
+          hub = hub_path.read_text()
+          hub = hub.replace(
+              '''  bool pop_next_record_done(exo::RecordDoneMessage &out) {\n    if (queued_done_count_ == 0U) {''',
+              '''  bool pop_next_record_done(exo::RecordDoneMessage &out) {\n    if (active_source_id_ != 0U) {\n      return false;\n    }\n    if (queued_done_count_ == 0U) {''', 1)
+          peek = '''  bool peek_next_live_sample(LiveSample &out) const {\n    const int8_t selected = select_next_live_index_();\n    if (selected < 0) return false;\n    out = live_slots_[static_cast<uint8_t>(selected)].sample;\n    return true;\n  }\n'''
+          timed = peek + '''\n  bool peek_next_live_sample(LiveSample &out, uint32_t now_ms) const {\n    return live_preview_due_(now_ms) && peek_next_live_sample(out);\n  }\n\n  void on_live_sample_send_result(bool sent, uint32_t now_ms) {\n    if (sent) {\n      (void)discard_next_live_sample();\n      if (live_preview_congested_ &&\n          static_cast<uint32_t>(now_ms - last_live_failure_ms_) >= kCongestionRecoveryMs) {\n        live_preview_congested_ = false;\n      }\n      next_live_attempt_ms_ = now_ms +\n          (live_preview_congested_ ? kCongestedPreviewIntervalMs : kNormalPreviewIntervalMs);\n      return;\n    }\n    const int8_t selected = select_next_live_index_();\n    if (selected >= 0) {\n      const uint8_t source = live_slots_[static_cast<uint8_t>(selected)].sample.node_id;\n      if (source >= 1U && source <= kMaxLeaves) {\n        next_preview_source_ = source == kMaxLeaves ? 1U : static_cast<uint8_t>(source + 1U);\n      }\n    }\n    selected_live_index_ = kNoLiveSelection;\n    live_preview_congested_ = true;\n    last_live_failure_ms_ = now_ms;\n    next_live_attempt_ms_ = now_ms + kCongestedPreviewIntervalMs;\n  }\n\n  bool live_preview_congested() const { return live_preview_congested_; }\n'''
+          if hub.count(peek) != 1:
+              raise SystemExit('HUB_LEAF_BLE_MANAGER.h: peek block not found')
+          hub = hub.replace(peek, timed, 1)
+          hub = hub.replace(
+              '''  static constexpr int8_t kNoLiveSelection = -1;\n''',
+              '''  static constexpr int8_t kNoLiveSelection = -1;\n  static constexpr uint32_t kNormalPreviewIntervalMs = 40U;\n  static constexpr uint32_t kCongestedPreviewIntervalMs = 80U;\n  static constexpr uint32_t kCongestionRecoveryMs = 5000U;\n''', 1)
+          hub = hub.replace(
+              '''  bool owns_transfer_(uint32_t session_id, uint16_t source_id) const {\n''',
+              '''  bool live_preview_due_(uint32_t now_ms) const {\n    return next_live_attempt_ms_ == 0U ||\n        static_cast<int32_t>(now_ms - next_live_attempt_ms_) >= 0;\n  }\n\n  bool owns_transfer_(uint32_t session_id, uint16_t source_id) const {\n''', 1)
+          hub = hub.replace(
+              '''    pending_live_count_ = 0U;\n    next_preview_source_ = 1U;\n    selected_live_index_ = kNoLiveSelection;\n    active_source_id_ = 0U;''',
+              '''    pending_live_count_ = 0U;\n    next_preview_source_ = 1U;\n    selected_live_index_ = kNoLiveSelection;\n    next_live_attempt_ms_ = 0U;\n    last_live_failure_ms_ = 0U;\n    live_preview_congested_ = false;\n    active_source_id_ = 0U;''', 1)
+          hub = hub.replace(
+              '''  mutable int8_t selected_live_index_ = kNoLiveSelection;\n  bool start_or_record_active_ = false;''',
+              '''  mutable int8_t selected_live_index_ = kNoLiveSelection;\n  uint32_t next_live_attempt_ms_ = 0U;\n  uint32_t last_live_failure_ms_ = 0U;\n  bool live_preview_congested_ = false;\n  bool start_or_record_active_ = false;''', 1)
+          hub_path.write_text(hub)
+
+          main_path = Path('Firmware/Master/Core/Src/main.c')
+          main = main_path.read_text()
+          pattern = re.compile(r'(\tstatic void drain_leaf_stream_passthrough\(\)\n\t\{\n)(.*?)(\n\t\}\n\n\tstatic bool is_duplicate_start_record)', re.S)
+          match = pattern.search(main)
+          if match is None:
+              raise SystemExit('main.c: drain_leaf_stream_passthrough not found')
+          owner = re.search(r'if \(!([A-Za-z_][A-Za-z0-9_]*)\.peek_next_live_sample', match.group(2))
+          if owner is None:
+              raise SystemExit('main.c: live manager variable not found')
+          manager = owner.group(1)
+          body = f'''\t\texo::ble_hub::HubLeafBleManager::LiveSample sample {{ }};\n\t\tconst uint32_t now_ms = HAL_GetTick();\n\t\tif (!{manager}.peek_next_live_sample(sample, now_ms)) {{\n\t\t\treturn;\n\t\t}}\n\t\tif (!g_ble_stream_enabled || g_ble_record_transfer_mode) {{\n\t\t\t(void){manager}.discard_next_live_sample();\n\t\t\treturn;\n\t\t}}\n\t\tif (!send_ble_v2_sample(sample.node_id,\n\t\t\t\tsample.sensor_id,\n\t\t\t\tsample.payload,\n\t\t\t\tsample.payload_len)) {{\n\t\t\t{manager}.on_live_sample_send_result(false, now_ms);\n\t\t\treturn;\n\t\t}}\n\t\t{manager}.on_live_sample_send_result(true, now_ms);'''
+          main_path.write_text(main[:match.start(2)] + body + main[match.end(2):])
+
+          replace_once(
+              'Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_FORMATTER.h',
+              '''inline bool append_double_or_blank(CsvRowWriter &writer, double value)\n{\n    return !finite_value(value) ? true : append_double(writer, value);\n}''',
+              '''inline bool append_double_or_blank(CsvRowWriter &writer, double value)\n{\n    if (!finite_value(value) || value > 1000000.0 || value < -1000000.0) return true;\n    return append_double(writer, value);\n}''')
+
+          replace_once(
+              'Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_LOGGER.h',
+              '''        for (uint8_t source = 0U; source < kSourceCount; ++source) {\n            if ((expected_source_mask_ & static_cast<uint8_t>(1U << source)) != 0U) {\n                metadata_valid_[source][0] = true;\n                metadata_valid_[source][1] = true;\n            }\n        }\n''',
+              '''        // Every source, including the Master, must register its validated\n        // SessionHeader before rows are accepted. reset_runtime() leaves all\n        // metadata validity flags clear.\n''')
+
+          replace_once(
+              'Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_LOGGER.h',
+              '''        const FRESULT rename_result = ops_->rename_fn(path_, csv_path_);\n        if (rename_result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::Rename, rename_result);\n        memcpy(path_, csv_path_, sizeof(path_));\n        published_ = true;\n        FIL marker{};\n        FRESULT result = ops_->open_fn(&marker, ok_path_, static_cast<BYTE>(FA_CREATE_NEW | FA_WRITE));\n        if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerOpen, result);\n        result = ops_->sync_fn(&marker);\n        if (result != FR_OK) { (void)ops_->close_fn(&marker); return set_terminal(training_csv::TrainingCsvLogOperation::MarkerSync, result); }\n        result = ops_->close_fn(&marker);\n        if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerClose, result);\n        return true;''',
+              '''        const bool already_renamed = strcmp(path_, csv_path_) == 0;\n        if (!already_renamed) {\n            const FRESULT rename_result = ops_->rename_fn(path_, csv_path_);\n            if (rename_result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::Rename, rename_result);\n            memcpy(path_, csv_path_, sizeof(path_));\n        }\n        FIL marker{};\n        const BYTE marker_mode = static_cast<BYTE>((already_renamed ? FA_OPEN_ALWAYS : FA_CREATE_NEW) | FA_WRITE);\n        FRESULT result = ops_->open_fn(&marker, ok_path_, marker_mode);\n        if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerOpen, result);\n        result = ops_->sync_fn(&marker);\n        if (result != FR_OK) { (void)ops_->close_fn(&marker); return set_terminal(training_csv::TrainingCsvLogOperation::MarkerSync, result); }\n        result = ops_->close_fn(&marker);\n        if (result != FR_OK) return set_terminal(training_csv::TrainingCsvLogOperation::MarkerClose, result);\n        published_ = true;\n        return true;''')
+
+          replace_once(
+              'Docs/FourNode_Live_Csv_Validation.md',
+              '''1. Wait until one Node upload is active.\n2. Disconnect or close the browser.\n3. Leave the Master and Nodes powered.\n4. Reconnect the browser after several seconds.\n5. Confirm the Master resumes from its next expected chunk rather than restarting the complete session or discarding validated data.''',
+              '''1. Wait until one Node upload is active, then record the active Node ID and next expected chunk.\n2. Disconnect or close the browser.\n3. Leave the Master and Nodes powered while the browser remains disconnected.\n4. Before reconnecting, confirm from the Master diagnostics that the next expected chunk advanced or that the active Node moved into the validated state.\n5. Reconnect the browser after several seconds.\n6. Confirm the Master continues from the advanced transfer state rather than restarting the complete session or discarding validated data.''')
+
+          replace_once(
+              'Docs/Superpowers/Plans/2026-08-03-four-node-live-preview-training-csv-implementation.md',
+              'Use normalized quaternion `(x,y,z,w)` with right-handed intrinsic XYZ / roll-pitch-yaw formulas. Add Euler degrees and BNO/ICM vector magnitudes.',
+              'Use normalized quaternion `(x,y,z,w)` with a right-handed intrinsic Z-Y-X yaw-pitch-roll convention, reported as roll, pitch, and yaw. Add Euler degrees and BNO/ICM vector magnitudes.')
+
+          replace_once(
+              'Docs/Superpowers/Specs/2026-08-03-four-node-live-preview-training-csv-design.md',
+              '- `source_payload_crc32`\n\n### BNO85 raw and calibrated columns',
+              '- `source_payload_crc32`\n- `timestamp_quality_flags`\n\n### BNO85 raw and calibrated columns')
+          PY
+
+          rm -rf .cleanup-patch
+          rm -f .github/workflows/apply-ble-cleanup.yml
+          rm -f .github/workflows/apply-ble-cleanup-repair.yml
+          rm -f .github/workflows/apply-coderabbit-firmware-fixes.yml
+
+      - name: Run portable regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMON=(-std=c++17 -Wall -Wextra -Werror -I Firmware/LIBRARY/CUSTOM -I Firmware/Master/Core/Inc)
+          compile_run() {
+            local source="$1"
+            local output="/tmp/$(basename "${source%.cpp}")"
+            shift
+            g++ "${COMMON[@]}" "$@" "$source" -o "$output"
+            "$output"
+          }
+
+          compile_run Firmware/HostTests/test_coderabbit_firmware_regressions.cpp
+          compile_run Firmware/HostTests/test_master_node_transfer_window.cpp
+          compile_run Firmware/HostTests/test_master_node_reliable_control.cpp
+          compile_run Firmware/HostTests/test_hub_leaf_ble_manager.cpp
+          compile_run Firmware/HostTests/test_master_training_csv_formatter_v2.cpp
+          compile_run Firmware/HostTests/test_node_live_sample_queue.cpp
+
+          FF_HEADER="$(find Firmware -name ff.h -print -quit)"
+          test -n "$FF_HEADER"
+          FF_DIR="$(dirname "$FF_HEADER")"
+          compile_run Firmware/HostTests/test_coderabbit_csv_logger_regressions.cpp -I "$FF_DIR"
+          compile_run Firmware/HostTests/test_master_training_csv_logger_v2.cpp -I "$FF_DIR"
+
+          python3 -m py_compile Firmware/HostTests/*.py
+          python3 Firmware/HostTests/test_ble_only_cleanup.py
+          g++ -std=c++17 -Wall -Wextra -Werror -DEXO_ACQ_DIAG_HOST_TEST=1 \
+            -I Firmware/LIBRARY/CUSTOM \
+            Firmware/Master/tests/acquisition_diagnostics_test.cpp \
+            -o /tmp/acquisition_diagnostics_test
+          /tmp/acquisition_diagnostics_test
+          git diff --check
+
+      - name: Commit validated cleanup and fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: harden BLE transfer and CSV cleanup'
+          git push origin HEAD:ble-only-firmware-cleanup
