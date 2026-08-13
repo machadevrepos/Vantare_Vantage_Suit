@@ -1071,6 +1071,7 @@ input[type="checkbox"] {
     WATCHDOG_MS: 1200,
     CONTROL_HEARTBEAT_MS: 400,
     CMD_BUSY_STUCK_MS: 300,
+    CMD_WRITE_TIMEOUT_MS: 1500,
     AWAITING_RETRY_MS: 300,
     NACK_RETRY_MS: 400,
     NACK_RETRY_BYPASS_MS: 650,
@@ -1220,6 +1221,9 @@ input[type="checkbox"] {
     startRecordAckTimer: null,
     startRecordAckDeadlineMs: 0,
     pendingTrainingTerminalState: null,
+    // Last TRAIN CSV status report. Tells us which node uploads the Master is
+    // currently driving, so we stay out of their flow control.
+    trainingCsv: { state: 0, expected: 0, completed: 0 },
     pointsWindow: 600,
     counters: { packets: 0, invalid: 0, unknown: 0 },
     traces: new Map(),
@@ -1585,6 +1589,31 @@ input[type="checkbox"] {
     return `${sessionId >>> 0}:${sourceId >>> 0}`;
   }
 
+  // A node keeps one send cursor and one credit counter, so only one receiver can
+  // drive it. Node chunks are relayed to us for progress display, but while the
+  // Master is staging that node to SD it owns the flow control: our NACKs used to
+  // rewind the node and the Master's next ACK yanked it forward again, so neither
+  // side finished. The Master now drops our control frames for these transfers, so
+  // stop generating them and treat the transfer as read-only.
+  // True for any node upload the Master is staging this session, regardless of how
+  // far along it is. Used to decide whether an incomplete browser-side copy is
+  // expected (it is) rather than a failure.
+  function masterStagedSource(transfer) {
+    if (!transfer) return false;
+    const nodeId = transfer.nodeId >>> 0;
+    if (nodeId < 1 || nodeId > 4) return false;
+    const training = state.trainingCsv;
+    return !!training && (training.expected & (1 << nodeId)) !== 0;
+  }
+
+  function masterOwnsNodeTransfer(transfer) {
+    if (!masterStagedSource(transfer)) return false;
+    const training = state.trainingCsv;
+    // Idle / Complete / CsvError / StageError mean the coordinator is not running.
+    if (training.state === 0 || training.state >= 9) return false;
+    return (training.completed & (1 << (transfer.nodeId >>> 0))) === 0;
+  }
+
   function isActiveReliableTransfer(transfer) {
     if (!transfer || transfer.outcome === "queued") {
       return false;
@@ -1782,6 +1811,7 @@ input[type="checkbox"] {
     state.activeTransferSessionId = null;
     state.activeRecordOwnerKey = null;
     state.pendingTrainingTerminalState = null;
+    state.trainingCsv = { state: 0, expected: 0, completed: 0 };
     state.pendingAckBySession.clear();
     abortBleWrites(new Error("BLE disconnected"));
     state.connectReadyAtMs = 0;
@@ -2185,6 +2215,7 @@ input[type="checkbox"] {
     state.activeTransferSessionId = null;
     state.activeRecordOwnerKey = null;
     state.pendingTrainingTerminalState = null;
+    state.trainingCsv = { state: 0, expected: 0, completed: 0 };
     state.pendingAckBySession.clear();
     if (state.recordAckTimer) {
       clearInterval(state.recordAckTimer);
@@ -2500,10 +2531,19 @@ input[type="checkbox"] {
       finishCmdWrite(item, item.generation, err);
       return;
     }
+    const generation = item.generation;
+    const watchdog = setTimeout(() => {
+      if (state.cmdWriteActive === item && state.cmdWriteGeneration === generation) {
+        log(`RECORD ack tx watchdog: releasing wedged write after ${RECORD_RELIABLE.CMD_WRITE_TIMEOUT_MS}ms`);
+        finishCmdWrite(item, generation, new Error("BLE write timed out"));
+      }
+    }, RECORD_RELIABLE.CMD_WRITE_TIMEOUT_MS);
     Promise.resolve(pendingWrite).then(() => {
-      finishCmdWrite(item, item.generation, null);
+      clearTimeout(watchdog);
+      finishCmdWrite(item, generation, null);
     }).catch((err) => {
-      finishCmdWrite(item, item.generation, err);
+      clearTimeout(watchdog);
+      finishCmdWrite(item, generation, err);
     });
   }
 
@@ -2553,11 +2593,18 @@ input[type="checkbox"] {
   }
 
   function applyTrainingCsvTerminalState(trainingState) {
-    if (trainingState === 9 && state.recordTransfers.size > 0) {
-      state.pendingTrainingTerminalState = trainingState;
-      syncReceivingTransferState();
-      log(`TRAIN CSV Complete deferred: ${state.recordTransfers.size} browser transfer(s) still active.`);
-      return false;
+    if (trainingState === 9) {
+      // Node uploads the Master staged are read-only here and are expected to be
+      // incomplete in the browser, so they must not hold Complete back forever.
+      // Only wait on transfers this tool actually drives.
+      const ownDriven = [...state.recordTransfers.values()]
+        .filter((t) => !masterStagedSource(t)).length;
+      if (ownDriven > 0) {
+        state.pendingTrainingTerminalState = trainingState;
+        syncReceivingTransferState();
+        log(`TRAIN CSV Complete deferred: ${ownDriven} browser transfer(s) still active.`);
+        return false;
+      }
     }
     if (trainingState === 10 || trainingState === 11) {
       state.pendingTrainingTerminalState = null;
@@ -2599,6 +2646,20 @@ input[type="checkbox"] {
       }
       for (const transfer of state.recordTransfers.values()) {
         if (!isActiveReliableTransfer(transfer)) {
+          continue;
+        }
+        if (masterOwnsNodeTransfer(transfer)) {
+          // Read-only: no recovery, no watchdog, no control traffic. Completion for
+          // this source is reported by the Master's TRAIN CSV status instead.
+          if (state.activeTransferSessionId === transfer.sessionId) {
+            const pct = transfer.totalSize > 0
+              ? Math.floor((transfer.receivedBytes * 100) / transfer.totalSize)
+              : 100;
+            updateTransferUi(
+              pct,
+              `Transfer ${sourceLabel(transfer.nodeId)} session=${transfer.sessionId}: ${transfer.receivedBytes}/${transfer.totalSize} bytes (${pct}%) Master is staging this source to SD...`
+            );
+          }
           continue;
         }
         refreshReliableRecoveryState(transfer,
@@ -2813,6 +2874,13 @@ input[type="checkbox"] {
   }
 
   function queueReliableNackOrAck(transfer, forceRecovery, bypassSuppression = false) {
+    if (masterOwnsNodeTransfer(transfer)) {
+      if ((performance.now() - (transfer.lastObserverLogMs || 0)) >= 5000) {
+        transfer.lastObserverLogMs = performance.now();
+        log(`RECORD control observer: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} rx=${transfer.receivedBytes}/${transfer.totalSize} (Master owns this upload)`);
+      }
+      return;
+    }
     log(`RECORD control decide: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} force=${forceRecovery ? 1 : 0} bypass=${bypassSuppression ? 1 : 0}`);
     if (forceRecovery) {
       transfer.recovering = true;
@@ -3141,6 +3209,7 @@ input[type="checkbox"] {
           state: st, expected, completed, failureSite, failureNode,
           stageOp, stageFr, csvOp, csvFr
         } = status;
+        state.trainingCsv = { state: st, expected, completed };
         let line = `TRAIN CSV: state=${TRAINING_CSV_STATES[st] ?? st}` +
           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
         if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
@@ -3876,10 +3945,21 @@ input[type="checkbox"] {
     log(`RECORD manifest: source=${sourceLabel(nodeId)} session=${sessionId} size=${totalSize} chunk=${chunkSize} chunks=${totalChunks} crc=0x${payloadCrc32.toString(16).padStart(8, "0")}`);
     const key = transferKey(sessionId, nodeId);
     if (state.activeRecordOwnerKey && state.activeRecordOwnerKey !== key) {
-      transfer.outcome = "queued";
-      log(`RECORD manifest queued: source=${sourceLabel(nodeId)} session=${sessionId} active=${state.activeRecordOwnerKey}`);
-      renderTransferSources();
-      return;
+      // The Master serves one source at a time, so a manifest for a different
+      // source means it has moved on. A read-only node transfer never completes
+      // here (we cannot request its missing chunks), so it must not keep holding
+      // ownership or every later source would be rejected as "not owner".
+      const owner = state.recordTransfers.get(state.activeRecordOwnerKey);
+      if (owner && masterStagedSource(owner)) {
+        owner.outcome = owner.outcome || "observed";
+        state.activeRecordOwnerKey = null;
+        log(`RECORD owner released: source=${sourceLabel(owner.nodeId)} session=${owner.sessionId} rx=${owner.receivedBytes}/${owner.totalSize} (Master moved to ${sourceLabel(nodeId)})`);
+      } else {
+        transfer.outcome = "queued";
+        log(`RECORD manifest queued: source=${sourceLabel(nodeId)} session=${sessionId} active=${state.activeRecordOwnerKey}`);
+        renderTransferSources();
+        return;
+      }
     }
     state.activeRecordOwnerKey = key;
     state.recordTransfer = transfer;
@@ -3908,6 +3988,11 @@ input[type="checkbox"] {
     }
     const key = transferKey(sessionId, nodeId);
     if (state.activeRecordOwnerKey && state.activeRecordOwnerKey !== key) {
+      if (masterStagedSource(transfer)) {
+        // Never PAUSE a node the Master is staging: that would stop the upload it
+        // is relying on. Just drop the frame; we are only observing this source.
+        return;
+      }
       log(`RECORD chunk rejected: not owner source=${sourceLabel(nodeId)} session=${sessionId} active=${state.activeRecordOwnerKey}`);
       queueReliableControl(transfer, RECORD_REL.PAUSE, new Uint8Array(0), chunkIndex, byteOffset);
       flushPendingChunkAck();

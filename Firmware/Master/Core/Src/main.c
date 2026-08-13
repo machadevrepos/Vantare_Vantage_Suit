@@ -2161,6 +2161,26 @@ namespace {
 		}
 	}
 
+	/* Transport for the training coordinator's own ACK/NACK frames. These go
+	 * straight out on the node link; routing them through exo_hub_ble_write()
+	 * would replay them through the inbound phone-command dispatcher and echo
+	 * every one of them back to the desktop tool. */
+	static bool master_node_reliable_send(void *context,
+			uint8_t node_id,
+			const uint8_t *frame,
+			uint16_t length)
+			{
+		(void) context;
+		if (node_id < 1U || node_id > 4U || frame == nullptr || length == 0U) {
+			return false;
+		}
+		return exo_hub_central_client_send_blepipe_to_node(node_id,
+				BLEPIPE_MSG_COMMAND,
+				BLEPIPE_ID_HUB,
+				frame,
+				length) != 0U;
+	}
+
 	static uint8_t forward_remote_record_control(uint16_t source_id,
 			const uint8_t *payload,
 			uint8_t length)
@@ -2173,6 +2193,38 @@ namespace {
 				BLEPIPE_ID_HUB,
 				payload,
 				length);
+	}
+
+	/* True while the training coordinator is the reliable receiver for this node.
+	 *
+	 * A node keeps a single send cursor and a single credit counter, so it can
+	 * only be driven by one flow-control authority. The desktop tool also sees
+	 * every node chunk (they are relayed to it for progress display) and used to
+	 * answer with its own ACK/NACK, which fought the master over that cursor:
+	 * each app NACK rewound the node and the next master ACK yanked it forward
+	 * again, so neither side ever completed. While the master owns the link the
+	 * app is an observer and its flow-control frames are dropped here. */
+	static bool master_training_csv_owns_node_link(uint16_t source_id)
+	{
+		if (source_id < 1U || source_id > 4U) {
+			return false;
+		}
+		switch (master_training_csv_coordinator.state()) {
+			case exo::TrainingCsvState::Idle:
+				case exo::TrainingCsvState::Complete:
+				case exo::TrainingCsvState::CsvError:
+				case exo::TrainingCsvState::StageError:
+				return false;
+			default:
+				break;
+		}
+		const uint8_t source_bit = static_cast<uint8_t>(1U << source_id);
+		if ((master_training_csv_coordinator.expected_source_mask() & source_bit) == 0U) {
+			return false;
+		}
+		/* Once the source is resolved the app may drive the node again. */
+		return (master_training_csv_coordinator.completed_source_mask() & source_bit) == 0U &&
+				(master_training_csv_coordinator.failed_source_mask() & source_bit) == 0U;
 	}
 
 	static bool master_training_csv_should_hold_node_verify(
@@ -2570,6 +2622,7 @@ int main(void)
 			static_cast<unsigned long>(kDefaultStreamIntervalMs));
 	leaf_ble_manager.begin();
 	exo_hub_central_client_init();
+	master_training_csv_coordinator.set_reliable_transport(master_node_reliable_send, nullptr);
 	{
 		uint8_t discovered[8] = { 0U };
 		const uint8_t count = leaf_ble_manager.copy_discovered_node_ids(discovered, static_cast<uint8_t>(sizeof(discovered)));
@@ -3750,7 +3803,17 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 									ack.source_id,
 									0U,
 									sanitize_receiver_credit(ack.credit));
-							(void) forward_remote_record_control(ack.source_id, payload, length);
+							/* The coordinator already sent this node its ManifestAck. Relaying
+							 * the app's copy would re-grant credit and rewind the node's send
+							 * cursor to chunk 0 part-way through staging. The bookkeeping above
+							 * still runs so the node-queue state machine advances. */
+							if (master_training_csv_owns_node_link(ack.source_id)) {
+								EXO_LOG("[BLE][REC][REL] MANIFEST_ACK observer-drop source=%u session=%lu\r\n",
+										static_cast<unsigned>(ack.source_id),
+										static_cast<unsigned long>(ack.session_id));
+							} else {
+								(void) forward_remote_record_control(ack.source_id, payload, length);
+							}
 						}
 						(void) Custom_APP_SendCmdAck(payload, length, 1U);
 						return 1U;
@@ -3811,6 +3874,11 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							g_local_chunk_offset = g_local_stream_cursor_chunk * static_cast<uint32_t>(kRecordChunkPayloadBytes);
 							g_local_record_phase = LocalRecordPhase::TransferActive;
 							g_local_waiting_verify = false;
+						} else if (master_training_csv_owns_node_link(ack.source_id)) {
+							EXO_LOG("[BLE][REC][REL] ACK_WINDOW observer-drop source=%u session=%lu chunk=%lu\r\n",
+									static_cast<unsigned>(ack.source_id),
+									static_cast<unsigned long>(ack.session_id),
+									static_cast<unsigned long>(ack.next_chunk_index));
 						} else {
 							leaf_ble_manager.on_ble_reliable_ack_window(ack.session_id,
 									ack.source_id,
@@ -3881,6 +3949,12 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 										static_cast<unsigned long>(nack.first_chunk_index),
 										static_cast<unsigned>(nack_count));
 							}
+						} else if (master_training_csv_owns_node_link(nack.source_id)) {
+							EXO_LOG("[BLE][REC][REL] NACK_RANGE observer-drop source=%u session=%lu first=%lu count=%u\r\n",
+									static_cast<unsigned>(nack.source_id),
+									static_cast<unsigned long>(nack.session_id),
+									static_cast<unsigned long>(nack.first_chunk_index),
+									static_cast<unsigned>(nack.chunk_count));
 						} else {
 							(void) recovery_queue_push(RecoveryJobKind::NodeTransferRetx,
 									nack.source_id,
@@ -3905,6 +3979,15 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 						} else {
 							g_local_record_phase = LocalRecordPhase::TransferActive;
 						}
+					} else if (type != exo::RecordReliableType::Cancel &&
+							master_training_csv_owns_node_link(hdr.source_id)) {
+						/* Pause/Resume would stall or restart an upload the coordinator is
+						 * mid-way through staging. Cancel stays honoured: that is deliberate
+						 * user intent, not automatic flow control. */
+						EXO_LOG("[BLE][REC][REL] %s observer-drop source=%u session=%lu\r\n",
+								type == exo::RecordReliableType::Pause ? "PAUSE" : "RESUME",
+								static_cast<unsigned>(hdr.source_id),
+								static_cast<unsigned long>(hdr.session_id));
 					} else {
 						bool remote_state_accepted = false;
 						if (type == exo::RecordReliableType::Pause) {
@@ -3968,6 +4051,11 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								hdr.session_id,
 								hdr.chunk_index,
 								1U);
+					} else if (master_training_csv_owns_node_link(hdr.source_id)) {
+						EXO_LOG("[BLE][REC][REL] VERIFY_FAIL observer-drop source=%u session=%lu chunk=%lu\r\n",
+								static_cast<unsigned>(hdr.source_id),
+								static_cast<unsigned long>(hdr.session_id),
+								static_cast<unsigned long>(hdr.chunk_index));
 					} else {
 						(void) recovery_queue_push(RecoveryJobKind::NodeTransferRetx,
 								hdr.source_id,

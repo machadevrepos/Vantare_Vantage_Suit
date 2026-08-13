@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "blepipe_proto.h"
+
 #include "MASTER_TRAINING_CSV_COORDINATOR.h"
 
 namespace {

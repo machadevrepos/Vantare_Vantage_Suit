@@ -52,7 +52,14 @@ public:
 static constexpr uint32_t kRowsPerService = 8U;
 static constexpr uint32_t kValidationBytesPerService = 256U;
 static constexpr uint32_t kSessionStallMs = 30000U;
+/* A node that goes quiet mid-upload only costs that node's rows. The remaining
+ * expected sources are still staged and the CSV is still published, so one flaky
+ * link cannot discard an entire capture. */
+static constexpr uint32_t kNodeStallMs = 30000U;
 static constexpr uint8_t kNodeReceiverCredit = 8U;
+/* Re-advertise the receive window when the active node stops sending, so a lost
+ * ACK does not idle the link until the stall timeout expires. */
+static constexpr uint32_t kNodeAckRearmMs = 300U;
 explicit MasterTrainingCsvCoordinator(
 const training_csv::TrainingCsvFatFsOps *logger_ops = nullptr,
 const node_session_staging::NodeSessionFatFsOps *stager_ops = nullptr,
@@ -64,6 +71,14 @@ reliable_control_(reliable_send, reliable_context),
 master_ops_(master_ops != nullptr ? master_ops :
 &training_csv_coordinator::kDefaultMasterRecordingOps)
 {
+}
+/* Without this the control frames fall back to exo_hub_ble_write(), which is the
+ * inbound phone-write handler: every ACK/NACK would re-enter the command
+ * dispatcher and be echoed back to the desktop tool. Point it straight at the
+ * node link instead. */
+void set_reliable_transport(MasterNodeReliableControl::SendFn send_fn, void *context)
+{
+reliable_control_.set_transport(send_fn, context);
 }
 bool begin_session(uint32_t session_id, uint8_t expected_source_mask)
 {
@@ -85,6 +100,7 @@ partial_finalized_ = false;
 active_session_id_ = session_id;
 expected_source_mask_ = expected_source_mask;
 completed_source_mask_ = 0U;
+failed_source_mask_ = 0U;
 active_node_id_ = 0U;
 master_bno_index_ = master_icm_index_ = 0U;
 node_bno_index_ = node_icm_index_ = 0U;
@@ -108,6 +124,7 @@ if (state_ != TrainingCsvState::WaitingForMaster || logger_.has_open_file() ||
 stager_.active()) return false;
 active_session_id_ = 0U;
 expected_source_mask_ = completed_source_mask_ = active_node_id_ = 0U;
+failed_source_mask_ = 0U;
 master_bno_index_ = master_icm_index_ = node_bno_index_ = node_icm_index_ = 0U;
 master_ledger_matches_ = false;
 memset(&master_header_, 0, sizeof(master_header_));
@@ -146,7 +163,8 @@ if (partial_finalized_ || state_ != TrainingCsvState::WaitingForNode ||
 done.command != RecordCommand::RecordDone ||
 done.session_id != active_session_id_ || done.node_id < 1U || done.node_id > 4U ||
 (expected_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) == 0U ||
-(completed_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) != 0U) return;
+(completed_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) != 0U ||
+(failed_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) != 0U) return;
 if (!stager_.begin(done, logger_.file_index())) {
 fail(TrainingCsvState::StageError, TrainingFailSite::Site2);
 return;
@@ -298,12 +316,14 @@ switch (state_) {
 case TrainingCsvState::CsvError:
 case TrainingCsvState::StageError:
 finalize_partial(now_ms); break;
-case TrainingCsvState::WaitingForNode:
 case TrainingCsvState::ReceiveNode:
-if ((now_ms - last_progress_ms_) >= kSessionStallMs) {
-fail(TrainingCsvState::StageError, TrainingFailSite::SessionStall);
-finalize_partial(now_ms);
-}
+if ((now_ms - last_progress_ms_) >= kNodeStallMs) abandon_active_node(now_ms);
+else (void)reliable_control_.rearm_ack_window(now_ms, kNodeAckRearmMs);
+break;
+case TrainingCsvState::WaitingForNode:
+/* Nothing arrived from any remaining node in time. Publish what was
+ * staged rather than discarding the sources that did complete. */
+if ((now_ms - last_progress_ms_) >= kSessionStallMs) abandon_remaining_nodes(now_ms);
 break;
 default:
 break;
@@ -329,6 +349,9 @@ uint32_t active_session_id() const { return active_session_id_; }
 uint8_t active_node_id() const { return active_node_id_; }
 uint8_t expected_source_mask() const { return expected_source_mask_; }
 uint8_t completed_source_mask() const { return completed_source_mask_; }
+/* Expected sources that were written off after stalling. Non-zero means the
+ * published CSV is missing those sources' rows. */
+uint8_t failed_source_mask() const { return failed_source_mask_; }
 uint32_t ledger_count() const { return ledger_.icm_count(); }
 uint32_t master_bno_index() const { return master_bno_index_; }
 uint32_t master_icm_index() const { return master_icm_index_; }
@@ -452,10 +475,55 @@ fail(TrainingCsvState::StageError, TrainingFailSite::Site18); return;
 }
 active_node_id_ = 0U;
 transfer_window_.reset();
-if ((completed_source_mask_ & expected_source_mask_) == expected_source_mask_) {
+settle_after_source(now_ms);
+}
+/* A source is resolved once it is either converted into the CSV or written off.
+ * The run finishes when every expected source has been resolved one way or the
+ * other, so an unreachable node cannot hold the file open forever. */
+void settle_after_source(uint32_t now_ms)
+{
+const uint8_t resolved = static_cast<uint8_t>(completed_source_mask_ | failed_source_mask_);
+if ((resolved & expected_source_mask_) == expected_source_mask_) {
 if (logger_.shutdown(now_ms)) state_ = TrainingCsvState::Complete;
 else fail(TrainingCsvState::CsvError, TrainingFailSite::Site19);
 } else state_ = TrainingCsvState::WaitingForNode;
+}
+void abandon_active_node(uint32_t now_ms)
+{
+const uint8_t node_id = active_node_id_;
+if (node_id >= 1U && node_id <= 4U) {
+failed_source_mask_ |= static_cast<uint8_t>(1U << node_id);
+/* Keep the first stall visible for diagnostics without failing the run. */
+if (failure_site_ == TrainingFailSite::None) {
+failure_site_ = TrainingFailSite::SessionStall;
+failure_node_id_ = node_id;
+failure_stager_operation_ = stager_.last_operation();
+failure_stager_result_ = stager_.last_result();
+}
+}
+/* shutdown() leaves discarded_ clear, so the node keeps its flash copy and the
+ * session can be re-pulled later instead of being lost. */
+(void)stager_.shutdown();
+transfer_window_.reset();
+reliable_control_.reset();
+active_node_id_ = 0U;
+node_bno_index_ = node_icm_index_ = 0U;
+++progress_seq_;
+last_progress_ms_ = now_ms;
+settle_after_source(now_ms);
+}
+void abandon_remaining_nodes(uint32_t now_ms)
+{
+const uint8_t unresolved = static_cast<uint8_t>(expected_source_mask_ &
+~static_cast<uint8_t>(completed_source_mask_ | failed_source_mask_));
+if (unresolved == 0U) return;
+failed_source_mask_ |= unresolved;
+if (failure_site_ == TrainingFailSite::None) {
+failure_site_ = TrainingFailSite::SessionStall;
+}
+++progress_seq_;
+last_progress_ms_ = now_ms;
+settle_after_source(now_ms);
 }
 MasterTrainingCsvLogger logger_;
 MasterNodeSessionStager stager_;
@@ -471,6 +539,7 @@ uint32_t node_bno_index_ = 0U;
 uint32_t node_icm_index_ = 0U;
 uint8_t expected_source_mask_ = 0U;
 uint8_t completed_source_mask_ = 0U;
+uint8_t failed_source_mask_ = 0U;
 uint8_t active_node_id_ = 0U;
 uint8_t reliable_defer_services_ = 0U;
 bool master_ledger_matches_ = false;

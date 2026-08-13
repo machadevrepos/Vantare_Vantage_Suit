@@ -305,6 +305,11 @@ static constexpr uint32_t kNodeRecordChunkGapMs = 8U;
 static constexpr uint8_t kNodeRecordBurstLimit = 1U;
 static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
 static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
+/* An upload that has run out of credit is only restarted by an inbound control
+ * frame. If that frame is lost the transfer deadlocks until the receiver's
+ * session watchdog fires, so re-arm a single chunk after this long to give the
+ * receiver something fresh to ACK. */
+static constexpr uint32_t kNodeRecordCreditStarveMs = 500U;
 static bool g_node_record_done_sent = false;
 static bool g_node_upload_active = false;
 static uint32_t g_node_upload_session_id = 0U;
@@ -312,6 +317,10 @@ static uint32_t g_node_upload_total_size = 0U;
 static uint32_t g_node_upload_crc32 = 0U;
 static uint32_t g_node_upload_next_chunk = 0U;
 static uint8_t g_node_upload_credit = 0U;
+/* Chunks still owed to an accepted NackRange. While non-zero the send cursor is
+ * owned by gap recovery and must not be dragged forward by an ACK_WINDOW. */
+static uint8_t g_node_upload_retx_remaining = 0U;
+static uint32_t g_node_upload_credit_idle_ms = 0U;
 static uint32_t g_node_upload_last_chunk_ms = 0U;
 static uint32_t g_node_upload_last_fail_log_ms = 0U;
 static uint32_t g_node_record_done_last_send_ms = 0U;
@@ -325,7 +334,9 @@ extern "C" uint8_t exo_node_ble_status_notify_enabled(void);
 static uint16_t node_blepipe_current_id()
 {
 #if EXO_NODE_FLASH_ENABLED
-	return static_cast<uint16_t>(exo::node_runtime_config::load_node_id(EXO_NODE_ID));
+	/* Cached in RAM: this is on the path of every BLE frame header and every
+	 * upload chunk, and it must never write to flash. */
+	return static_cast<uint16_t>(exo::node_runtime_config::current_node_id(EXO_NODE_ID));
 #else
 	return static_cast<uint16_t>(EXO_NODE_ID);
 #endif
@@ -555,6 +566,8 @@ static void node_blepipe_reset_upload_state()
 	g_node_upload_crc32 = 0U;
 	g_node_upload_next_chunk = 0U;
 	g_node_upload_credit = 0U;
+	g_node_upload_retx_remaining = 0U;
+	g_node_upload_credit_idle_ms = 0U;
 	g_node_upload_last_chunk_ms = 0U;
 	g_node_upload_last_fail_log_ms = 0U;
 	g_node_record_done_last_send_ms = 0U;
@@ -655,8 +668,32 @@ static void node_blepipe_process_recording_upload()
 				static_cast<unsigned long>(done.total_size));
 	}
 
-	if (!g_node_upload_active || g_node_upload_credit == 0U ||
-	    (HAL_GetTick() - g_node_upload_last_chunk_ms) < kNodeRecordChunkGapMs) {
+	if (!g_node_upload_active) {
+		return;
+	}
+
+	if (g_node_upload_credit == 0U) {
+		/* Credit is only replenished by an inbound ACK_WINDOW/NACK_RANGE. If that
+		 * frame never lands the upload would stay silent forever, so re-arm one
+		 * chunk periodically. This self-limits to one chunk per starve interval
+		 * because the credit drops straight back to zero after it is spent. */
+		const uint32_t now = HAL_GetTick();
+		if (g_node_upload_credit_idle_ms == 0U) {
+			g_node_upload_credit_idle_ms = now;
+			return;
+		}
+		if ((now - g_node_upload_credit_idle_ms) < kNodeRecordCreditStarveMs) {
+			return;
+		}
+		g_node_upload_credit_idle_ms = now;
+		g_node_upload_credit = 1U;
+		EXO_LOG("[BLE][NODE][REC] credit starved, re-arming session=%lu chunk=%lu retx=%u\r\n",
+				static_cast<unsigned long>(g_node_upload_session_id),
+				static_cast<unsigned long>(g_node_upload_next_chunk),
+				static_cast<unsigned>(g_node_upload_retx_remaining));
+	}
+
+	if ((HAL_GetTick() - g_node_upload_last_chunk_ms) < kNodeRecordChunkGapMs) {
 		return;
 	}
 
@@ -668,6 +705,8 @@ static void node_blepipe_process_recording_upload()
 		if (offset >= g_node_upload_total_size) {
 			g_node_upload_active = false;
 			g_node_upload_credit = 0U;
+			g_node_upload_retx_remaining = 0U;
+			g_node_upload_credit_idle_ms = 0U;
 			return;
 		}
 
@@ -715,6 +754,12 @@ static void node_blepipe_process_recording_upload()
 		}
 		g_node_upload_next_chunk++;
 		g_node_upload_credit--;
+		if (g_node_upload_retx_remaining > 0U) {
+			--g_node_upload_retx_remaining;
+		}
+		if (g_node_upload_credit == 0U) {
+			g_node_upload_credit_idle_ms = HAL_GetTick();
+		}
 		g_node_upload_last_chunk_ms = HAL_GetTick();
 		g_node_upload_last_fail_log_ms = 0U;
 		++burst_sent;
@@ -1165,6 +1210,8 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 							g_node_upload_last_chunk_ms = 0U;
 							g_node_upload_last_fail_log_ms = 0U;
 						}
+						g_node_upload_retx_remaining = 0U;
+						g_node_upload_credit_idle_ms = 0U;
 						g_node_upload_credit = ack.credit == 0U ? exo::kRecordReliableDefaultCredit : ack.credit;
 						g_node_record_done_sent = true;
 						EXO_LOG("[BLE][NODE][REC] ManifestAck source=%u session=%lu credit=%u next=%lu active=%u start upload\r\n",
@@ -1185,21 +1232,26 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 					if (ack.source_id == node_blepipe_current_id() &&
 					    ack.session_id == g_node_upload_session_id) {
 						g_node_upload_active = true;
-						const uint32_t total_chunks = (g_node_upload_total_size + static_cast<uint32_t>(kNodeRecordChunkPayloadBytes) - 1U) /
-								static_cast<uint32_t>(kNodeRecordChunkPayloadBytes);
-						if (ack.next_chunk_index > g_node_upload_next_chunk ||
-						    (ack.next_chunk_index < g_node_upload_next_chunk &&
-						     ack.next_chunk_index < total_chunks)) {
-							if (ack.next_chunk_index < g_node_upload_next_chunk) {
-								EXO_LOG("[BLE][NODE][REC] AckWindow rewind session=%lu from=%lu to=%lu credit=%u\r\n",
-										static_cast<unsigned long>(g_node_upload_session_id),
-										static_cast<unsigned long>(g_node_upload_next_chunk),
-										static_cast<unsigned long>(ack.next_chunk_index),
-										static_cast<unsigned>(ack.credit));
-							}
+						/* ACK_WINDOW also doubles as a periodic progress heartbeat from the
+						 * app (bypass=1), reporting its contiguous-received count. Because
+						 * this node bursts ahead using its granted credit without waiting
+						 * for each chunk to be confirmed, next_chunk_index is expected to
+						 * trail behind our own send cursor most of the time. Only use it to
+						 * move forward (skip-ahead) or to refresh credit; never rewind here
+						 * on a stale/behind value, or every heartbeat would needlessly
+						 * re-send chunks that already went out. Genuine gap recovery is
+						 * handled explicitly via NackRange below.
+						 *
+						 * While a NackRange is still being serviced the send cursor belongs
+						 * to gap recovery. An ACK_WINDOW generated before that NACK was
+						 * handled would otherwise drag the cursor forward again and the
+						 * requested chunks would never be retransmitted. */
+						if (g_node_upload_retx_remaining == 0U &&
+						    ack.next_chunk_index > g_node_upload_next_chunk) {
 							g_node_upload_next_chunk = ack.next_chunk_index;
 						}
 						g_node_upload_credit = ack.credit == 0U ? exo::kRecordReliableDefaultCredit : ack.credit;
+						g_node_upload_credit_idle_ms = 0U;
 						g_node_record_done_sent = true;
 						node_blepipe_send_ack(hdr, 1U, payload[0]);
 						return true;
@@ -1225,6 +1277,10 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 						g_node_upload_credit = chunk_count == 0U ? 1U :
 								static_cast<uint8_t>(chunk_count > exo::kRecordReliableDefaultCredit ?
 										exo::kRecordReliableDefaultCredit : chunk_count);
+						/* Own the send cursor until every requested chunk has gone out, so a
+						 * stale ACK_WINDOW cannot cancel the retransmit. */
+						g_node_upload_retx_remaining = g_node_upload_credit;
+						g_node_upload_credit_idle_ms = 0U;
 						g_node_upload_last_chunk_ms = 0U;
 						g_node_upload_last_fail_log_ms = 0U;
 						g_node_record_done_sent = true;
@@ -1250,6 +1306,7 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 					if (g_node_upload_credit == 0U) {
 						g_node_upload_credit = exo::kRecordReliableDefaultCredit;
 					}
+					g_node_upload_credit_idle_ms = 0U;
 					node_blepipe_send_ack(hdr, 1U, payload[0]);
 					return true;
 				}
@@ -1282,6 +1339,8 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 					g_node_upload_active = true;
 					g_node_upload_next_chunk = rel.chunk_index;
 					g_node_upload_credit = 1U;
+					g_node_upload_retx_remaining = 1U;
+					g_node_upload_credit_idle_ms = 0U;
 					node_blepipe_send_ack(hdr, 1U, payload[0]);
 					return true;
 				}
@@ -1576,11 +1635,15 @@ int main(void)
 		exo::node_runtime_config::set_storage_hooks(&NodeFlashRead, &NodeFlashWrite, &NodeFlashErase);
 		(void)exo::node_runtime_config::set_flash_capacity(
 				node_recording_app.detected_flash_capacity());
-		const uint8_t runtime_node_id = exo::node_runtime_config::load_node_id(EXO_NODE_ID);
+		/* Commission once, here, now that the real flash capacity is known and the
+		 * settings sector base is correct. Everything after this point only reads. */
+		const bool node_id_provisioned = exo::node_runtime_config::provision_node_id(EXO_NODE_ID);
+		const uint8_t runtime_node_id = exo::node_runtime_config::current_node_id(EXO_NODE_ID);
 		node_recording_app.set_node_id(runtime_node_id);
-		EXO_LOG("Node ID runtime=%u (default=%u)\r\n",
+		EXO_LOG("Node ID runtime=%u (default=%u provisioned=%u)\r\n",
 				static_cast<unsigned>(runtime_node_id),
-				static_cast<unsigned>(EXO_NODE_ID));
+				static_cast<unsigned>(EXO_NODE_ID),
+				static_cast<unsigned>(node_id_provisioned ? 1U : 0U));
 		EXO_LOG("Node flash capacity=%lu max_duration_ms=%lu\r\n",
 				static_cast<unsigned long>(node_recording_app.detected_flash_capacity()),
 				static_cast<unsigned long>(node_recording_app.maximum_duration_ms()));
@@ -1852,7 +1915,7 @@ void PeriphCommonClock_Config(void)
 extern "C" uint8_t exo_node_ble_runtime_id(void)
 {
 #if EXO_NODE_FLASH_ENABLED
-	return exo::node_runtime_config::load_node_id(EXO_NODE_ID);
+	return exo::node_runtime_config::current_node_id(EXO_NODE_ID);
 #else
 	return EXO_NODE_ID;
 #endif
@@ -2032,7 +2095,7 @@ extern "C" uint8_t exo_node_ble_write(const uint8_t *payload, uint8_t length)
 	}
 	case 0xB1U: /* get node id */
 	{
-		const uint8_t current_id = exo::node_runtime_config::load_node_id(EXO_NODE_ID);
+		const uint8_t current_id = exo::node_runtime_config::current_node_id(EXO_NODE_ID);
 		EXO_LOG("[BLE][CFG] get-node-id=%u\r\n", (unsigned) current_id);
 		return 1U;
 	}

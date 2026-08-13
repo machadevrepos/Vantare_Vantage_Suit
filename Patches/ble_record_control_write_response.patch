@@ -1,0 +1,14 @@
+*** Begin Patch
+*** Update File: Firmware/DesktopTools/Exoskeleton.html
+@@
+   function writeCharacteristic(char, payload) {
+-    if (char.properties?.writeWithoutResponse) {
+-      return char.writeValueWithoutResponse(payload);
+-    }
+     if (char.properties?.write) {
+       return char.writeValueWithResponse(payload);
+     }
++    if (char.properties?.writeWithoutResponse) {
++      return char.writeValueWithoutResponse(payload);
++    }
+*** End Patch

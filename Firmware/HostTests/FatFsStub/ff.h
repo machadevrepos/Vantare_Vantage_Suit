@@ -7,9 +7,11 @@ typedef char TCHAR;
 typedef uint8_t BYTE;
 typedef unsigned int UINT;
 typedef uint32_t DWORD;
+typedef uint32_t FSIZE_t;
 
 typedef struct { uint32_t reserved; } FIL;
 typedef struct { uint32_t fsize; } FILINFO;
+typedef struct { BYTE fs_type; } FATFS;
 
 typedef enum {
     FR_OK = 0,
@@ -42,6 +44,7 @@ typedef enum {
 #define FA_OPEN_ALWAYS   0x10U
 #define FA_OPEN_APPEND   0x30U
 
+static inline FRESULT f_mount(FATFS*, const TCHAR*, BYTE) { return FR_OK; }
 static inline FRESULT f_mkdir(const TCHAR*) { return FR_OK; }
 static inline FRESULT f_stat(const TCHAR*, FILINFO*) { return FR_NO_FILE; }
 static inline FRESULT f_open(FIL*, const TCHAR*, BYTE) { return FR_OK; }
@@ -50,8 +53,15 @@ static inline FRESULT f_write(FIL*, const void*, UINT bytes, UINT *written)
     if (written != 0) *written = bytes;
     return FR_OK;
 }
+static inline FRESULT f_read(FIL*, void*, UINT bytes, UINT *read)
+{
+    if (read != 0) *read = bytes;
+    return FR_OK;
+}
+static inline FRESULT f_lseek(FIL*, FSIZE_t) { return FR_OK; }
 static inline FRESULT f_sync(FIL*) { return FR_OK; }
 static inline FRESULT f_close(FIL*) { return FR_OK; }
 static inline FRESULT f_rename(const TCHAR*, const TCHAR*) { return FR_OK; }
+static inline FRESULT f_unlink(const TCHAR*) { return FR_OK; }
 
 #endif

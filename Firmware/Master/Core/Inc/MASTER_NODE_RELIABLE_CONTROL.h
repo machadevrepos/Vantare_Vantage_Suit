@@ -15,6 +15,12 @@ public:
     using SendFn = bool (*)(void *context, uint8_t node_id,
             const uint8_t *frame, uint16_t length);
 
+    /* A node that has spent its credit stays silent until the next control
+     * frame arrives, so a single dropped ACK_WINDOW deadlocks the transfer.
+     * Re-advertising the window after this long gives the node a fresh grant
+     * without waiting for the session stall timeout. */
+    static constexpr uint32_t kAckKeepaliveMs = 300U;
+
     explicit MasterNodeReliableControl(SendFn send_fn = nullptr, void *context = nullptr)
         : send_fn_(send_fn), context_(context)
     {
@@ -37,6 +43,11 @@ public:
         pending_type_ = RecordReliableType::ManifestAck;
         last_attempt_ms_ = 0U;
         attempt_count_ = 0U;
+        ack_pending_ = false;
+        ack_valid_ = false;
+        ack_next_chunk_ = 0U;
+        ack_credit_ = kDefaultCredit;
+        ack_last_sent_ms_ = 0U;
     }
 
     bool begin(const RecordDoneMessage &done,
@@ -62,18 +73,17 @@ public:
                 reinterpret_cast<const uint8_t*>(&body), sizeof(body), 4U);
     }
 
+    /* The window advertisement is pure idempotent state, so it gets its own slot
+     * instead of competing with control frames for the single pending buffer.
+     * Losing an ACK to a higher-priority NACK used to starve the node of credit. */
     bool ack_window(uint32_t next_chunk, uint8_t credit = kDefaultCredit)
     {
         if (!active()) return false;
         if (!chunk_offset_valid_(next_chunk, chunk_size_)) return false;
-        RecordReliableAckWindowPayload body{};
-        body.source_id = node_id_;
-        body.session_id = session_id_;
-        body.next_chunk_index = next_chunk;
-        body.credit = sanitize_credit(credit);
-        return queue_frame(RecordReliableType::AckWindow, next_chunk,
-                chunk_byte_offset_(next_chunk, chunk_size_),
-                reinterpret_cast<const uint8_t*>(&body), sizeof(body), 1U);
+        ack_next_chunk_ = next_chunk;
+        ack_credit_ = sanitize_credit(credit);
+        ack_pending_ = true;
+        return true;
     }
 
     bool nack_range(uint32_t first_chunk, uint16_t count = 1U,
@@ -107,16 +117,33 @@ public:
 
     bool service(uint32_t now_ms)
     {
-        if (pending_length_ == 0U) return true;
-        if (attempt_count_ != 0U &&
-                static_cast<uint32_t>(now_ms - last_attempt_ms_) < kRetryIntervalMs) {
+        if (pending_length_ != 0U) {
+            if (attempt_count_ != 0U &&
+                    static_cast<uint32_t>(now_ms - last_attempt_ms_) < kRetryIntervalMs) {
+                return false;
+            }
+            last_attempt_ms_ = now_ms;
+            if (attempt_count_ < 0xFFFFFFFFU) ++attempt_count_;
+            if (!transmit(pending_frame_, pending_length_)) return false;
+            pending_length_ = 0U;
+            pending_priority_ = 0U;
+            return true;
+        }
+        if (ack_pending_) return send_ack_window(now_ms);
+        return true;
+    }
+
+    /* Re-advertise the last window if the node has gone quiet. The caller owns
+     * the liveness decision because only it knows whether chunks are flowing. */
+    bool rearm_ack_window(uint32_t now_ms, uint32_t idle_ms = kAckKeepaliveMs)
+    {
+        if (!active() || !ack_valid_ || ack_pending_ || pending_length_ != 0U) {
             return false;
         }
-        last_attempt_ms_ = now_ms;
-        if (attempt_count_ < 0xFFFFFFFFU) ++attempt_count_;
-        if (!send_pending()) return false;
-        pending_length_ = 0U;
-        pending_priority_ = 0U;
+        if (static_cast<uint32_t>(now_ms - ack_last_sent_ms_) < idle_ms) {
+            return false;
+        }
+        ack_pending_ = true;
         return true;
     }
 
@@ -124,13 +151,15 @@ public:
     {
         return node_id_ >= 1U && node_id_ <= 4U && session_id_ != 0U;
     }
-    bool pending() const { return pending_length_ != 0U; }
+    bool pending() const { return pending_length_ != 0U || ack_pending_; }
     uint8_t node_id() const { return node_id_; }
     uint32_t session_id() const { return session_id_; }
     RecordReliableType pending_type() const { return pending_type_; }
     uint32_t attempt_count() const { return attempt_count_; }
     const uint8_t *pending_frame() const { return pending_frame_; }
     uint16_t pending_length() const { return pending_length_; }
+    uint32_t ack_next_chunk() const { return ack_next_chunk_; }
+    bool ack_valid() const { return ack_valid_; }
 
     static uint16_t crc16_ccitt(const uint8_t *data, uint16_t length)
     {
@@ -170,16 +199,12 @@ private:
         return offset > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<uint32_t>(offset);
     }
 
-    bool queue_frame(RecordReliableType type, uint32_t chunk_index,
-            uint32_t byte_offset, const uint8_t *body, uint16_t body_length,
-            uint8_t priority)
+    uint16_t build_frame(uint8_t *out, RecordReliableType type, uint32_t chunk_index,
+            uint32_t byte_offset, const uint8_t *body, uint16_t body_length) const
     {
-        if (!active() || body == nullptr ||
+        if (out == nullptr || body == nullptr ||
                 sizeof(RecordReliableFrameHeader) + body_length > kMaxFrameBytes) {
-            return false;
-        }
-        if (pending_length_ != 0U && priority < pending_priority_) {
-            return false;
+            return 0U;
         }
         RecordReliableFrameHeader header{};
         header.command = RecordCommand::ReliableFrame;
@@ -193,9 +218,23 @@ private:
         header.payload_len = body_length;
         header.payload_crc16 = crc16_ccitt(body, body_length);
         header.flags = 0U;
-        memcpy(pending_frame_, &header, sizeof(header));
-        memcpy(pending_frame_ + sizeof(header), body, body_length);
-        pending_length_ = static_cast<uint16_t>(sizeof(header) + body_length);
+        memcpy(out, &header, sizeof(header));
+        memcpy(out + sizeof(header), body, body_length);
+        return static_cast<uint16_t>(sizeof(header) + body_length);
+    }
+
+    bool queue_frame(RecordReliableType type, uint32_t chunk_index,
+            uint32_t byte_offset, const uint8_t *body, uint16_t body_length,
+            uint8_t priority)
+    {
+        if (!active()) return false;
+        if (pending_length_ != 0U && priority < pending_priority_) {
+            return false;
+        }
+        const uint16_t length = build_frame(pending_frame_, type, chunk_index,
+                byte_offset, body, body_length);
+        if (length == 0U) return false;
+        pending_length_ = length;
         pending_priority_ = priority;
         pending_type_ = type;
         last_attempt_ms_ = 0U;
@@ -203,16 +242,36 @@ private:
         return true;
     }
 
-    bool send_pending()
+    bool send_ack_window(uint32_t now_ms)
     {
+        RecordReliableAckWindowPayload body{};
+        body.source_id = node_id_;
+        body.session_id = session_id_;
+        body.next_chunk_index = ack_next_chunk_;
+        body.credit = ack_credit_;
+        body.reserved0 = 0U;
+        body.flags = 0U;
+        uint8_t frame[kMaxFrameBytes];
+        const uint16_t length = build_frame(frame, RecordReliableType::AckWindow,
+                ack_next_chunk_, chunk_byte_offset_(ack_next_chunk_, chunk_size_),
+                reinterpret_cast<const uint8_t*>(&body), sizeof(body));
+        if (length == 0U || !transmit(frame, length)) return false;
+        ack_pending_ = false;
+        ack_valid_ = true;
+        ack_last_sent_ms_ = now_ms;
+        return true;
+    }
+
+    bool transmit(const uint8_t *frame, uint16_t length)
+    {
+        if (frame == nullptr || length == 0U) return false;
         if (send_fn_ != nullptr) {
-            return send_fn_(context_, node_id_, pending_frame_, pending_length_);
+            return send_fn_(context_, node_id_, frame, length);
         }
-        if (exo_hub_ble_write == nullptr || pending_length_ > 0xFFU) {
+        if (exo_hub_ble_write == nullptr || length > 0xFFU) {
             return false;
         }
-        return exo_hub_ble_write(pending_frame_,
-                static_cast<uint8_t>(pending_length_)) != 0U;
+        return exo_hub_ble_write(frame, static_cast<uint8_t>(length)) != 0U;
     }
 
     SendFn send_fn_ = nullptr;
@@ -227,6 +286,11 @@ private:
     uint16_t chunk_size_ = kRecordReliableDefaultChunkSize;
     uint32_t last_attempt_ms_ = 0U;
     uint32_t attempt_count_ = 0U;
+    bool ack_pending_ = false;
+    bool ack_valid_ = false;
+    uint32_t ack_next_chunk_ = 0U;
+    uint8_t ack_credit_ = kDefaultCredit;
+    uint32_t ack_last_sent_ms_ = 0U;
 };
 
 } // namespace exo
