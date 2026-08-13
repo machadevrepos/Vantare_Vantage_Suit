@@ -2548,11 +2548,11 @@ input[type="checkbox"] {
   }
 
   function writeCharacteristic(char, payload) {
-    if (char.properties?.writeWithoutResponse) {
-      return char.writeValueWithoutResponse(payload);
-    }
     if (char.properties?.write) {
       return char.writeValueWithResponse(payload);
+    }
+    if (char.properties?.writeWithoutResponse) {
+      return char.writeValueWithoutResponse(payload);
     }
     return Promise.reject(new Error("Characteristic is not writable"));
   }

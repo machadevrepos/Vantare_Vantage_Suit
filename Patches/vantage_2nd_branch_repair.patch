@@ -1,0 +1,366 @@
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -2546,12 +2546,12 @@
+   }
+ 
+   function writeCharacteristic(char, payload) {
+-    if (char.properties?.writeWithoutResponse) {
+-      return char.writeValueWithoutResponse(payload);
+-    }
+     if (char.properties?.write) {
+       return char.writeValueWithResponse(payload);
+     }
++    if (char.properties?.writeWithoutResponse) {
++      return char.writeValueWithoutResponse(payload);
++    }
+     return Promise.reject(new Error("Characteristic is not writable"));
+   }
+ 
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RUNTIME_CONFIG.h b/Firmware/LIBRARY/CUSTOM/NODE_RUNTIME_CONFIG.h
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RUNTIME_CONFIG.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RUNTIME_CONFIG.h
+@@ -7,6 +7,6 @@ namespace exo::node_runtime_config {
+ 
+ static constexpr uint8_t kNodeIdMin = 1U;
+-static constexpr uint8_t kNodeIdMax = 5U;
++static constexpr uint8_t kNodeIdMax = 4U;
+ static constexpr uint32_t kDefaultFlashTotalSize = 2U * 1024U * 1024U;
+ static constexpr uint32_t kSettingsSectorSize = 4096U;
+ static constexpr uint32_t kSettingsMagic = 0x4E535447UL; /* 'NSTG' */
+diff --git a/Firmware/LIBRARY/CUSTOM/PWM_PIN.h b/Firmware/LIBRARY/CUSTOM/PWM_PIN.h
+--- a/Firmware/LIBRARY/CUSTOM/PWM_PIN.h
++++ b/Firmware/LIBRARY/CUSTOM/PWM_PIN.h
+@@ -13,6 +13,25 @@ class PWM_PIN
+ 	PWM_PIN_TypeDef pin;
+ 	bool is_started = false;
+ 
++	void SET_COMPARE(uint32_t value)
++	{
++		switch (pin.channel)
++		{
++		case TIM_CHANNEL_1:
++			pin.htim->Instance->CCR1 = value;
++			break;
++		case TIM_CHANNEL_2:
++			pin.htim->Instance->CCR2 = value;
++			break;
++		case TIM_CHANNEL_3:
++			pin.htim->Instance->CCR3 = value;
++			break;
++		case TIM_CHANNEL_4:
++			pin.htim->Instance->CCR4 = value;
++			break;
++		}
++	}
++
+ public:
+ 	PWM_PIN(TIM_HandleTypeDef *htim, uint32_t channel, GPIO_TypeDef *GPIOx, uint16_t Pin) : pin({htim, channel, GPIOx, Pin})
+ 	{
+@@ -42,37 +60,32 @@ public:
+ 
+ 	void SET_PERCENT(uint8_t percent)
+ 	{
+-		if (percent > 99)
++		if (percent > 100U)
+ 			percent = 100;
+ 
+-		if (percent == 0 && is_started)
++		if (percent == 0U)
+ 		{
+-			STOP();
+-			is_started = false;
++			SET_COMPARE(0U);
++			if (is_started)
++			{
++				STOP();
++				is_started = false;
++			}
+ 			return;
+ 		}
+ 
+-		else if (!is_started && percent > 0)
+-		{
+-			START();
+-			is_started = true;
+-		}
+-
+-		switch (pin.channel)
+-		{
+-		case TIM_CHANNEL_1:
+-			pin.htim->Instance->CCR1 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
+-			break;
+-		case TIM_CHANNEL_2:
+-			pin.htim->Instance->CCR2 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
+-			break;
+-		case TIM_CHANNEL_3:
+-			pin.htim->Instance->CCR3 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
+-			break;
+-		case TIM_CHANNEL_4:
+-			pin.htim->Instance->CCR4 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
+-			break;
+-		}
++		const uint64_t scaled_ticks =
++				(static_cast<uint64_t>(pin.htim->Instance->ARR) + 1ULL) * percent;
++		const uint32_t ticks = static_cast<uint32_t>(scaled_ticks / 100ULL);
++		SET_COMPARE(ticks == 0U ? 0U : (ticks - 1U));
++
++		/* Program CCR before enabling the channel so a stopped output cannot
++		 * briefly restart with a stale compare value. */
++		if (!is_started)
++		{
++			START();
++			is_started = true;
++		}
+ 	}
+ 
+ 	void STOP()
+@@ -87,21 +90,7 @@ public:
+ 
+ 	void SET_DIRECT(uint32_t value)
+ 	{
+-		switch (pin.channel)
+-		{
+-		case TIM_CHANNEL_1:
+-			pin.htim->Instance->CCR1 = value;
+-			break;
+-		case TIM_CHANNEL_2:
+-			pin.htim->Instance->CCR2 = value;
+-			break;
+-		case TIM_CHANNEL_3:
+-			pin.htim->Instance->CCR3 = value;
+-			break;
+-		case TIM_CHANNEL_4:
+-			pin.htim->Instance->CCR4 = value;
+-			break;
+-		}
++		SET_COMPARE(value);
+ 	}
+ };
+ 
+diff --git a/Firmware/Master/STM32_WPAN/App/custom_stm.c b/Firmware/Master/STM32_WPAN/App/custom_stm.c
+--- a/Firmware/Master/STM32_WPAN/App/custom_stm.c
++++ b/Firmware/Master/STM32_WPAN/App/custom_stm.c
+@@ -376,16 +376,20 @@ static SVCCTL_EvtAckStatus_t Custom_STM_Event_Handler(void *Event)
+           if (write_perm_req->Attribute_Handle == (CustomContext.CustomPipectrlrxHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
+           {
+             return_value = SVCCTL_EvtAckFlowEnable;
+-            Notification.Custom_Evt_Opcode = CUSTOM_STM_CMD_WRITE_NO_RESP_EVT;
++            Notification.Custom_Evt_Opcode = CUSTOM_STM_PIPECTRLRX_WRITE_EVT;
+             Notification.DataTransfered.Length = write_perm_req->Data_Length;
+             Notification.DataTransfered.pPayload = write_perm_req->Data;
+-            Custom_STM_App_Notification(&Notification);
+-            (void)aci_gatt_permit_write(write_perm_req->Connection_Handle,
+-                                        write_perm_req->Attribute_Handle,
+-                                        0x00U,
+-                                        0x00U,
+-                                        write_perm_req->Data_Length,
+-                                        write_perm_req->Data);
++            const tBleStatus permit_status =
++                aci_gatt_permit_write(write_perm_req->Connection_Handle,
++                                      write_perm_req->Attribute_Handle,
++                                      0x00U,
++                                      0x00U,
++                                      write_perm_req->Data_Length,
++                                      write_perm_req->Data);
++            if (permit_status == BLE_STATUS_SUCCESS)
++            {
++              Custom_STM_App_Notification(&Notification);
++            }
+             break;
+           }
+ 
+diff --git a/Firmware/Node/Core/Src/main.c b/Firmware/Node/Core/Src/main.c
+--- a/Firmware/Node/Core/Src/main.c
++++ b/Firmware/Node/Core/Src/main.c
+@@ -282,8 +282,8 @@ extern "C" void NodeSwo_Logf(const char *format, ...)
+ 	(void)NodeSwo_Write(reinterpret_cast<const uint8_t *>(message), bytes_to_write);
+ }
+ 
+-PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_3, BUZZER_GPIO_Port, BUZZER_Pin);
+-PWM_PIN BUZZER(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);
++PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);
++PWM_PIN BUZZER(&htim1, TIM_CHANNEL_3, BUZZER_GPIO_Port, BUZZER_Pin);
+ 
+ RGB_LED RGB(RGB_R_GPIO_Port, RGB_R_Pin, RGB_G_GPIO_Port, RGB_G_Pin, RGB_B_GPIO_Port, RGB_B_Pin, 1, 1);
+ 
+diff --git a/Firmware/HostTests/run_host_syntax_suite.ps1 b/Firmware/HostTests/run_host_syntax_suite.ps1
+--- a/Firmware/HostTests/run_host_syntax_suite.ps1
++++ b/Firmware/HostTests/run_host_syntax_suite.ps1
+@@ -1,9 +1,9 @@
+ # Compile-checks the host test suites.
+ #
+-# There is no native host compiler in this tree, so the behavioural suites are
+-# written as constexpr/static_assert and evaluated by `arm-none-eabi-g++
+-# -fsyntax-only`. A regression is a compile error, not a silent pass. See the
+-# header comment in Firmware/Master/tests/acquisition_diagnostics_test.cpp.
++# The constexpr/static_assert suites are evaluated by `arm-none-eabi-g++
++# -fsyntax-only`; the remaining files receive an API/syntax compile guard. This
++# script must fail when the compiler is unavailable rather than reporting a
++# successful check that compiled nothing.
+ #
+ #   pwsh -File Firmware/HostTests/run_host_syntax_suite.ps1
+ 
+@@ -11,9 +11,23 @@ $ErrorActionPreference = 'Stop'
+ $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
+ 
+-$compiler = 'C:\ST\STM32CubeIDE_2.2.0\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.14.3.rel1.win32_1.0.100.202602081740\tools\bin\arm-none-eabi-g++.exe'
+-if (-not (Test-Path $compiler)) {
+-    Write-Warning "ARM compiler not found; skipping host syntax suite."
+-    exit 0
++$compiler = $env:ARM_NONE_EABI_GXX
++if ([string]::IsNullOrWhiteSpace($compiler)) {
++    $onPath = Get-Command 'arm-none-eabi-g++' -ErrorAction SilentlyContinue
++    if ($null -ne $onPath) {
++        $compiler = $onPath.Source
++    }
++}
++if ([string]::IsNullOrWhiteSpace($compiler)) {
++    $cubeCandidates = @(
++        Get-ChildItem 'C:\ST\STM32CubeIDE_*\STM32CubeIDE\plugins\com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.*\tools\bin\arm-none-eabi-g++.exe' -File -ErrorAction SilentlyContinue
++    ) | Sort-Object FullName -Descending
++    if ($cubeCandidates.Count -gt 0) {
++        $compiler = $cubeCandidates[0].FullName
++    }
++}
++if ([string]::IsNullOrWhiteSpace($compiler) -or -not (Test-Path $compiler)) {
++    Write-Error "ARM compiler not found. Put arm-none-eabi-g++ on PATH or set ARM_NONE_EABI_GXX to the executable path."
++    exit 2
+ }
+ 
+ $includes = @(
+@@ -29,6 +47,12 @@ $sources = @(
+     'Firmware\HostTests\test_master_node_transfer_window.cpp',
+     'Firmware\HostTests\test_hub_leaf_ble_manager.cpp',
+     'Firmware\HostTests\test_node_live_sample_queue.cpp',
++    'Firmware\HostTests\test_coderabbit_csv_logger_regressions.cpp',
++    'Firmware\HostTests\test_coderabbit_firmware_regressions.cpp',
++    'Firmware\HostTests\test_master_node_session_stager_sequential.cpp',
++    'Firmware\HostTests\test_master_training_csv_formatter_v2.cpp',
++    'Firmware\HostTests\test_master_training_csv_logger_v2.cpp',
++    'Firmware\HostTests\test_remote_transfer_lifecycle_regression.cpp',
+     'Firmware\Master\tests\master_training_csv_coordinator_test.cpp',
+     'Firmware\Master\tests\master_node_session_stager_test.cpp',
+     'Firmware\Master\tests\master_session_timestamp_ledger_test.cpp',
+@@ -39,7 +63,8 @@ foreach ($relative in $sources) {
+     $path = Join-Path $repo $relative
+     if (-not (Test-Path $path)) {
+-        Write-Output "SKIP $relative (not found)"
++        $failed++
++        Write-Output "FAIL $relative (not found)"
+         continue
+     }
+     $output = & $compiler -std=gnu++17 -fsyntax-only -Wall -DEXO_ACQ_DIAG_HOST_TEST=1 $includes $path 2>&1
+     if ($LASTEXITCODE -eq 0) {
+diff --git a/Firmware/HostTests/test_repair_invariants.py b/Firmware/HostTests/test_repair_invariants.py
+new file mode 100755
+--- /dev/null
++++ b/Firmware/HostTests/test_repair_invariants.py
+@@ -0,0 +1,107 @@
++#!/usr/bin/env python3
++"""Regression guards for cross-file firmware invariants repaired in 2nd_Branch."""
++
++from __future__ import annotations
++
++import sys
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def read(relative: str) -> str:
++    return (ROOT / relative).read_text(encoding="utf-8")
++
++
++def require(condition: bool, message: str, failures: list[str]) -> None:
++    if not condition:
++        failures.append(message)
++
++
++def main() -> int:
++    failures: list[str] = []
++
++    runtime_config = read("Firmware/LIBRARY/CUSTOM/NODE_RUNTIME_CONFIG.h")
++    require(
++        "static constexpr uint8_t kNodeIdMax = 4U;" in runtime_config,
++        "Node runtime configuration must reject IDs above the supported 1..4 topology",
++        failures,
++    )
++
++    node_main = read("Firmware/Node/Core/Src/main.c")
++    require(
++        "PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);" in node_main,
++        "ERM_PWM must use generated TIM1_CH4 / ERM pin mapping",
++        failures,
++    )
++    require(
++        "PWM_PIN BUZZER(&htim1, TIM_CHANNEL_3, BUZZER_GPIO_Port, BUZZER_Pin);" in node_main,
++        "BUZZER must use generated TIM1_CH3 / BUZZER pin mapping",
++        failures,
++    )
++
++    pwm = read("Firmware/LIBRARY/CUSTOM/PWM_PIN.h")
++    zero_start = pwm.find("if (percent == 0U)")
++    zero_end = pwm.find("const uint64_t scaled_ticks", zero_start)
++    zero_block = pwm[zero_start:zero_end] if zero_start >= 0 and zero_end >= 0 else ""
++    require("SET_COMPARE(0U);" in zero_block, "0% PWM must write CCR=0 without unsigned underflow", failures)
++
++    compare_pos = pwm.find("SET_COMPARE(ticks == 0U ? 0U : (ticks - 1U));")
++    start_pos = pwm.find("START();", compare_pos)
++    require(
++        compare_pos >= 0 and start_pos > compare_pos,
++        "PWM compare must be programmed before a stopped channel is started",
++        failures,
++    )
++
++    custom_stm = read("Firmware/Master/STM32_WPAN/App/custom_stm.c")
++    permit_case = custom_stm.find("case ACI_GATT_WRITE_PERMIT_REQ_VSEVT_CODE:")
++    permit_end = custom_stm.find("/* USER CODE END EVT_BLUE_GATT_WRITE_PERMIT_REQ_BEGIN */", permit_case)
++    permit_block = custom_stm[permit_case:permit_end] if permit_case >= 0 and permit_end >= 0 else ""
++    require(
++        "CUSTOM_STM_PIPECTRLRX_WRITE_EVT" in permit_block,
++        "ATT Write Request must dispatch the acknowledged-write opcode",
++        failures,
++    )
++    require(
++        "CUSTOM_STM_CMD_WRITE_NO_RESP_EVT" not in permit_block,
++        "ATT Write Request must not be mislabeled as write-without-response",
++        failures,
++    )
++    permit_pos = permit_block.find("aci_gatt_permit_write(")
++    notify_pos = permit_block.find("Custom_STM_App_Notification(&Notification);")
++    require(
++        permit_pos >= 0 and notify_pos > permit_pos,
++        "Master must send the ATT permit response before synchronous application dispatch",
++        failures,
++    )
++    require(
++        "permit_status == BLE_STATUS_SUCCESS" in permit_block,
++        "Master must dispatch the accepted write only after permit success",
++        failures,
++    )
++
++    desktop = read("Firmware/DesktopTools/Exoskeleton.html")
++    fn_start = desktop.find("function writeCharacteristic(char, payload)")
++    fn_end = desktop.find("function decodeTrainingCsvStatus", fn_start)
++    write_block = desktop[fn_start:fn_end] if fn_start >= 0 and fn_end >= 0 else ""
++    with_response = write_block.find("char.properties?.write")
++    without_response = write_block.find("char.properties?.writeWithoutResponse")
++    require(
++        with_response >= 0 and without_response > with_response,
++        "Desktop BLE helper must prefer write-with-response when both properties are available",
++        failures,
++    )
++
++    if failures:
++        for failure in failures:
++            print(f"ERROR: {failure}", file=sys.stderr)
++        return 1
++
++    print("repair invariant guards passed")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())

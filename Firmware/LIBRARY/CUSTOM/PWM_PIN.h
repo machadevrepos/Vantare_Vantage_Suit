@@ -16,6 +16,25 @@ class PWM_PIN
 	PWM_PIN_TypeDef pin;
 	bool is_started = false;
 
+	void SET_COMPARE(uint32_t value)
+	{
+		switch (pin.channel)
+		{
+		case TIM_CHANNEL_1:
+			pin.htim->Instance->CCR1 = value;
+			break;
+		case TIM_CHANNEL_2:
+			pin.htim->Instance->CCR2 = value;
+			break;
+		case TIM_CHANNEL_3:
+			pin.htim->Instance->CCR3 = value;
+			break;
+		case TIM_CHANNEL_4:
+			pin.htim->Instance->CCR4 = value;
+			break;
+		}
+	}
+
 public:
 	PWM_PIN(TIM_HandleTypeDef *htim, uint32_t channel, GPIO_TypeDef *GPIOx, uint16_t Pin) : pin({htim, channel, GPIOx, Pin})
 	{
@@ -44,36 +63,31 @@ public:
 
 	void SET_PERCENT(uint8_t percent)
 	{
-		if (percent > 99)
+		if (percent > 100U)
 			percent = 100;
 
-		if (percent == 0 && is_started)
+		if (percent == 0U)
 		{
-			STOP();
-			is_started = false;
+			SET_COMPARE(0U);
+			if (is_started)
+			{
+				STOP();
+				is_started = false;
+			}
 			return;
 		}
 
-		else if (!is_started && percent > 0)
+		const uint64_t scaled_ticks =
+				(static_cast<uint64_t>(pin.htim->Instance->ARR) + 1ULL) * percent;
+		const uint32_t ticks = static_cast<uint32_t>(scaled_ticks / 100ULL);
+		SET_COMPARE(ticks == 0U ? 0U : (ticks - 1U));
+
+		/* Program CCR before enabling the channel so a stopped output cannot
+		 * briefly restart with a stale compare value. */
+		if (!is_started)
 		{
 			START();
 			is_started = true;
-		}
-
-		switch (pin.channel)
-		{
-		case TIM_CHANNEL_1:
-			pin.htim->Instance->CCR1 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
-			break;
-		case TIM_CHANNEL_2:
-			pin.htim->Instance->CCR2 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
-			break;
-		case TIM_CHANNEL_3:
-			pin.htim->Instance->CCR3 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
-			break;
-		case TIM_CHANNEL_4:
-			pin.htim->Instance->CCR4 = (((pin.htim->Instance->ARR + 1) * percent) / 100) - 1;
-			break;
 		}
 	}
 
@@ -84,21 +98,7 @@ public:
 
 	void SET_DIRECT(uint32_t value)
 	{
-		switch (pin.channel)
-		{
-		case TIM_CHANNEL_1:
-			pin.htim->Instance->CCR1 = value;
-			break;
-		case TIM_CHANNEL_2:
-			pin.htim->Instance->CCR2 = value;
-			break;
-		case TIM_CHANNEL_3:
-			pin.htim->Instance->CCR3 = value;
-			break;
-		case TIM_CHANNEL_4:
-			pin.htim->Instance->CCR4 = value;
-			break;
-		}
+		SET_COMPARE(value);
 	}
 };
 

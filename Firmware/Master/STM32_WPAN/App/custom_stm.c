@@ -376,16 +376,20 @@ static SVCCTL_EvtAckStatus_t Custom_STM_Event_Handler(void *Event)
           if (write_perm_req->Attribute_Handle == (CustomContext.CustomPipectrlrxHdle + CHARACTERISTIC_VALUE_ATTRIBUTE_OFFSET))
           {
             return_value = SVCCTL_EvtAckFlowEnable;
-            Notification.Custom_Evt_Opcode = CUSTOM_STM_CMD_WRITE_NO_RESP_EVT;
+            Notification.Custom_Evt_Opcode = CUSTOM_STM_PIPECTRLRX_WRITE_EVT;
             Notification.DataTransfered.Length = write_perm_req->Data_Length;
             Notification.DataTransfered.pPayload = write_perm_req->Data;
-            Custom_STM_App_Notification(&Notification);
-            (void)aci_gatt_permit_write(write_perm_req->Connection_Handle,
-                                        write_perm_req->Attribute_Handle,
-                                        0x00U,
-                                        0x00U,
-                                        write_perm_req->Data_Length,
-                                        write_perm_req->Data);
+            const tBleStatus permit_status =
+                aci_gatt_permit_write(write_perm_req->Connection_Handle,
+                                      write_perm_req->Attribute_Handle,
+                                      0x00U,
+                                      0x00U,
+                                      write_perm_req->Data_Length,
+                                      write_perm_req->Data);
+            if (permit_status == BLE_STATUS_SUCCESS)
+            {
+              Custom_STM_App_Notification(&Notification);
+            }
             break;
           }
 

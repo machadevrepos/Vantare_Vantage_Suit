@@ -10,9 +10,8 @@ namespace {
 std::vector<uint8_t> g_file;
 uint32_t g_cursor = 0U;
 uint32_t g_lseek_count = 0U;
-}
 
-extern "C" FRESULT f_open(FIL *, const TCHAR *, BYTE mode)
+FRESULT seq_open(FIL *, const TCHAR *, BYTE mode)
 {
     g_cursor = 0U;
     if ((mode & FA_CREATE_ALWAYS) != 0U) {
@@ -21,7 +20,7 @@ extern "C" FRESULT f_open(FIL *, const TCHAR *, BYTE mode)
     return FR_OK;
 }
 
-extern "C" FRESULT f_write(FIL *, const void *data, UINT bytes, UINT *written)
+FRESULT seq_write(FIL *, const void *data, UINT bytes, UINT *written)
 {
     if (g_file.size() < static_cast<size_t>(g_cursor) + bytes) {
         g_file.resize(static_cast<size_t>(g_cursor) + bytes);
@@ -32,7 +31,7 @@ extern "C" FRESULT f_write(FIL *, const void *data, UINT bytes, UINT *written)
     return FR_OK;
 }
 
-extern "C" FRESULT f_read(FIL *, void *data, UINT bytes, UINT *received)
+FRESULT seq_read(FIL *, void *data, UINT bytes, UINT *received)
 {
     if (static_cast<size_t>(g_cursor) + bytes > g_file.size()) {
         *received = 0U;
@@ -44,7 +43,7 @@ extern "C" FRESULT f_read(FIL *, void *data, UINT bytes, UINT *received)
     return FR_OK;
 }
 
-extern "C" FRESULT f_lseek(FIL *, FSIZE_t offset)
+FRESULT seq_lseek(FIL *, FSIZE_t offset)
 {
     ++g_lseek_count;
     if (offset > g_file.size()) {
@@ -54,15 +53,20 @@ extern "C" FRESULT f_lseek(FIL *, FSIZE_t offset)
     return FR_OK;
 }
 
-extern "C" FRESULT f_close(FIL *)
+FRESULT seq_close(FIL *)
 {
     return FR_OK;
 }
 
-extern "C" FRESULT f_unlink(const TCHAR *)
+FRESULT seq_unlink(const TCHAR *)
 {
     return FR_OK;
 }
+
+const exo::node_session_staging::NodeSessionFatFsOps kSeqOps = {
+    seq_open, seq_write, seq_read, seq_lseek, seq_close, seq_unlink
+};
+} // namespace
 
 int main()
 {
@@ -98,7 +102,7 @@ int main()
     done.total_size = static_cast<uint32_t>(session.size());
     done.payload_crc32 = header.payload_crc32;
 
-    exo::MasterNodeSessionStager stager;
+    exo::MasterNodeSessionStager stager(&kSeqOps);
     assert(stager.begin(done, 1U));
     assert(stager.accept_chunk(1U, 42U, 0U, session.data(),
             static_cast<uint16_t>(session.size())));

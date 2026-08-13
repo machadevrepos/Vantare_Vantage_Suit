@@ -7,7 +7,7 @@
 namespace exo::node_runtime_config {
 
 static constexpr uint8_t kNodeIdMin = 1U;
-static constexpr uint8_t kNodeIdMax = 5U;
+static constexpr uint8_t kNodeIdMax = 4U;
 static constexpr uint32_t kDefaultFlashTotalSize = 2U * 1024U * 1024U;
 static constexpr uint32_t kSettingsSectorSize = 4096U;
 static constexpr uint32_t kSettingsMagic = 0x4E535447UL; /* 'NSTG' */

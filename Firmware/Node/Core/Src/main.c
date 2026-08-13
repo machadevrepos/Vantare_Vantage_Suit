@@ -281,8 +281,8 @@ extern "C" void NodeSwo_Logf(const char *format, ...)
 	(void)NodeSwo_Write(reinterpret_cast<const uint8_t *>(message), bytes_to_write);
 }
 
-PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_3, BUZZER_GPIO_Port, BUZZER_Pin);
-PWM_PIN BUZZER(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);
+PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);
+PWM_PIN BUZZER(&htim1, TIM_CHANNEL_3, BUZZER_GPIO_Port, BUZZER_Pin);
 
 RGB_LED RGB(RGB_R_GPIO_Port, RGB_R_Pin, RGB_G_GPIO_Port, RGB_G_Pin, RGB_B_GPIO_Port, RGB_B_Pin, 1, 1);
 
