@@ -420,6 +420,8 @@ namespace {
 	static constexpr uint32_t kRemoteResetCooldownMs = 2500U;
 	static constexpr uint32_t kRecordPrepareTimeoutMs = 120000U;
 	static constexpr uint32_t kRecordAppReadyTimeoutMs = 120000U;
+	static constexpr uint32_t kRecordStopRetryMs = 300U;
+	static constexpr uint32_t kRecordStopTimeoutMs = 6000U;
 	static constexpr uint8_t kRecordSyncNoCommand = 0x00U;
 	static uint32_t g_remote_reset_busy_until_ms = 0U;
 	enum class RecordSyncPhoneAckMode : uint8_t {
@@ -445,6 +447,17 @@ namespace {
 			uint8_t stream_interval_ms = 20U;
 	};
 	static RecordSyncState g_record_sync { };
+	struct RecordStopSyncState {
+		bool active = false;
+		exo::StopRecordMessage message { };
+		uint8_t target_mask = 0U;
+		uint8_t ack_mask = 0U;
+		uint8_t ever_sent_mask = 0U;
+		uint32_t started_ms = 0U;
+		uint32_t last_send_ms = 0U;
+		uint16_t send_attempts = 0U;
+	};
+	static RecordStopSyncState g_record_stop_sync { };
 	static uint32_t g_local_bno_append_fail = 0U;
 	static uint32_t g_local_icm_append_fail = 0U;
 	static bool g_local_stop_requested = false;
@@ -1342,6 +1355,7 @@ namespace {
 		g_last_chunk_ack_tick_ms = 0U;
 		pending_node_done_clear();
 		g_record_sync = RecordSyncState { };
+		g_record_stop_sync = RecordStopSyncState { };
 		g_remote_transfer_active = false;
 		g_remote_transfer_source_id = 0U;
 		g_remote_transfer_session_id = 0U;
@@ -1523,6 +1537,76 @@ namespace {
 			}
 		}
 		return sent_mask;
+	}
+
+	static uint8_t record_stop_sync_pending_mask()
+	{
+		return static_cast<uint8_t>(g_record_stop_sync.target_mask &
+				~g_record_stop_sync.ack_mask);
+	}
+
+	static void record_stop_sync_send_pending(bool force)
+	{
+		if (!g_record_stop_sync.active) return;
+		const uint8_t pending_mask = record_stop_sync_pending_mask();
+		if (pending_mask == 0U) return;
+		const uint32_t now_ms = HAL_GetTick();
+		if (!force && g_record_stop_sync.last_send_ms != 0U &&
+				(now_ms - g_record_stop_sync.last_send_ms) < kRecordStopRetryMs) return;
+		const uint8_t sent_mask = record_sync_send_to_target_mask(pending_mask,
+				BLEPIPE_MSG_COMMAND, BLEPIPE_ID_HUB,
+				reinterpret_cast<const uint8_t*>(&g_record_stop_sync.message),
+				static_cast<uint16_t>(sizeof(g_record_stop_sync.message)));
+		g_record_stop_sync.last_send_ms = now_ms;
+		++g_record_stop_sync.send_attempts;
+		g_record_stop_sync.ever_sent_mask = static_cast<uint8_t>(g_record_stop_sync.ever_sent_mask | sent_mask);
+		EXO_LOG("[BLE][HUB][STOP][TX] session=%lu attempt=%u pending=0x%02X sent=0x%02X ack=0x%02X\r\n",
+				static_cast<unsigned long>(g_record_stop_sync.message.session_id),
+				static_cast<unsigned>(g_record_stop_sync.send_attempts),
+				static_cast<unsigned>(pending_mask), static_cast<unsigned>(sent_mask),
+				static_cast<unsigned>(g_record_stop_sync.ack_mask));
+	}
+
+	static bool record_stop_sync_begin(const exo::StopRecordMessage &message, uint8_t target_mask)
+	{
+		if (target_mask == 0U) return true;
+		if (g_record_stop_sync.active) {
+			return g_record_stop_sync.message.session_id == message.session_id &&
+				g_record_stop_sync.target_mask == target_mask;
+		}
+		g_record_stop_sync = RecordStopSyncState { };
+		g_record_stop_sync.active = true;
+		g_record_stop_sync.message = message;
+		g_record_stop_sync.target_mask = target_mask;
+		g_record_stop_sync.started_ms = HAL_GetTick();
+		record_stop_sync_send_pending(true);
+		return true;
+	}
+
+	static void record_stop_sync_process()
+	{
+		if (!g_record_stop_sync.active) return;
+		if (record_stop_sync_pending_mask() == 0U) {
+			EXO_LOG("[BLE][HUB][STOP] complete session=%lu target=0x%02X attempts=%u\r\n",
+					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
+					static_cast<unsigned>(g_record_stop_sync.target_mask),
+					static_cast<unsigned>(g_record_stop_sync.send_attempts));
+			g_record_stop_sync.active = false;
+			return;
+		}
+		const uint32_t now_ms = HAL_GetTick();
+		if ((now_ms - g_record_stop_sync.started_ms) >= kRecordStopTimeoutMs) {
+			EXO_LOG("[BLE][HUB][STOP] timeout session=%lu target=0x%02X ack=0x%02X missing=0x%02X sent=0x%02X attempts=%u\r\n",
+					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
+					static_cast<unsigned>(g_record_stop_sync.target_mask),
+					static_cast<unsigned>(g_record_stop_sync.ack_mask),
+					static_cast<unsigned>(record_stop_sync_pending_mask()),
+					static_cast<unsigned>(g_record_stop_sync.ever_sent_mask),
+					static_cast<unsigned>(g_record_stop_sync.send_attempts));
+			g_record_stop_sync.active = false;
+			return;
+		}
+		record_stop_sync_send_pending(false);
 	}
 
 	static void record_sync_normalize_message(exo::StartRecordMessage &message)
@@ -1855,22 +1939,18 @@ namespace {
 		g_ble_stream_enabled = false;
 		g_ble_record_transfer_mode = true;
 		g_local_stop_requested = true;
-		const uint8_t stop_stream_command[1] = { 0xA1U };
-		(void)record_sync_send_to_target_mask(g_active_session_node_mask,
-				BLEPIPE_MSG_STREAM_CONTROL,
-				BLEPIPE_ID_HUB,
-				stop_stream_command,
-				static_cast<uint16_t>(sizeof(stop_stream_command)));
-		const uint8_t sent_mask = record_sync_send_to_target_mask(g_active_session_node_mask,
-				BLEPIPE_MSG_COMMAND,
-				BLEPIPE_ID_HUB,
-				reinterpret_cast<const uint8_t*>(&message),
-				static_cast<uint16_t>(sizeof(message)));
-		EXO_LOG("[BLE][HUB][STOP] session=%lu target=0x%02X sent=0x%02X\r\n",
+		if (!record_stop_sync_begin(message, g_active_session_node_mask)) {
+			EXO_LOG("[BLE][HUB][STOP] reject overlapping stop session=%lu active_session=%lu\r\n",
+					static_cast<unsigned long>(message.session_id),
+					static_cast<unsigned long>(g_record_stop_sync.message.session_id));
+			return false;
+		}
+		EXO_LOG("[BLE][HUB][STOP] armed session=%lu target=0x%02X retry_ms=%lu timeout_ms=%lu\r\n",
 				static_cast<unsigned long>(message.session_id),
 				static_cast<unsigned>(g_active_session_node_mask),
-				static_cast<unsigned>(sent_mask));
-		return sent_mask == g_active_session_node_mask;
+				static_cast<unsigned long>(kRecordStopRetryMs),
+				static_cast<unsigned long>(kRecordStopTimeoutMs));
+		return true;
 	}
 
 	static void record_sync_process(void)
@@ -2734,6 +2814,7 @@ int main(void)
 		exo_hub_central_client_process();
 #endif
 		record_sync_process();
+		record_stop_sync_process();
 		drain_leaf_stream_passthrough();
 		master_training_csv_coordinator.service(g_local_session_recorder, HAL_GetTick());
 		master_training_csv_release_completed_verify_ok();
@@ -3446,15 +3527,34 @@ extern "C" void exo_hub_leaf_control_ingest(uint8_t node_id,
 		const uint8_t *payload,
 		uint16_t payload_len)
 		{
-	if (!g_record_sync.active || payload == nullptr || payload_len < 2U) {
+	if (payload == nullptr || payload_len < 2U) {
 		return;
 	}
 	const uint8_t command_id = payload[0];
 	const uint8_t accepted = payload[1];
+	const uint8_t bit = record_sync_node_bit(node_id);
+	if (command_id == static_cast<uint8_t>(exo::RecordCommand::StopRecord)) {
+		if (!g_record_stop_sync.active || bit == 0U ||
+				(g_record_stop_sync.target_mask & bit) == 0U) return;
+		if (msg_type == BLEPIPE_MSG_ACK && accepted != 0U) {
+			g_record_stop_sync.ack_mask = static_cast<uint8_t>(g_record_stop_sync.ack_mask | bit);
+			EXO_LOG("[BLE][HUB][STOP][ACK] node=%u session=%lu ack=0x%02X target=0x%02X\r\n",
+					static_cast<unsigned>(node_id),
+					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
+					static_cast<unsigned>(g_record_stop_sync.ack_mask),
+					static_cast<unsigned>(g_record_stop_sync.target_mask));
+		} else {
+			EXO_LOG("[BLE][HUB][STOP][NACK] node=%u session=%lu msg=0x%02X accepted=%u\r\n",
+					static_cast<unsigned>(node_id),
+					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
+					static_cast<unsigned>(msg_type), static_cast<unsigned>(accepted));
+		}
+		return;
+	}
+	if (!g_record_sync.active) return;
 	if (command_id != static_cast<uint8_t>(exo::RecordCommand::PrepareRecord)) {
 		return;
 	}
-	const uint8_t bit = record_sync_node_bit(node_id);
 	if ((bit == 0U) || ((g_record_sync.target_mask & bit) == 0U)) {
 		return;
 	}

@@ -1095,8 +1095,14 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 		if (length == sizeof(exo::StopRecordMessage)) {
 			exo::StopRecordMessage message{};
 			memcpy(&message, payload, sizeof(message));
+			const uint8_t state_before = static_cast<uint8_t>(node_recording_app.state());
 			const uint8_t ok = node_recording_app.stop_recording(message) ? 1U : 0U;
 			node_blepipe_send_ack(hdr, ok, payload[0]);
+			EXO_LOG("[BLE][NODE][STOP] session=%lu result=%u state_before=%u state_after=%u\r\n",
+					static_cast<unsigned long>(message.session_id),
+					static_cast<unsigned>(ok),
+					static_cast<unsigned>(state_before),
+					static_cast<unsigned>(node_recording_app.state()));
 			return ok != 0U;
 		}
 #endif
