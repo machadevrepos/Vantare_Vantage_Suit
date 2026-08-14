@@ -11,11 +11,18 @@
 #include <MASTER_SD_SESSION_RECORDER.h>
 #include <MASTER_SESSION_TIMESTAMP_LEDGER.h>
 #include <MASTER_TRAINING_CSV_LOGGER.h>
+
+/* Production Master builds are binary-only.  Leave this default disabled so
+ * the legacy CSV coordinator remains available to host tests and opt-in builds. */
+#ifndef EXO_MASTER_BINARY_ONLY_BUILD
+#define EXO_MASTER_BINARY_ONLY_BUILD 0
+#endif
+
 namespace exo {
 enum class TrainingCsvState : uint8_t {
 Idle, WaitingForMaster, ConvertMasterBno, ConvertMasterIcm, WaitingForNode,
 ReceiveNode, ValidateNode, ConvertNodeBno, ConvertNodeIcm, Complete,
-CsvError, StageError
+CsvError, StageError, BinaryFinalizeNode
 };
 enum class TrainingFailSite : uint8_t {
 None = 0xFFU,
@@ -97,6 +104,11 @@ last_progress_ms_ = 0U;
 progress_seq_ = 0U;
 last_progress_seq_ = 0U;
 partial_finalized_ = false;
+#if !EXO_MASTER_BINARY_ONLY_BUILD
+binary_only_ = false;
+#endif
+file_index_ = 0U;
+cleanup_pending_mask_ = 0U;
 active_session_id_ = session_id;
 expected_source_mask_ = expected_source_mask;
 completed_source_mask_ = 0U;
@@ -110,8 +122,19 @@ ledger_.reset(session_id);
 state_ = TrainingCsvState::WaitingForMaster;
 return true;
 }
+bool begin_binary_session(uint32_t session_id, uint8_t expected_source_mask, uint16_t file_index)
+{
+if (file_index == 0U || file_index > 9999U) return false;
+if (!begin_session(session_id, expected_source_mask)) return false;
+#if !EXO_MASTER_BINARY_ONLY_BUILD
+binary_only_ = true;
+#endif
+file_index_ = file_index;
+return true;
+}
 bool note_master_icm_time(uint32_t session_id, uint32_t session_time_us)
 {
+if (binary_only_) return session_id == active_session_id_;
 if (session_id != active_session_id_ ||
 (state_ != TrainingCsvState::WaitingForMaster &&
 state_ != TrainingCsvState::ConvertMasterBno &&
@@ -134,6 +157,11 @@ transfer_window_.reset();
 reliable_defer_services_ = 0U;
 last_progress_ms_ = progress_seq_ = last_progress_seq_ = 0U;
 partial_finalized_ = false;
+#if !EXO_MASTER_BINARY_ONLY_BUILD
+binary_only_ = false;
+#endif
+file_index_ = 0U;
+cleanup_pending_mask_ = 0U;
 state_ = TrainingCsvState::Idle;
 return true;
 }
@@ -144,7 +172,13 @@ master_ops_->header_fn(recorder).session_id != active_session_id_) return;
 master_header_ = master_ops_->header_fn(recorder);
 if (master_header_.bno85_sample_count != master_header_.bno85_captured_count ||
 master_header_.icm45686_sample_count != master_header_.icm45686_captured_count) {
-fail(TrainingCsvState::CsvError, TrainingFailSite::Site0);
+fail(binary_only_ ? TrainingCsvState::StageError : TrainingCsvState::CsvError, TrainingFailSite::Site0);
+return;
+}
+if (binary_only_) {
+completed_source_mask_ = static_cast<uint8_t>(completed_source_mask_ | 0x01U);
+state_ = ((completed_source_mask_ | failed_source_mask_) & expected_source_mask_) == expected_source_mask_ ?
+TrainingCsvState::Complete : TrainingCsvState::WaitingForNode;
 return;
 }
 master_ledger_matches_ = !ledger_.overflowed() &&
@@ -165,7 +199,7 @@ done.session_id != active_session_id_ || done.node_id < 1U || done.node_id > 4U 
 (expected_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) == 0U ||
 (completed_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) != 0U ||
 (failed_source_mask_ & static_cast<uint8_t>(1U << done.node_id)) != 0U) return;
-if (!stager_.begin(done, logger_.file_index())) {
+if (!stager_.begin(done, binary_only_ ? file_index_ : logger_.file_index())) {
 fail(TrainingCsvState::StageError, TrainingFailSite::Site2);
 return;
 }
@@ -250,7 +284,7 @@ void finalize_partial(uint32_t now_ms)
 {
 if (partial_finalized_) return;
 partial_finalized_ = true;
-(void)logger_.shutdown(now_ms);
+if (!binary_only_) (void)logger_.shutdown(now_ms);
 (void)stager_.shutdown();
 transfer_window_.reset();
 reliable_control_.reset();
@@ -259,11 +293,16 @@ active_node_id_ = 0U;
 bool partial_finalized() const { return partial_finalized_; }
 void service_state(MasterSdSessionRecorder &recorder, uint32_t now_ms)
 {
+#if EXO_MASTER_BINARY_ONLY_BUILD
+(void)recorder;
+#endif
 switch (state_) {
+#if !EXO_MASTER_BINARY_ONLY_BUILD
 case TrainingCsvState::ConvertMasterBno:
 service_master_bno(recorder, now_ms); break;
 case TrainingCsvState::ConvertMasterIcm:
 service_master_icm(recorder, now_ms); break;
+#endif
 case TrainingCsvState::ValidateNode:
 switch (stager_.validation_status()) {
 case node_session_staging::NodeSessionValidationStatus::Idle:
@@ -276,6 +315,10 @@ fail(TrainingCsvState::StageError, TrainingFailSite::Site5);
 break;
 case node_session_staging::NodeSessionValidationStatus::ReadyToFinalize:
 if (stager_.finalize_validation()) {
+if (binary_only_) {
+begin_binary_node_finalize();
+break;
+}
 if (!logger_.set_source_metadata(active_node_id_, stager_.header())) {
 fail(TrainingCsvState::CsvError, TrainingFailSite::Site6);
 break;
@@ -285,6 +328,10 @@ state_ = TrainingCsvState::ConvertNodeBno;
 } else fail(TrainingCsvState::StageError, TrainingFailSite::Site6);
 break;
 case node_session_staging::NodeSessionValidationStatus::Complete:
+if (binary_only_) {
+begin_binary_node_finalize();
+break;
+}
 if (!logger_.set_source_metadata(active_node_id_, stager_.header())) {
 fail(TrainingCsvState::CsvError, TrainingFailSite::Site6);
 break;
@@ -296,15 +343,22 @@ case node_session_staging::NodeSessionValidationStatus::Failed:
 fail(TrainingCsvState::StageError, TrainingFailSite::Site7); break;
 }
 break;
+#if !EXO_MASTER_BINARY_ONLY_BUILD
 case TrainingCsvState::ConvertNodeBno:
 service_node_bno(now_ms); break;
 case TrainingCsvState::ConvertNodeIcm:
 service_node_icm(now_ms); break;
+#endif
+case TrainingCsvState::BinaryFinalizeNode:
+if (!reliable_control_.pending()) complete_binary_node(now_ms);
+break;
 case TrainingCsvState::WaitingForMaster:
 case TrainingCsvState::WaitingForNode:
 case TrainingCsvState::ReceiveNode:
-if (logger_.ready() && !logger_.service(now_ms))
+#if !EXO_MASTER_BINARY_ONLY_BUILD
+if (!binary_only_ && logger_.ready() && !logger_.service(now_ms))
 fail(TrainingCsvState::CsvError, TrainingFailSite::Site8);
+#endif
 break;
 default:
 break;
@@ -320,6 +374,13 @@ case TrainingCsvState::ReceiveNode:
 if ((now_ms - last_progress_ms_) >= kNodeStallMs) abandon_active_node(now_ms);
 else (void)reliable_control_.rearm_ack_window(now_ms, kNodeAckRearmMs);
 break;
+case TrainingCsvState::BinaryFinalizeNode:
+if ((now_ms - last_progress_ms_) >= kNodeStallMs) {
+cleanup_pending_mask_ = static_cast<uint8_t>(cleanup_pending_mask_ | static_cast<uint8_t>(1U << active_node_id_));
+reliable_control_.reset();
+complete_binary_node(now_ms);
+}
+break;
 case TrainingCsvState::WaitingForNode:
 /* Nothing arrived from any remaining node in time. Publish what was
  * staged rather than discarding the sources that did complete. */
@@ -331,11 +392,11 @@ break;
 }
 void shutdown(uint32_t now_ms)
 {
-(void)logger_.shutdown(now_ms);
+if (!binary_only_) (void)logger_.shutdown(now_ms);
 (void)stager_.shutdown();
 reliable_control_.reset();
 transfer_window_.reset();
-if (logger_.has_open_file()) {
+if (!binary_only_ && logger_.has_open_file()) {
 fail(TrainingCsvState::CsvError, TrainingFailSite::Site9); return;
 }
 if (stager_.active()) {
@@ -349,6 +410,9 @@ uint32_t active_session_id() const { return active_session_id_; }
 uint8_t active_node_id() const { return active_node_id_; }
 uint8_t expected_source_mask() const { return expected_source_mask_; }
 uint8_t completed_source_mask() const { return completed_source_mask_; }
+bool binary_only() const { return binary_only_; }
+uint16_t file_index() const { return binary_only_ ? file_index_ : logger_.file_index(); }
+uint8_t cleanup_pending_mask() const { return cleanup_pending_mask_; }
 /* Expected sources that were written off after stalling. Non-zero means the
  * published CSV is missing those sources' rows. */
 uint8_t failed_source_mask() const { return failed_source_mask_; }
@@ -372,7 +436,7 @@ FRESULT failure_stager_result() const { return failure_stager_result_; }
 training_csv::TrainingCsvLogOperation failure_csv_operation() const
 { return failure_csv_operation_; }
 FRESULT failure_csv_result() const { return failure_csv_result_; }
-void fail_durability() { fail(TrainingCsvState::CsvError, TrainingFailSite::Site20); }
+void fail_durability() { fail(binary_only_ ? TrainingCsvState::StageError : TrainingCsvState::CsvError, TrainingFailSite::Site20); }
 private:
 void clear_failure()
 {
@@ -464,6 +528,32 @@ fail(TrainingCsvState::CsvError, TrainingFailSite::Site16); return;
 if (node_icm_index_ == stager_.header().icm45686_sample_count)
 complete_source(active_node_id_, now_ms, true);
 }
+void begin_binary_node_finalize()
+{
+const uint8_t node_id = active_node_id_;
+const uint32_t payload_crc32 = stager_.header().payload_crc32;
+if (!stager_.discard_after_success()) {
+fail(TrainingCsvState::StageError, TrainingFailSite::Site18);
+return;
+}
+if (!reliable_control_.verify_ok(payload_crc32)) {
+cleanup_pending_mask_ = static_cast<uint8_t>(cleanup_pending_mask_ | static_cast<uint8_t>(1U << node_id));
+}
+state_ = TrainingCsvState::BinaryFinalizeNode;
+}
+void complete_binary_node(uint32_t now_ms)
+{
+if (active_node_id_ < 1U || active_node_id_ > 4U) {
+fail(TrainingCsvState::StageError, TrainingFailSite::Site18);
+return;
+}
+completed_source_mask_ = static_cast<uint8_t>(completed_source_mask_ |
+static_cast<uint8_t>(1U << active_node_id_));
+active_node_id_ = 0U;
+transfer_window_.reset();
+reliable_control_.reset();
+settle_after_source(now_ms);
+}
 void complete_source(uint8_t source_id, uint32_t now_ms, bool discard_stage)
 {
 if (!logger_.mark_source_complete(source_id, now_ms)) {
@@ -483,6 +573,11 @@ settle_after_source(now_ms);
 void settle_after_source(uint32_t now_ms)
 {
 const uint8_t resolved = static_cast<uint8_t>(completed_source_mask_ | failed_source_mask_);
+if (binary_only_) {
+state_ = ((resolved & expected_source_mask_) == expected_source_mask_) ?
+TrainingCsvState::Complete : TrainingCsvState::WaitingForNode;
+return;
+}
 if ((resolved & expected_source_mask_) == expected_source_mask_) {
 if (logger_.shutdown(now_ms)) state_ = TrainingCsvState::Complete;
 else fail(TrainingCsvState::CsvError, TrainingFailSite::Site19);
@@ -542,6 +637,13 @@ uint8_t completed_source_mask_ = 0U;
 uint8_t failed_source_mask_ = 0U;
 uint8_t active_node_id_ = 0U;
 uint8_t reliable_defer_services_ = 0U;
+#if EXO_MASTER_BINARY_ONLY_BUILD
+static constexpr bool binary_only_ = true;
+#else
+bool binary_only_ = false;
+#endif
+uint16_t file_index_ = 0U;
+uint8_t cleanup_pending_mask_ = 0U;
 bool master_ledger_matches_ = false;
 uint32_t last_progress_ms_ = 0U;
 uint32_t progress_seq_ = 0U;

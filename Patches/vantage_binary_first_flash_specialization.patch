@@ -1,0 +1,113 @@
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -11,3 +11,10 @@
+ #include <MASTER_SESSION_TIMESTAMP_LEDGER.h>
+ #include <MASTER_TRAINING_CSV_LOGGER.h>
++
++/* Production Master builds are binary-only.  Leave this default disabled so
++ * the legacy CSV coordinator remains available to host tests and opt-in builds. */
++#ifndef EXO_MASTER_BINARY_ONLY_BUILD
++#define EXO_MASTER_BINARY_ONLY_BUILD 0
++#endif
++
+ namespace exo {
+@@ -104,6 +104,8 @@
+ last_progress_seq_ = 0U;
+ partial_finalized_ = false;
++#if !EXO_MASTER_BINARY_ONLY_BUILD
+ binary_only_ = false;
++#endif
+ file_index_ = 0U;
+ cleanup_pending_mask_ = 0U;
+ active_session_id_ = session_id;
+@@ -122,5 +122,7 @@
+ if (file_index == 0U || file_index > 9999U) return false;
+ if (!begin_session(session_id, expected_source_mask)) return false;
++#if !EXO_MASTER_BINARY_ONLY_BUILD
+ binary_only_ = true;
++#endif
+ file_index_ = file_index;
+ return true;
+@@ -153,6 +153,8 @@
+ last_progress_ms_ = progress_seq_ = last_progress_seq_ = 0U;
+ partial_finalized_ = false;
++#if !EXO_MASTER_BINARY_ONLY_BUILD
+ binary_only_ = false;
++#endif
+ file_index_ = 0U;
+ cleanup_pending_mask_ = 0U;
+ state_ = TrainingCsvState::Idle;
+@@ -284,8 +284,13 @@
+ void service_state(MasterSdSessionRecorder &recorder, uint32_t now_ms)
+ {
++#if EXO_MASTER_BINARY_ONLY_BUILD
++(void)recorder;
++#endif
+ switch (state_) {
++#if !EXO_MASTER_BINARY_ONLY_BUILD
+ case TrainingCsvState::ConvertMasterBno:
+ service_master_bno(recorder, now_ms); break;
+ case TrainingCsvState::ConvertMasterIcm:
+ service_master_icm(recorder, now_ms); break;
++#endif
+ case TrainingCsvState::ValidateNode:
+@@ -330,6 +330,8 @@
+ break;
++#if !EXO_MASTER_BINARY_ONLY_BUILD
+ case TrainingCsvState::ConvertNodeBno:
+ service_node_bno(now_ms); break;
+ case TrainingCsvState::ConvertNodeIcm:
+ service_node_icm(now_ms); break;
++#endif
+ case TrainingCsvState::BinaryFinalizeNode:
+@@ -339,6 +339,8 @@
+ case TrainingCsvState::WaitingForMaster:
+ case TrainingCsvState::WaitingForNode:
+ case TrainingCsvState::ReceiveNode:
++#if !EXO_MASTER_BINARY_ONLY_BUILD
+ if (!binary_only_ && logger_.ready() && !logger_.service(now_ms))
+ fail(TrainingCsvState::CsvError, TrainingFailSite::Site8);
++#endif
+ break;
+@@ -620,7 +620,11 @@
+ uint8_t failed_source_mask_ = 0U;
+ uint8_t active_node_id_ = 0U;
+ uint8_t reliable_defer_services_ = 0U;
++#if EXO_MASTER_BINARY_ONLY_BUILD
++static constexpr bool binary_only_ = true;
++#else
+ bool binary_only_ = false;
++#endif
+ uint16_t file_index_ = 0U;
+ uint8_t cleanup_pending_mask_ = 0U;
+ bool master_ledger_matches_ = false;
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -43,5 +43,9 @@
+ #include <MASTER_IMU_SWO_TELEMETRY.h>
+ #include <MASTER_BINARY_SESSION_INDEX.h>
+ #include <MASTER_SD_SESSION_RECORDER.h>
++/* The shipping Master never creates MCU-side training CSV.  Specializing the
++ * coordinator here lets -Os remove that legacy formatter/logger path instead
++ * of carrying both implementations in the 124 KiB CPU1 image. */
++#define EXO_MASTER_BINARY_ONLY_BUILD 1
+ #include <MASTER_TRAINING_CSV_COORDINATOR.h>
+ #include <RECORDING_TYPES.h>
+diff --git a/Firmware/HostTests/test_binary_first_invariants.py b/Firmware/HostTests/test_binary_first_invariants.py
+--- a/Firmware/HostTests/test_binary_first_invariants.py
++++ b/Firmware/HostTests/test_binary_first_invariants.py
+@@ -29,3 +29,6 @@
+     coordinator = read("Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h")
++    require("EXO_MASTER_BINARY_ONLY_BUILD" in coordinator and
++            "static constexpr bool binary_only_ = true" in coordinator,
++            "production build must support compile-time binary-only specialization", failures)
+     require("BinaryFinalizeNode" in coordinator,
+             "coordinator needs an explicit post-validation binary state", failures)
+@@ -49,3 +49,5 @@
+     main_src = read("Firmware/Master/Core/Src/main.c")
++    require("#define EXO_MASTER_BINARY_ONLY_BUILD 1" in main_src,
++            "Master must select the compile-time binary-only specialization", failures)
+     require("#include <MASTER_BINARY_SESSION_INDEX.h>" in main_src,
+             "Master must include the binary session index allocator", failures)

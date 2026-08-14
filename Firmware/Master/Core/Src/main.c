@@ -42,7 +42,12 @@
 #include <LIVE_STREAM_TIMING.h>
 #include <MASTER_IMU_CSV_LOGGER.h>
 #include <MASTER_IMU_SWO_TELEMETRY.h>
+#include <MASTER_BINARY_SESSION_INDEX.h>
 #include <MASTER_SD_SESSION_RECORDER.h>
+/* The shipping Master never creates MCU-side training CSV.  Specializing the
+ * coordinator here lets -Os remove that legacy formatter/logger path instead
+ * of carrying both implementations in the 124 KiB CPU1 image. */
+#define EXO_MASTER_BINARY_ONLY_BUILD 1
 #include <MASTER_TRAINING_CSV_COORDINATOR.h>
 #include <RECORDING_TYPES.h>
 #include "HUB_LEAF_BLE_MANAGER.h"
@@ -102,6 +107,7 @@ static exo::HubSensorTestApp hub_sensor_test_app(hi2c1, hi2c3, 0x4BU, 0x69U);
 static exo::MasterImuCsvLogger master_imu_csv_logger;
 #endif
 static exo::MasterTrainingCsvCoordinator master_training_csv_coordinator;
+static exo::MasterBinarySessionIndex master_binary_session_index;
 static exo::TrainingCsvState master_training_csv_reported_state = exo::TrainingCsvState::Idle;
 static uint8_t master_training_csv_reported_completed_mask = 0U;
 static bool master_training_csv_reported_partial = false;
@@ -445,6 +451,7 @@ namespace {
 			uint8_t heartbeat_phase = 0U;
 			uint32_t heartbeat_last_ms = 0U;
 			uint8_t stream_interval_ms = 20U;
+			uint16_t file_index = 0U;
 	};
 	static RecordSyncState g_record_sync { };
 	struct RecordStopSyncState {
@@ -464,6 +471,7 @@ namespace {
 	static uint32_t g_local_finalize_duration_ms = 0U;
 	static uint8_t g_active_session_node_mask = 0U;
 	static uint32_t g_active_session_id = 0U;
+	static uint16_t g_active_session_file_index = 0U;
 	static exo::MasterSdSessionRecorder g_local_session_recorder { };
 #if EXO_ACQ_DIAG_ENABLE
 	static exo::diag::AcquisitionDiagnostics g_acq_diag { };
@@ -1278,8 +1286,20 @@ namespace {
 			return;
 		}
 		master_training_csv_coordinator.on_node_record_done(g_training_node_done[index]);
-		if (master_training_csv_coordinator.state() != exo::TrainingCsvState::WaitingForNode) {
+		const exo::TrainingCsvState replay_state = master_training_csv_coordinator.state();
+		if (replay_state != exo::TrainingCsvState::WaitingForNode) {
 			g_training_node_done_valid[index] = false;
+			if (master_training_csv_coordinator.binary_only() &&
+				replay_state == exo::TrainingCsvState::ReceiveNode) {
+				EXO_LOG("[RECORD][BIN] node receive start source=%u session=%lu index=%u size=%lu\r\n",
+						static_cast<unsigned>(g_pending_node_done.node_id),
+						static_cast<unsigned long>(g_pending_node_done.session_id),
+						static_cast<unsigned>(master_training_csv_coordinator.file_index()),
+						static_cast<unsigned long>(g_pending_node_done.total_size));
+				g_have_pending_node_done = false;
+				g_pending_node_manifest_last_tick = 0U;
+				memset(&g_pending_node_done, 0, sizeof(g_pending_node_done));
+			}
 		}
 	}
 
@@ -1315,6 +1335,9 @@ namespace {
 		}
 		g_pending_node_manifest_last_tick = 0U;
 		master_training_csv_replay_pending_node_done();
+		if (master_training_csv_coordinator.binary_only()) {
+			return;
+		}
 		if (!master_training_csv_node_manifest_ready(g_pending_node_done)) {
 			return;
 		}
@@ -1359,6 +1382,7 @@ namespace {
 		g_remote_transfer_active = false;
 		g_remote_transfer_source_id = 0U;
 		g_remote_transfer_session_id = 0U;
+		g_active_session_file_index = 0U;
 		local_record_reset();
 		const bool ok = leaf_ble_manager.reset_and_abort_all(erase_remote);
 		if (ok) {
@@ -1662,6 +1686,10 @@ namespace {
 					reinterpret_cast<const uint8_t*>(&abort_msg),
 					static_cast<uint16_t>(sizeof(abort_msg)));
 		}
+		if (master_training_csv_coordinator.active_session_id() == g_record_sync.message.session_id &&
+				master_training_csv_coordinator.state() == exo::TrainingCsvState::WaitingForMaster) {
+			(void)master_training_csv_coordinator.cancel_session();
+		}
 		EXO_LOG("[BLE][HUB][SYNC] abort session=%lu target=0x%02X prepared=0x%02X failed=0x%02X\r\n",
 				static_cast<unsigned long>(g_record_sync.message.session_id),
 				static_cast<unsigned>(g_record_sync.target_mask),
@@ -1675,8 +1703,50 @@ namespace {
 		record_sync_clear();
 	}
 
+	static bool record_sync_begin_binary_collection()
+	{
+		if (!g_record_sync.active) {
+			return false;
+		}
+		if (g_record_sync.file_index != 0U) {
+			return master_training_csv_coordinator.binary_only() &&
+					master_training_csv_coordinator.active_session_id() == g_record_sync.message.session_id &&
+					master_training_csv_coordinator.file_index() == g_record_sync.file_index;
+		}
+		uint16_t file_index = 0U;
+		if (!master_binary_session_index.allocate(file_index)) {
+			EXO_LOG("[RECORD][BIN] index allocation failed session=%lu fr=%d\r\n",
+					static_cast<unsigned long>(g_record_sync.message.session_id),
+					static_cast<int>(master_binary_session_index.last_result()));
+			return false;
+		}
+		const uint8_t expected_mask = exo::session_expected_source_mask(g_record_sync.target_mask);
+		if (!master_training_csv_coordinator.begin_binary_session(
+				g_record_sync.message.session_id, expected_mask, file_index)) {
+			EXO_LOG("[RECORD][BIN] setup failed session=%lu expected=0x%02X index=%u state=%u\r\n",
+					static_cast<unsigned long>(g_record_sync.message.session_id),
+					static_cast<unsigned>(expected_mask),
+					static_cast<unsigned>(file_index),
+					static_cast<unsigned>(master_training_csv_coordinator.state()));
+			return false;
+		}
+		g_record_sync.file_index = file_index;
+		master_training_csv_reported_state = exo::TrainingCsvState::WaitingForMaster;
+		master_training_csv_reported_completed_mask = 0U;
+		master_training_csv_reported_partial = false;
+		EXO_LOG("[RECORD][BIN] reserved session=%lu index=%u expected=0x%02X\r\n",
+				static_cast<unsigned long>(g_record_sync.message.session_id),
+				static_cast<unsigned>(file_index),
+				static_cast<unsigned>(expected_mask));
+		return true;
+	}
+
 	static uint8_t record_sync_commit_and_start(void)
 			{
+		if (!record_sync_begin_binary_collection()) {
+			record_sync_abort(1U);
+			return 0U;
+		}
 		const uint8_t prepared_target_mask = static_cast<uint8_t>(g_record_sync.prepared_mask & g_record_sync.target_mask);
 		if (g_record_sync.target_mask != 0U && prepared_target_mask != g_record_sync.target_mask) {
 			g_record_sync.failed_mask = static_cast<uint8_t>(g_record_sync.target_mask & ~prepared_target_mask);
@@ -1720,23 +1790,15 @@ namespace {
 		leaf_ble_manager.set_transfer_hold(false);
 		const exo::StartRecordMessage &message = g_record_sync.message;
 		if (!local_record_start(g_record_sync.message, true)) {
-			EXO_LOG("[TRAIN][CSV] skipped session=%lu reason=master_binary_start\r\n",
-					static_cast<unsigned long>(message.session_id));
-		} else {
-			const uint8_t expected_mask = exo::session_expected_source_mask(g_record_sync.target_mask);
-			if (!master_training_csv_coordinator.begin_session(message.session_id, expected_mask)) {
-				EXO_LOG("[TRAIN][CSV] setup failed session=%lu expected=0x%02X state=%u\r\n",
-						static_cast<unsigned long>(message.session_id),
-						static_cast<unsigned>(expected_mask),
-						static_cast<unsigned>(master_training_csv_coordinator.state()));
-			} else {
-				master_training_csv_reported_state = exo::TrainingCsvState::WaitingForMaster;
-				master_training_csv_reported_completed_mask = 0U;
-				master_training_csv_reported_partial = false;
-			}
+			EXO_LOG("[RECORD][BIN] master start failed session=%lu index=%u\r\n",
+					static_cast<unsigned long>(message.session_id),
+					static_cast<unsigned>(g_record_sync.file_index));
+			record_sync_abort(1U);
+			return 0U;
 		}
 		g_active_session_node_mask = g_record_sync.target_mask;
 		g_active_session_id = message.session_id;
+		g_active_session_file_index = g_record_sync.file_index;
 		g_ble_stream_enabled = true;
 		const uint8_t interval_command[2] = { 0xA2U, g_record_sync.stream_interval_ms };
 		const uint8_t start_stream_command[1] = { 0xA0U };
@@ -1770,6 +1832,10 @@ namespace {
 
 	static uint8_t record_sync_send_prepare(void)
 			{
+		if (!record_sync_begin_binary_collection()) {
+			record_sync_abort(1U);
+			return 0U;
+		}
 		exo::StartRecordMessage prepare_msg = g_record_sync.message;
 		prepare_msg.command = exo::RecordCommand::PrepareRecord;
 		const uint8_t sent_mask = record_sync_send_to_target_mask(g_record_sync.target_mask,
@@ -2499,21 +2565,19 @@ namespace {
 			local_record_finish_without_transfer();
 			return;
 		}
-		master_training_csv_coordinator.on_master_finalized(g_local_session_recorder);
-		if (master_training_csv_coordinator.state() == exo::TrainingCsvState::ConvertMasterBno) {
-			if (!g_local_session_recorder.archive_to_index(
-					master_training_csv_coordinator.logger().file_index())) {
-				EXO_LOG("[TRAIN][CSV] master binary archive failed session=%lu index=%u\r\n",
-						static_cast<unsigned long>(g_local_start_msg.session_id),
-						static_cast<unsigned>(master_training_csv_coordinator.logger().file_index()));
-				master_training_csv_coordinator.fail_durability();
-			}
-			EXO_LOG("[TRAIN][CSV] opened session=%lu path=%s expected=0x%02X\r\n",
-					static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
-					master_training_csv_coordinator.logger().path(),
-					static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()));
-			master_training_csv_reported_state = exo::TrainingCsvState::ConvertMasterBno;
+		if (g_active_session_file_index == 0U ||
+				!g_local_session_recorder.archive_to_index(g_active_session_file_index)) {
+			EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
+					static_cast<unsigned long>(g_local_start_msg.session_id),
+					static_cast<unsigned>(g_active_session_file_index));
+			master_training_csv_coordinator.fail_durability();
+			local_record_finish_without_transfer();
+			return;
 		}
+		EXO_LOG("[RECORD][BIN] master durable session=%lu index=%u\r\n",
+				static_cast<unsigned long>(g_local_start_msg.session_id),
+				static_cast<unsigned>(g_active_session_file_index));
+		master_training_csv_coordinator.on_master_finalized(g_local_session_recorder);
 		const exo::SessionHeader &session_header = g_local_session_recorder.header();
 		g_local_session_size = g_local_session_recorder.total_size();
 		EXO_LOG("[MASTER][REC] finalized session=%lu bno=%lu icm=%lu size=%lu bno_fail=%lu icm_fail=%lu\r\n",
@@ -2536,8 +2600,10 @@ namespace {
 		g_local_done.actual_duration_ms = g_local_finalize_duration_ms;
 		g_local_done.total_size = g_local_session_size;
 		g_local_done.payload_crc32 = session_header.payload_crc32;
-		g_local_record_phase = LocalRecordPhase::Manifest;
-		leaf_ble_manager.set_transfer_hold(true);
+		/* The SD archive is the authoritative deliverable. Do not put the browser
+		 * bulk-transfer lane between Master finalization and node collection. */
+		g_local_record_phase = LocalRecordPhase::Finished;
+		leaf_ble_manager.set_transfer_hold(false);
 	}
 }
 
@@ -2820,6 +2886,19 @@ int main(void)
 		master_training_csv_release_completed_verify_ok();
 		const exo::TrainingCsvState training_state = master_training_csv_coordinator.state();
 		const exo::MasterTrainingCsvLogger &training_logger = master_training_csv_coordinator.logger();
+		if (master_training_csv_coordinator.binary_only()) {
+			const uint16_t active_source = leaf_ble_manager.active_source_id();
+			const uint8_t failed_mask = master_training_csv_coordinator.failed_source_mask();
+			if (active_source >= 1U && active_source <= 4U &&
+					(failed_mask & static_cast<uint8_t>(1U << active_source)) != 0U) {
+				const uint32_t active_session = leaf_ble_manager.active_session_id();
+				if (leaf_ble_manager.on_ble_reliable_cancel(active_session, active_source)) {
+					EXO_LOG("[RECORD][BIN] source failed source=NODE%u retained_on_node=1 failed=0x%02X\r\n",
+						static_cast<unsigned>(active_source),
+						static_cast<unsigned>(failed_mask));
+				}
+			}
+		}
 		if (training_state == exo::TrainingCsvState::ConvertMasterBno &&
 				master_training_csv_reported_state != exo::TrainingCsvState::ConvertMasterBno) {
 			EXO_LOG("[TRAIN][CSV] opened session=%lu path=%s expected=0x%02X\r\n",
@@ -2831,7 +2910,34 @@ int main(void)
 		const uint8_t newly_completed_mask = static_cast<uint8_t>(training_completed_mask &
 				~master_training_csv_reported_completed_mask);
 		for (uint8_t source_id = 0U; source_id <= 4U; ++source_id) {
-			if ((newly_completed_mask & static_cast<uint8_t>(1U << source_id)) != 0U) {
+			if ((newly_completed_mask & static_cast<uint8_t>(1U << source_id)) == 0U) {
+				continue;
+			}
+			if (master_training_csv_coordinator.binary_only()) {
+				if (source_id == 0U) {
+					EXO_LOG("[RECORD][BIN] source durable source=MASTER index=%u completed=0x%02X\r\n",
+							static_cast<unsigned>(master_training_csv_coordinator.file_index()),
+							static_cast<unsigned>(training_completed_mask));
+					continue;
+				}
+				const exo::RecordDoneMessage &done = g_training_node_done[source_id - 1U];
+				const bool identity_ok = done.node_id == source_id &&
+						done.session_id == master_training_csv_coordinator.active_session_id();
+				bool released = false;
+				if (identity_ok) {
+					const bool verified = leaf_ble_manager.on_ble_reliable_verify_ok(
+							done.session_id, source_id, done.payload_crc32);
+					released = verified && leaf_ble_manager.on_ble_session_complete(
+							done.session_id, source_id, done.payload_crc32);
+				}
+				const uint8_t cleanup_bit = static_cast<uint8_t>(1U << source_id);
+				EXO_LOG("[RECORD][BIN] source durable source=NODE%u index=%u completed=0x%02X cleanup_pending=%u released=%u\r\n",
+						static_cast<unsigned>(source_id),
+						static_cast<unsigned>(master_training_csv_coordinator.file_index()),
+						static_cast<unsigned>(training_completed_mask),
+						static_cast<unsigned>((master_training_csv_coordinator.cleanup_pending_mask() & cleanup_bit) != 0U ? 1U : 0U),
+						static_cast<unsigned>(released ? 1U : 0U));
+			} else {
 				EXO_LOG("[TRAIN][CSV] source complete source=%u bno=%lu icm=%lu completed=0x%02X\r\n",
 						static_cast<unsigned>(source_id),
 						static_cast<unsigned long>(training_logger.bno_count(source_id)),
@@ -2859,11 +2965,21 @@ int main(void)
 						static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
 						static_cast<unsigned>(training_completed_mask));
 			} else if (training_state == exo::TrainingCsvState::Complete) {
-				EXO_LOG("[TRAIN][CSV] complete session=%lu expected=0x%02X completed=0x%02X rows=%lu\r\n",
-						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
-						static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
-						static_cast<unsigned>(training_completed_mask),
-						static_cast<unsigned long>(training_logger.row_count()));
+				if (master_training_csv_coordinator.binary_only()) {
+					EXO_LOG("[RECORD][BIN] complete session=%lu index=%u expected=0x%02X completed=0x%02X failed=0x%02X cleanup_pending=0x%02X\r\n",
+							static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
+							static_cast<unsigned>(master_training_csv_coordinator.file_index()),
+							static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
+							static_cast<unsigned>(training_completed_mask),
+							static_cast<unsigned>(master_training_csv_coordinator.failed_source_mask()),
+							static_cast<unsigned>(master_training_csv_coordinator.cleanup_pending_mask()));
+				} else {
+					EXO_LOG("[TRAIN][CSV] complete session=%lu expected=0x%02X completed=0x%02X rows=%lu\r\n",
+							static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
+							static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
+							static_cast<unsigned>(training_completed_mask),
+							static_cast<unsigned long>(training_logger.row_count()));
+				}
 			}
 		}
 		/* SWO is not always attached and can lose the interesting window, so every training
@@ -2948,14 +3064,17 @@ int main(void)
 				if (g_have_pending_node_done) {
 					g_pending_node_manifest_last_tick = 0U;
 					master_training_csv_replay_pending_node_done();
-					EXO_LOG("[BLE][REC][REL][NODEQ] start node manifest source=%u session=%lu size=%lu queue=%u\r\n",
-							static_cast<unsigned>(g_pending_node_done.node_id),
-							static_cast<unsigned long>(g_pending_node_done.session_id),
-							static_cast<unsigned long>(g_pending_node_done.total_size),
-							static_cast<unsigned>(pending_node_done_depth()));
+					if (g_have_pending_node_done) {
+						EXO_LOG("[BLE][REC][REL][NODEQ] start node manifest source=%u session=%lu size=%lu queue=%u\r\n",
+								static_cast<unsigned>(g_pending_node_done.node_id),
+								static_cast<unsigned long>(g_pending_node_done.session_id),
+								static_cast<unsigned long>(g_pending_node_done.total_size),
+								static_cast<unsigned>(pending_node_done_depth()));
+					}
 				}
 			}
-			if (g_have_pending_node_done &&
+			if (!master_training_csv_coordinator.binary_only() &&
+					g_have_pending_node_done &&
 					!g_remote_transfer_active &&
 					!local_transfer_blocks_node_upload() &&
 					master_training_csv_node_manifest_ready(g_pending_node_done) &&
