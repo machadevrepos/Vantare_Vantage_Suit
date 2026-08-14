@@ -75,6 +75,30 @@ def main() -> int:
             "retained_on_node=1" in main_src,
             "a stalled node must release the local scheduler slot without erasing node flash", failures)
 
+    recorder = read("Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h")
+    require("/SESSIONS/R0000T.BIN" in recorder,
+            "Master archive must use a temporary compact file", failures)
+    require("read(logical_offset, copy_buffer_, chunk)" in recorder,
+            "Master archive must copy the recorder's canonical logical stream", failures)
+    require("validate_compact_archive" in recorder and "f_size(&file)" in recorder,
+            "Master archive must validate the exact compact file size", failures)
+    require("session_header_crc(compact_header)" in recorder and
+            "compact_header.payload_crc32" in recorder and
+            "crc32_update(payload_crc" in recorder,
+            "Master archive must validate both header and payload CRCs", failures)
+    require("f_rename(temp_path, archive_path)" in recorder and
+            "f_rename(EXO_MASTER_REC_FINAL_PATH, archive_path)" not in recorder,
+            "Master archive must install the validated compact file, not rename the sparse source", failures)
+    archive_install = recorder.find("f_rename(temp_path, archive_path)")
+    live_remove = recorder.find("f_unlink(EXO_MASTER_REC_FINAL_PATH)", archive_install)
+    require(archive_install >= 0 and live_remove > archive_install,
+            "sparse MREC.BIN must survive until the compact archive is installed", failures)
+    require(recorder.count("f_unlink(temp_path)") >= 2,
+            "failed compact/archive attempts must clean temporary files", failures)
+    installed_tail = recorder[archive_install:] if archive_install >= 0 else ""
+    require(installed_tail.count("(void)f_unlink(archive_path);") >= 2,
+            "failed post-install verification must remove the blocking archive so the same index can be retried", failures)
+
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}", file=sys.stderr)

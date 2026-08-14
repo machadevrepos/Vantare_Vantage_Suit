@@ -59,6 +59,7 @@ static inline FRESULT f_read(FIL*, void*, UINT bytes, UINT *read)
     return FR_OK;
 }
 static inline FRESULT f_lseek(FIL*, FSIZE_t) { return FR_OK; }
+static inline FSIZE_t f_size(FIL*) { return 0U; }
 static inline FRESULT f_sync(FIL*) { return FR_OK; }
 static inline FRESULT f_close(FIL*) { return FR_OK; }
 static inline FRESULT f_rename(const TCHAR*, const TCHAR*) { return FR_OK; }

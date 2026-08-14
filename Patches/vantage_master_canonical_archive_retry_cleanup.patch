@@ -1,0 +1,31 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+--- a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
++++ b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+@@ -314,6 +314,7 @@
+         result = f_open(&verify_file, archive_path, FA_READ);
+         if (result != FR_OK) {
+             last_error_ = result;
++            (void)f_unlink(archive_path);
+             return false;
+         }
+         const bool installed_ok = validate_compact_archive(verify_file);
+@@ -321,6 +322,7 @@
+         const FRESULT verify_close = f_close(&verify_file);
+         if (!installed_ok || verify_close != FR_OK) {
+             last_error_ = installed_ok ? verify_close : FR_INT_ERR;
++            (void)f_unlink(archive_path);
+             return false;
+         }
+ 
+diff --git a/Firmware/HostTests/test_binary_first_invariants.py b/Firmware/HostTests/test_binary_first_invariants.py
+--- a/Firmware/HostTests/test_binary_first_invariants.py
++++ b/Firmware/HostTests/test_binary_first_invariants.py
+@@ -94,5 +94,8 @@
+     require(recorder.count("f_unlink(temp_path)") >= 2,
+             "failed compact/archive attempts must clean temporary files", failures)
++    installed_tail = recorder[archive_install:] if archive_install >= 0 else ""
++    require(installed_tail.count("(void)f_unlink(archive_path);") >= 2,
++            "failed post-install verification must remove the blocking archive so the same index can be retried", failures)
+ 
+     if failures:
+         for failure in failures:

@@ -223,29 +223,133 @@ public:
         if (!ready_ || !session_open_ || index == 0U || index > 9999U) {
             return false;
         }
+
         char archive_path[32] = "/SESSIONS/R0000M.BIN";
-        archive_path[11] = static_cast<char>('0' + ((index / 1000U) % 10U));
-        archive_path[12] = static_cast<char>('0' + ((index / 100U) % 10U));
-        archive_path[13] = static_cast<char>('0' + ((index / 10U) % 10U));
-        archive_path[14] = static_cast<char>('0' + (index % 10U));
+        char temp_path[32] = "/SESSIONS/R0000T.BIN";
+        archive_path[11] = temp_path[11] = static_cast<char>('0' + ((index / 1000U) % 10U));
+        archive_path[12] = temp_path[12] = static_cast<char>('0' + ((index / 100U) % 10U));
+        archive_path[13] = temp_path[13] = static_cast<char>('0' + ((index / 10U) % 10U));
+        archive_path[14] = temp_path[14] = static_cast<char>('0' + (index % 10U));
+
         FILINFO info{};
-        if (f_stat(archive_path, &info) == FR_OK) {
+        FRESULT result = f_stat(archive_path, &info);
+        if (result == FR_OK) {
             return false;
         }
-        if (f_sync(&session_file_) != FR_OK || f_close(&session_file_) != FR_OK) {
-            session_open_ = false;
+        if (result != FR_NO_FILE) {
+            last_error_ = result;
             return false;
         }
-        session_open_ = false;
-        FRESULT result = f_rename(EXO_MASTER_REC_FINAL_PATH, archive_path);
+
+        result = f_unlink(temp_path);
+        if (result != FR_OK && result != FR_NO_FILE) {
+            last_error_ = result;
+            return false;
+        }
+        result = f_sync(&session_file_);
         if (result != FR_OK) {
+            last_error_ = result;
+            return false;
+        }
+
+        FIL compact_file{};
+        result = f_open(&compact_file, temp_path, FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
+        if (result != FR_OK) {
+            last_error_ = result;
+            return false;
+        }
+
+        bool compact_ok = true;
+        uint32_t logical_offset = 0U;
+        while (logical_offset < total_size()) {
+            const uint32_t remaining = total_size() - logical_offset;
+            const uint32_t chunk = min_u32(remaining, static_cast<uint32_t>(sizeof(copy_buffer_)));
+            if (!read(logical_offset, copy_buffer_, chunk)) {
+                compact_ok = false;
+                last_error_ = FR_DISK_ERR;
+                break;
+            }
+            UINT written = 0U;
+            result = f_write(&compact_file, copy_buffer_, chunk, &written);
+            if (result != FR_OK || written != chunk) {
+                compact_ok = false;
+                last_error_ = (result == FR_OK) ? FR_DISK_ERR : result;
+                break;
+            }
+            logical_offset += chunk;
+        }
+
+        if (compact_ok) {
+            result = f_sync(&compact_file);
+            if (result != FR_OK) {
+                compact_ok = false;
+                last_error_ = result;
+            }
+        }
+        if (compact_ok && !validate_compact_archive(compact_file)) {
+            compact_ok = false;
+            last_error_ = FR_INT_ERR;
+        }
+
+        result = f_close(&compact_file);
+        if (result != FR_OK) {
+            compact_ok = false;
+            last_error_ = result;
+        }
+        if (!compact_ok) {
+            (void)f_unlink(temp_path);
+            return false;
+        }
+
+        /* Install the already-validated compact file while the sparse live file
+         * still exists. A reset during copy/install therefore cannot destroy the
+         * only durable copy of the recording. */
+        result = f_rename(temp_path, archive_path);
+        if (result != FR_OK) {
+            last_error_ = result;
+            (void)f_unlink(temp_path);
+            return false;
+        }
+
+        FIL verify_file{};
+        result = f_open(&verify_file, archive_path, FA_READ);
+        if (result != FR_OK) {
+            last_error_ = result;
+            (void)f_unlink(archive_path);
+            return false;
+        }
+        const bool installed_ok = validate_compact_archive(verify_file);
+        const FRESULT verify_close = f_close(&verify_file);
+        if (!installed_ok || verify_close != FR_OK) {
+            last_error_ = installed_ok ? verify_close : FR_INT_ERR;
+            (void)f_unlink(archive_path);
+            return false;
+        }
+
+        result = f_close(&session_file_);
+        session_open_ = false;
+        if (result != FR_OK) {
+            last_error_ = result;
             return false;
         }
         result = f_open(&session_file_, archive_path, FA_READ);
         if (result != FR_OK) {
+            last_error_ = result;
+            /* The sparse source remains on disk. Best-effort reopen preserves
+             * logical reads for a retry/recovery path. */
+            if (f_open(&session_file_, EXO_MASTER_REC_FINAL_PATH, FA_READ) == FR_OK) {
+                session_open_ = true;
+            }
             return false;
         }
         session_open_ = true;
+
+        /* Failure to remove the now-redundant sparse source is non-fatal: the
+         * validated R####M.BIN is already durable and authoritative. */
+        result = f_unlink(EXO_MASTER_REC_FINAL_PATH);
+        if (result != FR_OK && result != FR_NO_FILE) {
+            last_error_ = result;
+        }
         return true;
 #else
         (void)index;
@@ -355,6 +459,48 @@ private:
         header_.icm45686_payload_size += bytes;
         icm_buffer_count_ = 0U;
         return true;
+    }
+
+    bool validate_compact_archive(FIL &file) {
+        const uint32_t expected_size = total_size();
+        if (expected_size < static_cast<uint32_t>(sizeof(SessionHeader)) ||
+            static_cast<uint32_t>(f_size(&file)) != expected_size) {
+            return false;
+        }
+
+        SessionHeader compact_header{};
+        if (f_lseek(&file, 0U) != FR_OK) {
+            return false;
+        }
+        UINT read_bytes = 0U;
+        if (f_read(&file, &compact_header, sizeof(compact_header), &read_bytes) != FR_OK ||
+            read_bytes != sizeof(compact_header)) {
+            return false;
+        }
+        if (memcmp(&compact_header, &header_, sizeof(header_)) != 0 ||
+            compact_header.magic != kSessionMagic ||
+            compact_header.version != kSessionFormatVersion ||
+            compact_header.completion_flag != kSessionComplete ||
+            session_header_crc(compact_header) != compact_header.header_crc32) {
+            return false;
+        }
+
+        uint32_t payload_crc = 0U;
+        uint32_t consumed = static_cast<uint32_t>(sizeof(SessionHeader));
+        while (consumed < expected_size) {
+            const uint32_t remaining = expected_size - consumed;
+            const uint32_t chunk = min_u32(remaining, static_cast<uint32_t>(sizeof(copy_buffer_)));
+            if (f_lseek(&file, consumed) != FR_OK) {
+                return false;
+            }
+            read_bytes = 0U;
+            if (f_read(&file, copy_buffer_, chunk, &read_bytes) != FR_OK || read_bytes != chunk) {
+                return false;
+            }
+            payload_crc = crc32_update(payload_crc, copy_buffer_, chunk);
+            consumed += chunk;
+        }
+        return payload_crc == compact_header.payload_crc32;
     }
 
     bool crc_file_region(uint32_t physical_offset, uint32_t size, uint32_t &crc) {
