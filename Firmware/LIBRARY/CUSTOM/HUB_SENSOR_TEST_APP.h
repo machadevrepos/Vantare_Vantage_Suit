@@ -30,6 +30,9 @@ public:
         : bno85_(bno_bus, bno85_address), icm45686_(icm_bus, icm45686_address) {}
 
     bool begin() {
+#if defined(BNO_INT_GPIO_Port) && defined(BNO_INT_Pin)
+        bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin);
+#endif
         bno_ready_ = bno85_.begin();
         icm_ready_ = icm45686_.begin();
 #if EXO_HAS_FATFS
@@ -74,7 +77,12 @@ public:
 #if EXO_ACQ_DIAG_ENABLE
             const uint64_t icm_start_us = (d != nullptr) ? EXO_ACQ_DIAG_NOW_US() : 0ULL;
 #endif
-            snapshot.has_icm45686 = icm45686_.read_sample(now_us, snapshot.icm45686);
+            if (record_icm_fifo_active_) {
+                snapshot.has_icm45686 =
+                        icm45686_.read_fifo_samples(&snapshot.icm45686, 1U) == 1U;
+            } else {
+                snapshot.has_icm45686 = icm45686_.read_sample(now_us, snapshot.icm45686);
+            }
 #if EXO_ACQ_DIAG_ENABLE
             if (d != nullptr) {
                 const uint64_t icm_end_us = EXO_ACQ_DIAG_NOW_US();
@@ -109,6 +117,27 @@ public:
         }
 #endif
         return snapshot;
+    }
+
+    bool begin_record_capture() {
+        if (!icm_ready_) return false;
+        record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
+        return record_icm_fifo_active_;
+    }
+
+    uint8_t drain_record_icm_samples(Icm45686Sample *samples, uint8_t capacity) {
+        if (!record_icm_fifo_active_) return 0U;
+        return icm45686_.read_fifo_samples(samples, capacity);
+    }
+
+    void end_record_capture() {
+        if (!record_icm_fifo_active_) return;
+        (void)icm45686_.end_fifo_capture();
+        record_icm_fifo_active_ = false;
+    }
+
+    bool record_icm_fifo_active() const {
+        return record_icm_fifo_active_;
     }
 
     bool bno_ready() const { return bno_ready_; }
@@ -384,6 +413,7 @@ private:
     bool bno_ready_ = false;
     bool icm_ready_ = false;
     bool sd_ready_ = false;
+    bool record_icm_fifo_active_ = false;
 #if EXO_HAS_FATFS
     FIL log_file_{};
     uint8_t log_buffer_[kBufferBytes]{};

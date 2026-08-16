@@ -468,6 +468,7 @@ namespace {
 	static uint32_t g_local_bno_append_fail = 0U;
 	static uint32_t g_local_icm_append_fail = 0U;
 	static bool g_local_stop_requested = false;
+	static bool g_local_stop_waiting_for_nodes = false;
 	static uint32_t g_local_finalize_duration_ms = 0U;
 	static uint8_t g_active_session_node_mask = 0U;
 	static uint32_t g_active_session_id = 0U;
@@ -1048,6 +1049,8 @@ namespace {
 
 	__attribute__((optimize("Os"))) static void local_record_reset()
 	{
+		hub_sensor_test_app.end_record_capture();
+		g_local_stop_waiting_for_nodes = false;
 		g_local_record_phase = LocalRecordPhase::Idle;
 		g_local_record_armed = false;
 		g_local_arm_tick_ms = 0U;
@@ -1432,6 +1435,9 @@ namespace {
 			g_local_record_armed = false;
 			g_local_arm_tick_ms = 0U;
 			g_local_capture_start_ms = HAL_GetTick();
+			if (!hub_sensor_test_app.begin_record_capture()) {
+				EXO_LOG("[MASTER][REC] ICM FIFO unavailable; direct fallback active\r\n");
+			}
 			g_local_record_phase = LocalRecordPhase::Capturing;
 			EXO_LOG("[MASTER][REC] started immediate session=%lu duration_ms=%lu\r\n",
 					static_cast<unsigned long>(g_local_start_msg.session_id),
@@ -1611,6 +1617,14 @@ namespace {
 	{
 		if (!g_record_stop_sync.active) return;
 		if (record_stop_sync_pending_mask() == 0U) {
+			if (g_local_stop_waiting_for_nodes &&
+					g_active_session_id == g_record_stop_sync.message.session_id &&
+					g_local_record_phase == LocalRecordPhase::Capturing) {
+				g_local_stop_waiting_for_nodes = false;
+				g_local_stop_requested = true;
+				EXO_LOG("[BLE][HUB][STOP] local stop released after node ACKs session=%lu\r\n",
+						static_cast<unsigned long>(g_record_stop_sync.message.session_id));
+			}
 			EXO_LOG("[BLE][HUB][STOP] complete session=%lu target=0x%02X attempts=%u\r\n",
 					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
 					static_cast<unsigned>(g_record_stop_sync.target_mask),
@@ -1620,6 +1634,11 @@ namespace {
 		}
 		const uint32_t now_ms = HAL_GetTick();
 		if ((now_ms - g_record_stop_sync.started_ms) >= kRecordStopTimeoutMs) {
+			if (g_local_stop_waiting_for_nodes &&
+					g_active_session_id == g_record_stop_sync.message.session_id) {
+				g_local_stop_waiting_for_nodes = false;
+				g_local_stop_requested = true;
+			}
 			EXO_LOG("[BLE][HUB][STOP] timeout session=%lu target=0x%02X ack=0x%02X missing=0x%02X sent=0x%02X attempts=%u\r\n",
 					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
 					static_cast<unsigned>(g_record_stop_sync.target_mask),
@@ -2004,7 +2023,13 @@ namespace {
 		}
 		g_ble_stream_enabled = false;
 		g_ble_record_transfer_mode = true;
-		g_local_stop_requested = true;
+		/* Keep the Master capturing until selected Nodes have accepted StopRecord.
+		 * This removes the previous 1-2 second Master/Node duration skew. The
+		 * automatic duration guard below can still force a local stop at capacity. */
+		g_local_stop_waiting_for_nodes = g_active_session_node_mask != 0U;
+		if (!g_local_stop_waiting_for_nodes) {
+			g_local_stop_requested = true;
+		}
 		if (!record_stop_sync_begin(message, g_active_session_node_mask)) {
 			EXO_LOG("[BLE][HUB][STOP] reject overlapping stop session=%lu active_session=%lu\r\n",
 					static_cast<unsigned long>(message.session_id),
@@ -2463,6 +2488,9 @@ namespace {
 			}
 			g_local_record_armed = false;
 			g_local_capture_start_ms = HAL_GetTick();
+			if (!hub_sensor_test_app.begin_record_capture()) {
+				EXO_LOG("[MASTER][REC] ICM FIFO unavailable; direct fallback active\r\n");
+			}
 			g_local_record_phase = LocalRecordPhase::Capturing;
 #if EXO_ACQ_DIAG_ENABLE
 			/* Counters start clean here so a second session never inherits the
@@ -2507,7 +2535,9 @@ namespace {
 			icm_sample.offset_us = sample_offset_us;
 			icm_sample.sample_timestamp_us = sample_offset_us;
 #elif EXO_SAMPLE_FORMAT_VERSION == 4U
-			icm_sample.offset_us = sample_offset_us;
+			if (!hub_sensor_test_app.record_icm_fifo_active()) {
+				icm_sample.offset_us = sample_offset_us;
+			}
 #endif
 #if EXO_ACQ_DIAG_SUPPRESS_SD
 			/* Experiment B: acquisition keeps running, storage does not. */
@@ -2518,7 +2548,7 @@ namespace {
 #endif
 			if (icm_stored) {
 				(void)master_training_csv_coordinator.note_master_icm_time(
-						g_local_start_msg.session_id, sample_offset_us);
+						g_local_start_msg.session_id, icm_sample.offset_us);
 			} else {
 				++g_local_icm_append_fail;
 			}
@@ -2530,6 +2560,31 @@ namespace {
 			}
 #endif
 		}
+		if (hub_sensor_test_app.record_icm_fifo_active()) {
+			exo::Icm45686Sample fifo_samples[16]{};
+			const uint8_t fifo_count = hub_sensor_test_app.drain_record_icm_samples(
+					fifo_samples, static_cast<uint8_t>(sizeof(fifo_samples) / sizeof(fifo_samples[0])));
+			for (uint8_t i = 0U; i < fifo_count; ++i) {
+#if EXO_ACQ_DIAG_SUPPRESS_SD
+				const bool fifo_stored = true;
+#else
+				const bool fifo_stored = g_local_session_recorder.append_icm45686(fifo_samples[i]);
+#endif
+				if (fifo_stored) {
+					(void)master_training_csv_coordinator.note_master_icm_time(
+							g_local_start_msg.session_id, fifo_samples[i].offset_us);
+				} else {
+					++g_local_icm_append_fail;
+				}
+#if EXO_ACQ_DIAG_ENABLE
+				if (fifo_stored) {
+					++g_acq_diag.sd_icm_append_ok;
+				} else {
+					++g_acq_diag.sd_icm_append_fail;
+				}
+#endif
+			}
+		}
 		const uint32_t elapsed_ms = HAL_GetTick() - g_local_capture_start_ms;
 		if (!g_local_stop_requested &&
 				elapsed_ms < g_local_start_msg.requested_duration_ms) {
@@ -2540,11 +2595,16 @@ namespace {
 			safety_stop.command = exo::RecordCommand::StopRecord;
 			safety_stop.session_id = g_local_start_msg.session_id;
 			(void)stop_active_session(safety_stop);
+			/* Safety timeout is a hard storage/capacity boundary. Do not wait for
+			 * a missing Node ACK beyond the requested duration. */
+			g_local_stop_waiting_for_nodes = false;
+			g_local_stop_requested = true;
 			EXO_LOG("[BLE][HUB][STOP] automatic capacity guard session=%lu elapsed_ms=%lu\r\n",
 					static_cast<unsigned long>(safety_stop.session_id),
 					static_cast<unsigned long>(elapsed_ms));
 		}
 		g_local_finalize_duration_ms = elapsed_ms;
+		hub_sensor_test_app.end_record_capture();
 #if EXO_ACQ_DIAG_ENABLE
 		/* Capture is over from here on; the summary is only queued so the
 		 * printing happens back in the superloop, never mid-capture. */
@@ -2565,8 +2625,28 @@ namespace {
 			local_record_finish_without_transfer();
 			return;
 		}
-		if (g_active_session_file_index == 0U ||
-				!g_local_session_recorder.archive_to_index(g_active_session_file_index)) {
+		if (g_active_session_file_index == 0U) {
+			EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
+					static_cast<unsigned long>(g_local_start_msg.session_id),
+					static_cast<unsigned>(g_active_session_file_index));
+			master_training_csv_coordinator.fail_durability();
+			local_record_finish_without_transfer();
+			return;
+		}
+		bool master_archive_ok = false;
+		for (uint8_t archive_attempt = 0U; archive_attempt < 3U; ++archive_attempt) {
+			if (g_local_session_recorder.archive_to_index(g_active_session_file_index)) {
+				master_archive_ok = true;
+				break;
+			}
+			EXO_LOG("[RECORD][BIN] master archive retry session=%lu index=%u attempt=%u fr=%d\r\n",
+					static_cast<unsigned long>(g_local_start_msg.session_id),
+					static_cast<unsigned>(g_active_session_file_index),
+					static_cast<unsigned>(archive_attempt + 1U),
+					static_cast<int>(g_local_session_recorder.last_error()));
+			HAL_Delay(10U);
+		}
+		if (!master_archive_ok) {
 			EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
 					static_cast<unsigned long>(g_local_start_msg.session_id),
 					static_cast<unsigned>(g_active_session_file_index));

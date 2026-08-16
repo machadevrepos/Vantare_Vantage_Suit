@@ -1,0 +1,1645 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+--- a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
++++ b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+@@ -20,7 +20,16 @@ public:
+ 
+     bool start(uint16_t node_id, uint32_t session_id, uint64_t start_timestamp_us, uint32_t duration_ms) {
+ #if EXO_HAS_FATFS
+-        close_session();
++        /* A finalized-but-not-archived MREC.BIN is the last durable copy of the
++         * Master recording. Never silently overwrite it with a new session. */
++        if (archive_required_) {
++            (void)service_archive_cleanup();
++            last_error_ = FR_LOCKED;
++            return false;
++        }
++        if (!close_all_files()) {
++            return false;
++        }
+         reset_runtime();
+ 
+         FRESULT result = FR_OK;
+@@ -179,6 +185,7 @@ public:
+         }
+         recording_ = false;
+         ready_ = true;
++        archive_required_ = true;
+         return true;
+ #else
+         (void)actual_duration_ms;
+@@ -224,6 +231,9 @@ public:
+         if (!ready_ || !session_open_ || index == 0U || index > 9999U) {
+             return false;
+         }
++        if (!service_archive_cleanup()) {
++            return false;
++        }
+ 
+         char archive_path[32] = "/SESSIONS/R0000M.BIN";
+         char temp_path[32] = "/SESSIONS/R0000T.BIN";
+@@ -253,12 +263,13 @@ public:
+             return false;
+         }
+ 
+-        FIL compact_file{};
+-        result = f_open(&compact_file, temp_path, FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
++        memset(&archive_file_, 0, sizeof(archive_file_));
++        result = f_open(&archive_file_, temp_path, FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
+         if (result != FR_OK) {
+             last_error_ = result;
+             return false;
+         }
++        archive_file_open_ = true;
+ 
+         bool compact_ok = true;
+         uint32_t logical_offset = 0U;
+@@ -269,7 +280,7 @@ public:
+                 break;
+             }
+             UINT written = 0U;
+-            result = f_write(&compact_file, copy_buffer_, chunk, &written);
++            result = f_write(&archive_file_, copy_buffer_, chunk, &written);
+             if (result != FR_OK || written != chunk) {
+                 compact_ok = false;
+                 last_error_ = (result == FR_OK) ? FR_DISK_ERR : result;
+@@ -279,24 +290,23 @@ public:
+         }
+ 
+         if (compact_ok) {
+-            result = f_sync(&compact_file);
++            result = f_sync(&archive_file_);
+             if (result != FR_OK) {
+                 compact_ok = false;
+                 last_error_ = result;
+             }
+         }
+-        if (compact_ok && !validate_compact_archive(compact_file)) {
++        if (compact_ok && !validate_compact_archive(archive_file_)) {
+             compact_ok = false;
+             last_error_ = FR_INT_ERR;
+         }
+-
+-        result = f_close(&compact_file);
+-        if (result != FR_OK) {
+-            compact_ok = false;
+-            last_error_ = result;
+-        }
+         if (!compact_ok) {
+-            (void)f_unlink(temp_path);
++            set_archive_cleanup_path(temp_path);
++            (void)service_archive_cleanup();
++            return false;
++        }
++        if (!close_tracked_file(archive_file_, archive_file_open_)) {
++            set_archive_cleanup_path(temp_path);
+             return false;
+         }
+ 
+@@ -305,36 +316,46 @@ public:
+             return false;
+         }
+ 
+-        FIL verify_file{};
+-        result = f_open(&verify_file, archive_path, FA_READ);
++        memset(&archive_file_, 0, sizeof(archive_file_));
++        result = f_open(&archive_file_, archive_path, FA_READ);
+         if (result != FR_OK) {
+             last_error_ = result;
+-            (void)f_unlink(archive_path);
++            set_archive_cleanup_path(archive_path);
+             return false;
+         }
+-        const bool installed_ok = validate_compact_archive(verify_file);
+-        const FRESULT verify_close = f_close(&verify_file);
+-        if (!installed_ok || verify_close != FR_OK) {
+-            last_error_ = installed_ok ? verify_close : FR_INT_ERR;
+-            (void)f_unlink(archive_path);
++        archive_file_open_ = true;
++        const bool installed_ok = validate_compact_archive(archive_file_);
++        if (!installed_ok) {
++            last_error_ = FR_INT_ERR;
++            set_archive_cleanup_path(archive_path);
++            (void)service_archive_cleanup();
+             return false;
+         }
+ 
+-        result = f_close(&session_file_);
+-        session_open_ = false;
+-        if (result != FR_OK) {
+-            last_error_ = result;
+-            return false;
++        /* The compact archive is now independently validated and was synced
++         * before rename. From this point onward failures are cleanup failures;
++         * they must not revoke the durable recording or lose ownership of an
++         * open FIL when FatFs f_close() reports an error. */
++        archive_required_ = false;
++        if (!close_tracked_file(archive_file_, archive_file_open_)) {
++            sparse_cleanup_pending_ = true;
++            return true;
++        }
++        if (!close_tracked_file(session_file_, session_open_)) {
++            sparse_cleanup_pending_ = true;
++            return true;
+         }
++
+         result = f_open(&session_file_, archive_path, FA_READ);
+         if (result != FR_OK) {
+             last_error_ = result;
+-            /* The sparse source remains on disk. Best-effort reopen preserves
+-             * logical reads for a retry/recovery path. */
++            sparse_cleanup_pending_ = true;
++            /* R####M.BIN is already validated and durable. Reopen MREC only to
++             * preserve logical reads until the next cleanup opportunity. */
+             if (f_open(&session_file_, EXO_MASTER_REC_FINAL_PATH, FA_READ) == FR_OK) {
+                 session_open_ = true;
+             }
+-            return false;
++            return true;
+         }
+         session_open_ = true;
+ 
+@@ -351,5 +383,9 @@ public:
+             last_error_ = result;
++            sparse_cleanup_pending_ = true;
++        } else {
++            sparse_cleanup_pending_ = false;
+         }
++        if (!sparse_cleanup_pending_) last_error_ = FR_OK;
+         return true;
+ #else
+         (void)index;
+@@ -365,6 +400,19 @@ public:
+     }
+ 
+     void reset() {
+-        close_session();
+-        reset_runtime();
++#if EXO_HAS_FATFS
++        /* Preserve a finalized sparse recording until archive_to_index() has
++         * produced and validated its canonical R####M.BIN. */
++        if (archive_required_) {
++            (void)service_archive_cleanup();
++            recording_ = false;
++            return;
++        }
++#endif
++        if (close_all_files()) {
++            reset_runtime();
++        } else {
++            recording_ = false;
++            ready_ = false;
++        }
+     }
+@@ -398,5 +442,6 @@ private:
+         recording_ = false;
+         ready_ = false;
++        archive_required_ = false;
+         last_error_ = FR_OK;
+         bno_failed_count_ = 0U;
+         icm_failed_count_ = 0U;
+@@ -535,11 +580,71 @@ private:
+         return false;
+     }
+ 
+-    void close_session() {
+-        if (session_open_) {
+-            f_close(&session_file_);
+-            session_open_ = false;
++    bool close_tracked_file(FIL &file, bool &open_flag) {
++        if (!open_flag) {
++            return true;
++        }
++        const FRESULT result = f_close(&file);
++        if (result != FR_OK) {
++            last_error_ = result;
++            return false;
++        }
++        open_flag = false;
++        memset(&file, 0, sizeof(file));
++        return true;
++    }
++
++    void set_archive_cleanup_path(const char *path) {
++        if (path == nullptr) {
++            archive_cleanup_path_[0] = '\0';
++            return;
++        }
++        strncpy(archive_cleanup_path_, path, sizeof(archive_cleanup_path_) - 1U);
++        archive_cleanup_path_[sizeof(archive_cleanup_path_) - 1U] = '\0';
++    }
++
++    bool service_archive_cleanup() {
++        if (!close_tracked_file(archive_file_, archive_file_open_)) {
++            return false;
++        }
++        if (archive_cleanup_path_[0] == '\0') {
++            return true;
++        }
++        const FRESULT result = f_unlink(archive_cleanup_path_);
++        if (result != FR_OK && result != FR_NO_FILE) {
++            last_error_ = result;
++            return false;
++        }
++        archive_cleanup_path_[0] = '\0';
++        return true;
++    }
++
++    bool service_sparse_cleanup() {
++        if (!sparse_cleanup_pending_ || session_open_) {
++            return true;
++        }
++        const FRESULT result = f_unlink(EXO_MASTER_REC_FINAL_PATH);
++        if (result != FR_OK && result != FR_NO_FILE) {
++            last_error_ = result;
++            return false;
+         }
++        sparse_cleanup_pending_ = false;
++        return true;
++    }
++
++    bool close_all_files() {
++        bool ok = service_archive_cleanup();
++        if (!close_tracked_file(session_file_, session_open_)) {
++            ok = false;
++        }
++        if (!session_open_ && !service_sparse_cleanup()) {
++            ok = false;
++        }
++        return ok;
++    }
++
++    void close_session() {
++        (void)close_all_files();
+     }
+ 
+     static uint32_t min_u32(uint32_t a, uint32_t b) {
+@@ -552,9 +660,14 @@ private:
+     }
+ 
+     FIL session_file_{};
++    FIL archive_file_{};
+     bool session_open_ = false;
++    bool archive_file_open_ = false;
++    bool sparse_cleanup_pending_ = false;
++    char archive_cleanup_path_[32]{};
+     uint8_t copy_buffer_[kCopyBufferBytes]{};
+ #else
++    bool close_all_files() { return true; }
+     void close_session() {}
+ #endif
+ 
+@@ -567,6 +680,7 @@ private:
+     uint32_t icm_buffer_count_ = 0U;
+     bool recording_ = false;
+     bool ready_ = false;
++    bool archive_required_ = false;
+     FRESULT last_error_ = FR_OK;
+     uint32_t bno_failed_count_ = 0U;
+     uint32_t icm_failed_count_ = 0U;
+diff --git a/Firmware/HostTests/test_binary_first_invariants.py b/Firmware/HostTests/test_binary_first_invariants.py
+--- a/Firmware/HostTests/test_binary_first_invariants.py
++++ b/Firmware/HostTests/test_binary_first_invariants.py
+@@ -58,4 +58,6 @@ def main() -> int:
+     require(archive >= 0 and finalized > archive,
+             "Master binary must be archived before the coordinator accepts it as durable", failures)
++    require("archive_attempt < 3U" in main_src and "master archive retry" in main_src,
++            "Master must retry transient canonical archive failures before declaring durability failure", failures)
+     require("g_local_record_phase = LocalRecordPhase::Finished;" in main_src,
+             "binary-first mode must not enter the Master-to-browser bulk transfer phase", failures)
+@@ -94,8 +94,26 @@ def main() -> int:
+     require(recorder.count("f_unlink(temp_path)") >= 2,
+             "failed compact/archive attempts must clean temporary files", failures)
+     installed_tail = recorder[archive_install:] if archive_install >= 0 else ""
+-    require(installed_tail.count("(void)f_unlink(archive_path);") >= 2,
+-            "failed post-install verification must remove the blocking archive so the same index can be retried", failures)
++    require("set_archive_cleanup_path(archive_path)" in installed_tail and
++            "service_archive_cleanup()" in recorder,
++            "failed post-install validation must remain retry-cleanable without losing a live FatFs handle", failures)
++    require("FIL archive_file_{};" in recorder and "bool archive_file_open_ = false;" in recorder,
++            "archive temp/verify handles must remain recorder-owned across close failures", failures)
++    require("bool close_tracked_file(FIL &file, bool &open_flag)" in recorder and
++            "open_flag = false;" in recorder,
++            "FatFs open-state flags must only clear through a successful tracked close", failures)
++    require("if (archive_required_)" in recorder and "last_error_ = FR_LOCKED;" in recorder,
++            "a finalized unarchived Master recording must block overwrite by a new session", failures)
++    require("if (!close_all_files())" in recorder,
++            "a new Master recording must not start while a prior FatFs handle cannot be closed", failures)
++    require("set_archive_cleanup_path(temp_path)" in recorder and
++            "set_archive_cleanup_path(archive_path)" in recorder,
++            "failed temp/final archive closes must remain retry-cleanable", failures)
++    durable = recorder.find("archive_required_ = false;", archive_install)
++    durable_tail = recorder[durable:] if durable >= 0 else ""
++    require(durable >= 0 and "sparse_cleanup_pending_ = true;" in durable_tail and
++            "return true;" in durable_tail,
++            "once R####M.BIN is validated, cleanup-only failures must not revoke durability", failures)
+ 
+     if failures:
+         for failure in failures:
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -4,5 +4,5 @@
+ <head>
+   <meta charset="utf-8">
+   <meta name="viewport" content="width=device-width,initial-scale=1">
+-  <title>Exoskeleton BLE Plotter Android</title>
++  <title>Vantare Vantage | Session Console</title>
+   <style>
+@@ -500,5 +500,5 @@
+ </head>
+ <body>
+   <header class="topbar">
+-    <h1>Exoskeleton BLE Plotter Android</h1>
++    <h1>Vantare Vantage Session Console</h1>
+     <div class="status-wrap">
+@@ -932,15 +932,17 @@
+     RESET_RECORD_STATE: 0xB3,
+     GET_DISCOVERED_NODES: 0xB4,
+     RECORD_TRANSFER_TUNING: 0xB5,
+-    TRAINING_CSV_STATUS: 0xB6,
++    MASTER_SD_STATUS: 0xB6,
+     REPORT_SET_NODE_ID_RESULT: 0xC0,
+     REPORT_GET_NODE_ID_RESULT: 0xC1
+   };
+ 
+-  // Mirrors exo::TrainingCsvState in MASTER_TRAINING_CSV_COORDINATOR.h
+-  const TRAINING_CSV_STATES = [
+-    "Idle", "WaitingForMaster", "ConvertMasterBno", "ConvertMasterIcm",
+-    "WaitingForNode", "ReceiveNode", "ValidateNode", "ConvertNodeBno",
+-    "ConvertNodeIcm", "Complete", "CsvError", "StageError"
++  // Wire values mirror the coordinator enum; production firmware is binary-only.
++  const MASTER_SD_COLLECTION_STATES = [
++    "Idle", "WaitingForMasterFinalize", "LegacyConvertMasterBno", "LegacyConvertMasterIcm",
++    "WaitingForNode", "ReceivingNode", "ValidatingNode", "LegacyConvertNodeBno",
++    "LegacyConvertNodeIcm", "Complete", "CoordinatorError", "StageError",
++    "BinaryFinalizeNode"
+   ];
++  const BINARY_FIRST_SD_MODE = true;
+ 
+@@ -1052,6 +1052,7 @@
+         <label>Session Nodes</label>
+         <div id="sessionNodes">Discover Nodes to select participants</div>
+       </div>
++      <div class="note">Authoritative recording is stored on the Master SD as R####M.BIN and R####N#.BIN. Browser is control/status/live preview only.</div>
+       <div >
+-        <h2>Transfer Tuning</h2>
++        <h2>Master SD Collection Link Tuning</h2>
+         <div class="row">
+@@ -1099,4 +1100,4 @@
+       </div>
+       <div class="transfer-box">
+-        <div id="transferStatus" class="transfer-status">Transfer: idle</div>
++        <div id="transferStatus" class="transfer-status">Master SD Collection: idle</div>
+         <progress id="transferProgress" max="100" value="0"></progress>
+@@ -1150,5 +1151,5 @@
+         <div>Invalid</div><div id="invalidCount">0</div>
+         <div>Unknown Sensor</div><div id="unknownCount">0</div>
+       </div>
+-      <p class="note">Record mode stores on flash first, then transfers after RECORD done signal. Manual stream controls stay for testing.</p>
++      <p class="note">Master records binary data to SD; Nodes record to local flash and are collected sequentially by the Master after Stop. Manual stream controls remain for live testing only.</p>
+       </details>
+@@ -1210,6 +1213,5 @@
+     startRecordAckTimer: null,
+     startRecordAckDeadlineMs: 0,
+     pendingTrainingTerminalState: null,
+-    // Last TRAIN CSV status report. Tells us which node uploads the Master is
+-    // currently driving, so we stay out of their flow control.
++    // Last Master SD collector status report (wire-compatible with coordinator v1).
+     trainingCsv: { state: 0, expected: 0, completed: 0 },
+@@ -1352,10 +1354,10 @@
+   installCanvasInteractions();
+   installPanelInteractions();
+   requestRender();
+-  resetTransferUi("Transfer: idle");
++  resetTransferUi("Master SD Collection: idle");
+   syncTransferTuningUi(state.recordTransferTuning);
+   syncTestSliderValues();
+   setRecordingUi(false);
+   setConnectedUi(false);
+-  log("DesktopTools Android build marker: android-noresp-v1-session-v4");
++  log("Vantage Session Console: binary-first SD mode v5");
+ 
+@@ -1810,5 +1812,5 @@
+     state.pendingAckBySession.clear();
+     abortBleWrites(new Error("BLE disconnected"));
+     state.connectReadyAtMs = 0;
+-    resetTransferUi("Transfer: idle");
++    resetTransferUi("Master SD Collection: idle");
+     state.startRecordInFlight = false;
+@@ -1842,8 +1844,8 @@
+     if (!state.cmdChar) return "Master is not connected";
+     if (state.startRecordInFlight) return "a Start Record request is already in flight";
+     if (state.awaitingRecordDone) return "the current recording has not reported done";
+-    if (state.receivingTransfer ||
++    if (!BINARY_FIRST_SD_MODE && (state.receivingTransfer ||
+         state.recordTransfers.size > 0 ||
+-        state.activeRecordOwnerKey) {
++        state.activeRecordOwnerKey)) {
+       return "a source transfer is active";
+     }
+@@ -1855,6 +1857,6 @@
+         state.cmdWriteQueue.length > 0) {
+       return "a BLE control write is still pending";
+     }
+-    if (["Preparing", "Streaming", "Stopping", "Transferring", "FinalizingCsv"]
++    if (["Preparing", "Streaming", "Stopping", "Collecting", "Finalizing", "Incomplete", "Error", "Transferring", "FinalizingCsv"]
+         .includes(state.sessionState)) {
+       return `session state is ${state.sessionState}`;
+@@ -2077,5 +2079,5 @@
+     state.sessionState = nextState;
+     if (ui.sessionState) ui.sessionState.textContent = nextState;
+     const connected = !!state.cmdChar;
+-    const blockedStates = ["Preparing", "Streaming", "Stopping", "Transferring", "FinalizingCsv"];
++    const blockedStates = ["Preparing", "Streaming", "Stopping", "Collecting", "Finalizing", "Incomplete", "Error", "Transferring", "FinalizingCsv"];
+     ui.startBtn.disabled = !connected || blockedStates.includes(nextState);
+@@ -2089,5 +2091,5 @@
+       state.activeTransferSessionId = null;
+       state.activeRecordOwnerKey = null;
+       clearStartRecordAckTimer();
+-      resetTransferUi("Session incomplete \u2014 start a new session to recover missing data");
++      resetTransferUi("Session incomplete \u2014 Do not start a new session; recover or deliberately discard retained Node data first");
+       state.awaitingRecordDone = false;
+@@ -2605,13 +2607,13 @@
+       if (ownDriven > 0) {
+         state.pendingTrainingTerminalState = trainingState;
+         syncReceivingTransferState();
+-        log(`TRAIN CSV Complete deferred: ${ownDriven} browser transfer(s) still active.`);
++        log(`Master SD Collection complete deferred: ${ownDriven} legacy browser transfer(s) still active.`);
+         return false;
+       }
+     }
+     if (trainingState === 10 || trainingState === 11) {
+       state.pendingTrainingTerminalState = null;
+-      abortActiveRecordTransfers("Master CSV failure");
++      abortActiveRecordTransfers("Master SD collection failure");
+       state.awaitingRecordDone = false;
+       state.startRecordInFlight = false;
+       setSessionState("Error");
+@@ -3120,5 +3122,5 @@
+         }
+         if (echoedCmd === 0x0E) {
+-          setSessionState(accepted ? "Transferring" : "Error");
++          setSessionState(accepted ? "Collecting" : "Error");
+           log(`Session Stop ACK ${accepted ? "accepted" : "rejected"}.`);
+           return;
+@@ -3194,5 +3196,5 @@
+         renderDiscoveredNodes();
+       } else if (reportId === CMD.RECORD_TRANSFER_TUNING && reportLen >= 8) {
+         logDiscoveryReport(data, reportLen);
+-      } else if (reportId === CMD.TRAINING_CSV_STATUS && reportLen >= 8) {
++      } else if (reportId === CMD.MASTER_SD_STATUS && reportLen >= 8) {
+         const srcMask = (m) => {
+@@ -3211,5 +3213,16 @@
+         } = status;
+         state.trainingCsv = { state: st, expected, completed };
+-        let line = `TRAIN CSV: state=${TRAINING_CSV_STATES[st] ?? st}` +
++        const sdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
++        let line = `Master SD Collection: state=${sdState}` +
+           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
++        if (st === 9) {
++          setSessionState("Complete");
++        } else if (st === 10 || st === 11) {
++          setSessionState("Error");
++        } else if (st === 1 && ["Stopping", "Collecting", "Finalizing"].includes(state.sessionState)) {
++          setSessionState("Finalizing");
++        } else if (st >= 4 && st <= 12) {
++          setSessionState("Collecting");
++        }
++        resetTransferUi(`Master SD Collection: ${sdState} · ${srcMask(completed)} complete`);
+         if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
+@@ -3478,6 +3491,9 @@
+       handleRecordDone(data);
+       return;
+     }
+     if (command === RECORD.SESSION_CHUNK) {
++      if (BINARY_FIRST_SD_MODE && command === RECORD.SESSION_CHUNK) {
++        return;
++      }
+       handleSessionChunk(data);
+       return;
+@@ -3650,5 +3667,8 @@
+     if (payload.length !== payloadLen) {
+       log(`RECORD reliable len mismatch got=${payload.length} expect=${payloadLen}`);
+       return;
+     }
++    if (BINARY_FIRST_SD_MODE && (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK)) {
++      return;
++    }
+     if (crc16Ccitt(payload) !== payloadCrc16) {
+@@ -3713,4 +3733,9 @@
+       handleRecordDonePayload(sourceId, sessionId, payload);
+       return;
+     }
++    if (BINARY_FIRST_SD_MODE &&
++        (laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
++        msgType === RECORD_V3.MSG_CHUNK) {
++      return;
++    }
+     if ((laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
+@@ -3798,5 +3824,14 @@
+     if (!isExpectedRecordTransfer(sessionId, nodeId)) {
+       log(`RECORD done ignored: unexpected source/session source=${sourceLabel(nodeId)} session=${sessionId} active=${state.activeRecordSessionId}`);
+       return;
+     }
++    if (BINARY_FIRST_SD_MODE) {
++      state.awaitingRecordDone = false;
++      setSessionState("Collecting");
++      setRecordingUi(false);
++      resetTransferUi(`Master SD Collection: ${sourceLabel(nodeId)} finalized; collecting selected sources`);
++      log(`RECORD done observed: source=${sourceLabel(nodeId)} session=${sessionId} size=${totalSize} duration_ms=${actualDurationMs}. Master SD collector owns the authoritative transfer.`);
++      refreshStartRecordAvailability();
++      return;
++    }
+     const existing = getTransfer(sessionId, nodeId);
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -1200,10 +1200,24 @@
+-		if (g_active_session_file_index == 0U ||
+-				!g_local_session_recorder.archive_to_index(g_active_session_file_index)) {
++		bool master_archive_ok = false;
++		if (g_active_session_file_index != 0U) {
++			for (uint8_t archive_attempt = 0U; archive_attempt < 3U; ++archive_attempt) {
++				if (g_local_session_recorder.archive_to_index(g_active_session_file_index)) {
++					master_archive_ok = true;
++					break;
++				}
++				EXO_LOG("[RECORD][BIN] master archive retry session=%lu index=%u attempt=%u fr=%d\r\n",
++						static_cast<unsigned long>(g_local_start_msg.session_id),
++						static_cast<unsigned>(g_active_session_file_index),
++						static_cast<unsigned>(archive_attempt + 1U),
++						static_cast<int>(g_local_session_recorder.last_error()));
++				HAL_Delay(10U);
++			}
++		}
++		if (!master_archive_ok) {
+ 			EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
+ 					static_cast<unsigned long>(g_local_start_msg.session_id),
+ 					static_cast<unsigned>(g_active_session_file_index));
+ 			master_training_csv_coordinator.fail_durability();
+ 			local_record_finish_without_transfer();
+ 			return;
+ 		}
+ 		EXO_LOG("[RECORD][BIN] master durable session=%lu index=%u\r\n",
+diff --git a/Firmware/DesktopTools/README_BINARY_RECORDING.md b/Firmware/DesktopTools/README_BINARY_RECORDING.md
+new file mode 100644
+--- /dev/null
++++ b/Firmware/DesktopTools/README_BINARY_RECORDING.md
+@@ -0,0 +1,53 @@
++# Vantage Binary Recording Workflow
++
++The shipping Master uses **binary-first recording**. The desktop page is a control, status, and live-preview console; it is not the authoritative recording destination.
++
++## Client demo workflow
++
++1. Flash the Master and Nodes from the same firmware commit.
++2. Put a FAT/FAT32-formatted SD card in the Master and power the system normally.
++3. Serve `Firmware/DesktopTools/Exoskeleton.html` from a local web server in Chrome or Edge, for example:
++
++   ```bash
++   cd Firmware/DesktopTools
++   python -m http.server 8000
++   ```
++
++   Then open `http://localhost:8000/Exoskeleton.html`.
++4. Connect to the Master, discover Nodes, select the participating Nodes, and confirm that the selected Nodes report ready/idle.
++5. Start the recording. The browser may continue to show live preview data, but it does not ACK, reconstruct, or download the authoritative recording stream.
++6. Stop the recording and wait for **Master SD Collection: Complete**. The Master first archives its own recording and then pulls each selected Node sequentially. A Node is only allowed to erase its local recording after the Master has validated and durably stored that Node file.
++7. After the run is complete, power down before removing the SD card. A run uses a shared index:
++
++   - `R####M.BIN` — Master
++   - `R####N1.BIN` ... `R####N4.BIN` — selected Nodes
++
++8. Copy the BIN files to the computer and convert them:
++
++   ```bash
++   python vantage_bin_to_csv.py /path/to/copied/session/files -o converted_csv
++   ```
++
++The converter validates the ESOX/v4 header, exact canonical file size, header CRC, payload CRC, sample counts, monotonic timestamps, and ICM sequence continuity before exporting anything. It intentionally rejects legacy sparse Master archives and incomplete/corrupt files.
++
++For each valid BIN it writes:
++
++- `<name>_BNO85.csv`
++- `<name>_ICM45686.csv`
++- `<name>_metadata.json`
++
++The metadata file includes target/effective sample rates and firmware loss flags so a recorded demo can be checked before delivery.
++
++## Demo acceptance checklist
++
++Before recording the client video, run at least one short end-to-end session and confirm all of the following:
++
++- Master and every selected Node transition out of Recording after Stop.
++- Desktop reaches **Master SD Collection: Complete** without a Stage Error.
++- Every selected source has exactly one `R####*.BIN` file with the same run index.
++- `vantage_bin_to_csv.py` reports `OK` for every file in the run.
++- No `R####T.BIN` temporary archive remains after a successful run.
++- Nodes return to idle/ready after their validated files have been collected.
++- The metadata JSON is reviewed for loss flags and achieved sample rates before presenting the recording as measurement-grade data.
++
++If collection fails, do not start another recording until the retained Node data has been recovered or deliberately discarded. A failed Node transfer is designed to retain that Node's flash copy rather than erase unvalidated data.
+diff --git a/Firmware/DesktopTools/vantage_bin_to_csv.py b/Firmware/DesktopTools/vantage_bin_to_csv.py
+new file mode 100644
+--- /dev/null
++++ b/Firmware/DesktopTools/vantage_bin_to_csv.py
+@@ -0,0 +1,371 @@
++#!/usr/bin/env python3
++"""Convert Vantare Vantage v4 session BIN files to validated CSV exports.
++
++The converter treats firmware-generated BIN as authoritative. It refuses partial,
++sparse legacy Master archives, CRC-corrupt files, and unsupported sample versions.
++Only Python's standard library is required.
++"""
++from __future__ import annotations
++
++import argparse
++import csv
++import dataclasses
++import json
++import math
++import re
++import struct
++import sys
++import zlib
++from pathlib import Path
++from typing import BinaryIO, Iterable, Iterator
++
++SESSION_MAGIC = 0x584F5345  # "ESOX"
++SESSION_VERSION = 4
++SESSION_COMPLETE = 0xA5
++SENSOR_BNO85 = 0x01
++SENSOR_ICM45686 = 0x02
++KNOWN_SENSOR_MASK = SENSOR_BNO85 | SENSOR_ICM45686
++HEADER_SIZE = 88
++BNO_SAMPLE_SIZE = 56
++ICM_SAMPLE_SIZE = 20
++HEADER_CRC_OFFSET = 84
++SESSION_FILENAME_RE = re.compile(r"^R\d{4}(?:M|N[1-4])\.BIN$", re.IGNORECASE)
++
++LOSS_FLAGS = {
++    0x00000001: "bno_read",
++    0x00000002: "icm_read",
++    0x00000004: "bno_buffer",
++    0x00000008: "icm_buffer",
++    0x00000010: "bno_write",
++    0x00000020: "icm_write",
++}
++
++HEADER_STRUCT = struct.Struct("<IHHIQIIBBHIIIIHHIIIIIIIII")
++BNO_STRUCT = struct.Struct("<I13f")
++ICM_STRUCT = struct.Struct("<II6h")
++assert HEADER_STRUCT.size == HEADER_SIZE
++assert BNO_STRUCT.size == BNO_SAMPLE_SIZE
++assert ICM_STRUCT.size == ICM_SAMPLE_SIZE
++
++
++class SessionFormatError(ValueError):
++    pass
++
++
++@dataclasses.dataclass(frozen=True)
++class SessionHeader:
++    magic: int
++    version: int
++    node_id: int
++    session_id: int
++    start_timestamp_us: int
++    requested_duration_ms: int
++    actual_duration_ms: int
++    sensor_mask: int
++    completion_flag: int
++    reserved: int
++    bno85_sample_count: int
++    icm45686_sample_count: int
++    bno85_payload_size: int
++    icm45686_payload_size: int
++    bno85_target_rate_hz: int
++    icm45686_target_rate_hz: int
++    bno85_attempted_count: int
++    icm45686_attempted_count: int
++    bno85_captured_count: int
++    icm45686_captured_count: int
++    bno85_dropped_count: int
++    icm45686_dropped_count: int
++    loss_flags: int
++    payload_crc32: int
++    header_crc32: int
++
++    @property
++    def logical_size(self) -> int:
++        return HEADER_SIZE + self.bno85_payload_size + self.icm45686_payload_size
++
++    @property
++    def source_label(self) -> str:
++        return "MASTER" if self.node_id == 0 else f"NODE{self.node_id}"
++
++
++def _crc32(data: bytes, crc: int = 0) -> int:
++    return zlib.crc32(data, crc) & 0xFFFFFFFF
++
++
++def _decode_header(raw: bytes) -> SessionHeader:
++    if len(raw) != HEADER_SIZE:
++        raise SessionFormatError(f"short SessionHeader: {len(raw)} bytes, expected {HEADER_SIZE}")
++    return SessionHeader(*HEADER_STRUCT.unpack(raw))
++
++
++def _loss_names(flags: int) -> list[str]:
++    names = [name for bit, name in LOSS_FLAGS.items() if flags & bit]
++    unknown = flags & ~sum(LOSS_FLAGS.keys())
++    if unknown:
++        names.append(f"unknown_0x{unknown:08X}")
++    return names
++
++
++def validate_session(path: Path) -> SessionHeader:
++    physical_size = path.stat().st_size
++    with path.open("rb") as stream:
++        raw_header = stream.read(HEADER_SIZE)
++        header = _decode_header(raw_header)
++
++        if header.magic != SESSION_MAGIC:
++            raise SessionFormatError(f"bad magic 0x{header.magic:08X}; expected ESOX")
++        if header.version != SESSION_VERSION:
++            raise SessionFormatError(
++                f"unsupported session version {header.version}; this tool is synchronized to firmware v{SESSION_VERSION}"
++            )
++        if header.completion_flag != SESSION_COMPLETE:
++            raise SessionFormatError(
++                f"session is not finalized (completion_flag=0x{header.completion_flag:02X})"
++            )
++        if not 0 <= header.node_id <= 4:
++            raise SessionFormatError(f"invalid node_id {header.node_id}")
++        if header.sensor_mask & ~KNOWN_SENSOR_MASK:
++            raise SessionFormatError(f"unknown sensor mask bits 0x{header.sensor_mask:02X}")
++        if header.bno85_payload_size != header.bno85_sample_count * BNO_SAMPLE_SIZE:
++            raise SessionFormatError("BNO85 payload size/count mismatch")
++        if header.icm45686_payload_size != header.icm45686_sample_count * ICM_SAMPLE_SIZE:
++            raise SessionFormatError("ICM45686 payload size/count mismatch")
++        expected_mask = 0
++        if header.bno85_sample_count:
++            expected_mask |= SENSOR_BNO85
++        if header.icm45686_sample_count:
++            expected_mask |= SENSOR_ICM45686
++        if header.sensor_mask != expected_mask:
++            raise SessionFormatError(
++                f"sensor_mask 0x{header.sensor_mask:02X} does not match payloads (expected 0x{expected_mask:02X})"
++            )
++        if header.bno85_captured_count != header.bno85_sample_count:
++            raise SessionFormatError("BNO85 captured_count does not match sample_count")
++        if header.icm45686_captured_count != header.icm45686_sample_count:
++            raise SessionFormatError("ICM45686 captured_count does not match sample_count")
++        if header.bno85_attempted_count < header.bno85_captured_count:
++            raise SessionFormatError("BNO85 attempted_count is less than captured_count")
++        if header.icm45686_attempted_count < header.icm45686_captured_count:
++            raise SessionFormatError("ICM45686 attempted_count is less than captured_count")
++        if physical_size != header.logical_size:
++            if physical_size > header.logical_size and header.node_id == 0:
++                raise SessionFormatError(
++                    f"non-canonical/sparse Master archive: physical={physical_size} logical={header.logical_size}; "
++                    "re-record with canonical archive firmware"
++                )
++            raise SessionFormatError(
++                f"file size mismatch: physical={physical_size} logical={header.logical_size}"
++            )
++
++        header_for_crc = bytearray(raw_header)
++        header_for_crc[HEADER_CRC_OFFSET:HEADER_CRC_OFFSET + 4] = b"\0\0\0\0"
++        actual_header_crc = _crc32(header_for_crc)
++        if actual_header_crc != header.header_crc32:
++            raise SessionFormatError(
++                f"header CRC mismatch: stored=0x{header.header_crc32:08X} calculated=0x{actual_header_crc:08X}"
++            )
++
++        payload_crc = 0
++        remaining = header.bno85_payload_size + header.icm45686_payload_size
++        while remaining:
++            chunk = stream.read(min(65536, remaining))
++            if not chunk:
++                raise SessionFormatError("unexpected EOF while validating payload")
++            payload_crc = _crc32(chunk, payload_crc)
++            remaining -= len(chunk)
++        if payload_crc != header.payload_crc32:
++            raise SessionFormatError(
++                f"payload CRC mismatch: stored=0x{header.payload_crc32:08X} calculated=0x{payload_crc:08X}"
++            )
++    return header
++
++
++def _iter_bno(stream: BinaryIO, header: SessionHeader) -> Iterator[tuple]:
++    stream.seek(HEADER_SIZE)
++    last_offset = -1
++    for index in range(header.bno85_sample_count):
++        raw = stream.read(BNO_SAMPLE_SIZE)
++        if len(raw) != BNO_SAMPLE_SIZE:
++            raise SessionFormatError(f"short BNO85 sample at index {index}")
++        sample = BNO_STRUCT.unpack(raw)
++        if sample[0] < last_offset:
++            raise SessionFormatError(f"BNO85 timestamp moved backwards at index {index}")
++        if not all(math.isfinite(v) for v in sample[1:]):
++            raise SessionFormatError(f"BNO85 contains non-finite value at index {index}")
++        last_offset = sample[0]
++        yield sample
++
++
++def _iter_icm(stream: BinaryIO, header: SessionHeader) -> Iterator[tuple]:
++    stream.seek(HEADER_SIZE + header.bno85_payload_size)
++    last_offset = -1
++    expected_sequence = 0
++    for index in range(header.icm45686_sample_count):
++        raw = stream.read(ICM_SAMPLE_SIZE)
++        if len(raw) != ICM_SAMPLE_SIZE:
++            raise SessionFormatError(f"short ICM45686 sample at index {index}")
++        sample = ICM_STRUCT.unpack(raw)
++        offset_us, sequence = sample[:2]
++        if offset_us < last_offset:
++            raise SessionFormatError(f"ICM45686 timestamp moved backwards at index {index}")
++        if sequence != expected_sequence:
++            raise SessionFormatError(
++                f"ICM45686 sequence gap at sample {index}: got {sequence}, expected {expected_sequence}"
++            )
++        last_offset = offset_us
++        expected_sequence += 1
++        yield sample
++
++
++def _effective_rate(count: int, samples: Iterable[tuple]) -> float:
++    # Kept for callers that already materialized offsets; converter uses _rate_from_bounds below.
++    values = list(samples)
++    if count < 2 or len(values) < 2:
++        return 0.0
++    span = values[-1][0] - values[0][0]
++    return 0.0 if span <= 0 else (len(values) - 1) * 1_000_000.0 / span
++
++
++def _rate_from_bounds(count: int, first_offset: int | None, last_offset: int | None) -> float:
++    if count < 2 or first_offset is None or last_offset is None or last_offset <= first_offset:
++        return 0.0
++    return (count - 1) * 1_000_000.0 / (last_offset - first_offset)
++
++
++def _write_bno_csv(path: Path, source: Path, header: SessionHeader) -> tuple[int | None, int | None]:
++    columns = [
++        "sample_index", "offset_us", "timestamp_us",
++        "quat_i", "quat_j", "quat_k", "quat_real",
++        "linear_accel_x_mps2", "linear_accel_y_mps2", "linear_accel_z_mps2",
++        "gravity_x_mps2", "gravity_y_mps2", "gravity_z_mps2",
++        "gyro_x_radps", "gyro_y_radps", "gyro_z_radps",
++    ]
++    first = last = None
++    with source.open("rb") as stream, path.open("w", newline="", encoding="utf-8") as out:
++        writer = csv.writer(out)
++        writer.writerow(columns)
++        for index, sample in enumerate(_iter_bno(stream, header)):
++            offset = sample[0]
++            if first is None:
++                first = offset
++            last = offset
++            writer.writerow([index, offset, header.start_timestamp_us + offset, *[f"{v:.9g}" for v in sample[1:]]])
++    return first, last
++
++
++def _write_icm_csv(path: Path, source: Path, header: SessionHeader) -> tuple[int | None, int | None]:
++    columns = [
++        "sample_index", "offset_us", "timestamp_us", "sequence",
++        "accel_x_raw", "accel_y_raw", "accel_z_raw",
++        "gyro_x_raw", "gyro_y_raw", "gyro_z_raw",
++        "accel_x_g", "accel_y_g", "accel_z_g",
++        "gyro_x_dps", "gyro_y_dps", "gyro_z_dps",
++    ]
++    first = last = None
++    with source.open("rb") as stream, path.open("w", newline="", encoding="utf-8") as out:
++        writer = csv.writer(out)
++        writer.writerow(columns)
++        for index, sample in enumerate(_iter_icm(stream, header)):
++            offset, sequence, ax, ay, az, gx, gy, gz = sample
++            if first is None:
++                first = offset
++            last = offset
++            writer.writerow([
++                index, offset, header.start_timestamp_us + offset, sequence,
++                ax, ay, az, gx, gy, gz,
++                f"{ax * 4.0 / 32768.0:.9g}", f"{ay * 4.0 / 32768.0:.9g}", f"{az * 4.0 / 32768.0:.9g}",
++                f"{gx * 2000.0 / 32768.0:.9g}", f"{gy * 2000.0 / 32768.0:.9g}", f"{gz * 2000.0 / 32768.0:.9g}",
++            ])
++    return first, last
++
++
++def _write_metadata(path: Path, source: Path, header: SessionHeader,
++                    bno_bounds: tuple[int | None, int | None],
++                    icm_bounds: tuple[int | None, int | None]) -> dict:
++    bno_rate = _rate_from_bounds(header.bno85_sample_count, *bno_bounds)
++    icm_rate = _rate_from_bounds(header.icm45686_sample_count, *icm_bounds)
++    metadata = dataclasses.asdict(header)
++    metadata.update({
++        "input_file": source.name,
++        "source_label": header.source_label,
++        "validated": True,
++        "format": "ESOX/v4 canonical contiguous",
++        "loss_flag_names": _loss_names(header.loss_flags),
++        "bno85_effective_rate_hz": round(bno_rate, 6),
++        "icm45686_effective_rate_hz": round(icm_rate, 6),
++        "bno85_rate_ratio": round(bno_rate / header.bno85_target_rate_hz, 6) if header.bno85_target_rate_hz else None,
++        "icm45686_rate_ratio": round(icm_rate / header.icm45686_target_rate_hz, 6) if header.icm45686_target_rate_hz else None,
++    })
++    path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    return metadata
++
++
++def convert_one(source: Path, output_dir: Path) -> dict:
++    header = validate_session(source)
++    output_dir.mkdir(parents=True, exist_ok=True)
++    stem = source.stem
++    bno_path = output_dir / f"{stem}_BNO85.csv"
++    icm_path = output_dir / f"{stem}_ICM45686.csv"
++    meta_path = output_dir / f"{stem}_metadata.json"
++    bno_bounds = _write_bno_csv(bno_path, source, header)
++    icm_bounds = _write_icm_csv(icm_path, source, header)
++    metadata = _write_metadata(meta_path, source, header, bno_bounds, icm_bounds)
++    return {"header": header, "metadata": metadata, "bno": bno_path, "icm": icm_path, "meta": meta_path}
++
++
++def discover_inputs(items: list[Path]) -> list[Path]:
++    found: list[Path] = []
++    for item in items:
++        if item.is_dir():
++            found.extend(sorted(
++                p for p in item.iterdir()
++                if p.is_file() and SESSION_FILENAME_RE.match(p.name)
++            ))
++        else:
++            found.append(item)
++    unique: list[Path] = []
++    seen = set()
++    for path in found:
++        resolved = path.resolve()
++        if resolved not in seen:
++            seen.add(resolved)
++            unique.append(path)
++    return unique
++
++
++def build_arg_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(
++        description="Validate Vantare Vantage ESOX/v4 BIN recordings and export BNO85/ICM45686 CSV files."
++    )
++    parser.add_argument("inputs", nargs="+", type=Path, help="BIN file(s) or directories containing R####M/N#.BIN")
++    parser.add_argument("-o", "--output-dir", type=Path, default=Path("converted_csv"), help="output directory")
++    return parser
++
++
++def main(argv: list[str] | None = None) -> int:
++    args = build_arg_parser().parse_args(argv)
++    inputs = discover_inputs(args.inputs)
++    if not inputs:
++        print("error: no .BIN inputs found", file=sys.stderr)
++        return 2
++    failures = 0
++    for source in inputs:
++        try:
++            result = convert_one(source, args.output_dir)
++            h: SessionHeader = result["header"]
++            m = result["metadata"]
++            loss = ",".join(m["loss_flag_names"]) or "none"
++            print(
++                f"OK {source.name}: {h.source_label} session={h.session_id} "
++                f"BNO={h.bno85_sample_count} ({m['bno85_effective_rate_hz']:.2f} Hz) "
++                f"ICM={h.icm45686_sample_count} ({m['icm45686_effective_rate_hz']:.2f} Hz) loss={loss}"
++            )
++        except (OSError, SessionFormatError) as exc:
++            failures += 1
++            print(f"ERROR {source}: {exc}", file=sys.stderr)
++    return 1 if failures else 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/Firmware/HostTests/test_bin_to_csv.py b/Firmware/HostTests/test_bin_to_csv.py
+new file mode 100644
+--- /dev/null
++++ b/Firmware/HostTests/test_bin_to_csv.py
+@@ -0,0 +1,101 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++import importlib.util
++import json
++import struct
++import tempfile
++import unittest
++import zlib
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[2]
++MODULE_PATH = ROOT / 'Firmware' / 'DesktopTools' / 'vantage_bin_to_csv.py'
++spec = importlib.util.spec_from_file_location('vantage_bin_to_csv', MODULE_PATH)
++mod = importlib.util.module_from_spec(spec)
++import sys
++sys.modules[spec.name] = mod
++spec.loader.exec_module(mod)
++
++
++def make_bin(path: Path, *, node_id=0, corrupt_payload=False, sparse=False):
++    bno = mod.BNO_STRUCT.pack(0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0, 0.0, 0.0, 9.81, 0.1, 0.2, 0.3)
++    icm0 = mod.ICM_STRUCT.pack(0, 0, 100, -200, 300, 400, -500, 600)
++    icm1 = mod.ICM_STRUCT.pack(5000, 1, 101, -201, 301, 401, -501, 601)
++    payload = bno + icm0 + icm1
++    payload_crc = zlib.crc32(payload) & 0xffffffff
++    values = [
++        mod.SESSION_MAGIC, mod.SESSION_VERSION, node_id, 42, 300000,
++        1000, 10, mod.SENSOR_BNO85 | mod.SENSOR_ICM45686, mod.SESSION_COMPLETE, 0,
++        1, 2, len(bno), len(icm0) + len(icm1), 100, 200,
++        1, 2, 1, 2, 0, 0, 0, payload_crc, 0,
++    ]
++    raw = bytearray(mod.HEADER_STRUCT.pack(*values))
++    raw[mod.HEADER_CRC_OFFSET:mod.HEADER_CRC_OFFSET+4] = struct.pack('<I', zlib.crc32(raw) & 0xffffffff)
++    if corrupt_payload:
++        payload = payload[:-1] + bytes([payload[-1] ^ 0x55])
++    if sparse:
++        data = bytes(raw) + bno + (b'\0' * 1024) + icm0 + icm1
++    else:
++        data = bytes(raw) + payload
++    path.write_bytes(data)
++
++
++class ConverterTests(unittest.TestCase):
++    def test_valid_v4_exports_csv_and_metadata(self):
++        with tempfile.TemporaryDirectory() as td:
++            root = Path(td)
++            source = root / 'R0042M.BIN'
++            make_bin(source)
++            out = root / 'csv'
++            result = mod.convert_one(source, out)
++            self.assertTrue(result['bno'].exists())
++            self.assertTrue(result['icm'].exists())
++            meta = json.loads(result['meta'].read_text())
++            self.assertTrue(meta['validated'])
++            self.assertEqual(meta['source_label'], 'MASTER')
++            self.assertAlmostEqual(meta['icm45686_effective_rate_hz'], 200.0)
++            self.assertIn('accel_x_g', result['icm'].read_text().splitlines()[0])
++
++    def test_rejects_corrupt_payload(self):
++        with tempfile.TemporaryDirectory() as td:
++            source = Path(td) / 'R0042N2.BIN'
++            make_bin(source, node_id=2, corrupt_payload=True)
++            with self.assertRaisesRegex(mod.SessionFormatError, 'payload CRC mismatch'):
++                mod.validate_session(source)
++
++    def test_rejects_sparse_master(self):
++        with tempfile.TemporaryDirectory() as td:
++            source = Path(td) / 'R0042M.BIN'
++            make_bin(source, sparse=True)
++            with self.assertRaisesRegex(mod.SessionFormatError, 'non-canonical/sparse Master archive'):
++                mod.validate_session(source)
++
++    def test_directory_discovery_ignores_non_session_bin_files(self):
++        with tempfile.TemporaryDirectory() as td:
++            root = Path(td)
++            session = root / 'R0042N2.BIN'
++            make_bin(session, node_id=2)
++            (root / 'HUBTEST.BIN').write_bytes(b'LOG1')
++            self.assertEqual(mod.discover_inputs([root]), [session])
++
++    def test_rejects_icm_sequence_gap(self):
++        with tempfile.TemporaryDirectory() as td:
++            root = Path(td)
++            source = root / 'R0042N2.BIN'
++            make_bin(source, node_id=2)
++            data = bytearray(source.read_bytes())
++            seq_off = mod.HEADER_SIZE + mod.BNO_SAMPLE_SIZE + mod.ICM_SAMPLE_SIZE + 4
++            data[seq_off:seq_off+4] = struct.pack('<I', 9)
++            payload_crc = zlib.crc32(data[mod.HEADER_SIZE:]) & 0xffffffff
++            data[80:84] = struct.pack('<I', payload_crc)
++            data[84:88] = b'\0\0\0\0'
++            data[84:88] = struct.pack('<I', zlib.crc32(data[:88]) & 0xffffffff)
++            source.write_bytes(data)
++            header = mod.validate_session(source)
++            with source.open('rb') as stream:
++                with self.assertRaisesRegex(mod.SessionFormatError, 'sequence gap'):
++                    list(mod._iter_icm(stream, header))
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/Firmware/HostTests/test_desktop_binary_first.py b/Firmware/HostTests/test_desktop_binary_first.py
+new file mode 100644
+--- /dev/null
++++ b/Firmware/HostTests/test_desktop_binary_first.py
+@@ -0,0 +1,37 @@
++#!/usr/bin/env python3
++from pathlib import Path
++import sys
++
++ROOT = Path(__file__).resolve().parents[2]
++HTML = (ROOT / "Firmware/DesktopTools/Exoskeleton.html").read_text(encoding="utf-8-sig")
++
++checks = [
++    ("Vantare Vantage | Session Console" in HTML, "professional console title missing"),
++    ("MASTER_SD_STATUS: 0xB6" in HTML, "desktop must name report 0xB6 as Master SD status"),
++    ("const BINARY_FIRST_SD_MODE = true" in HTML, "binary-first desktop mode must be explicit"),
++    ("BinaryFinalizeNode" in HTML, "desktop must understand coordinator state 12"),
++    ("R####M.BIN" in HTML and "R####N#.BIN" in HTML, "desktop must explain authoritative SD filenames"),
++    ("Browser is control/status/live preview only" in HTML, "desktop must explain browser role"),
++    ("BINARY_FIRST_SD_MODE && (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK)" in HTML,
++     "browser reliable bulk manifest/chunk path must be disabled in binary-first mode"),
++    ("BINARY_FIRST_SD_MODE && command === RECORD.SESSION_CHUNK" in HTML,
++     "legacy session-chunk path must be disabled in binary-first mode"),
++    ("BINARY_FIRST_SD_MODE &&" in HTML and "RECORD_V3.MSG_CHUNK" in HTML,
++     "v3 bulk lane path must be disabled in binary-first mode"),
++    ("Master SD collector owns the authoritative transfer" in HTML,
++     "RecordDone must not arm a browser-owned bulk transfer"),
++    ("\"Collecting\", \"Finalizing\", \"Incomplete\", \"Error\"" in HTML,
++     "collection/error states must block starting a new recording"),
++    ("Do not start a new session" in HTML,
++     "incomplete-session UI must protect retained Node data from accidental reset"),
++    ("TRAIN CSV:" not in HTML, "legacy TRAIN CSV user-facing status must be removed"),
++    ("Master CSV failure" not in HTML, "legacy Master CSV failure wording must be removed"),
++    ("Exoskeleton BLE Plotter Android" not in HTML, "legacy Android title must be removed"),
++]
++
++failures = [message for ok, message in checks if not ok]
++if failures:
++    for failure in failures:
++        print(f"ERROR: {failure}", file=sys.stderr)
++    raise SystemExit(1)
++print("desktop binary-first guards passed")
+diff --git a/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h b/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
+--- a/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
++++ b/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
+@@ -35,4 +35,9 @@ public:
+         hal_.getTimeUs = &Bno85Stm32::get_time_us;
+     }
+ 
++    void set_interrupt_pin(GPIO_TypeDef *port, uint16_t pin) {
++        interrupt_port_ = port;
++        interrupt_pin_ = pin;
++    }
++
+     bool begin() {
+@@ -93,5 +98,24 @@ public:
+     }
+ 
+     void service() {
+-        sh2_service();
++        service_pending(8U);
++    }
++
++    /* BNO08x INT is level-low while SHTP data is pending. Polling the level in
++     * foreground avoids a 20 ms HAL receive timeout when no packet exists and
++     * lets one superloop iteration drain a bounded backlog. I2C is never done
++     * from the GPIO ISR. A partial SHTP transfer is always finished even if INT
++     * has returned high between chunks. */
++    void service_pending(uint8_t max_packets) {
++        if (max_packets == 0U) return;
++        if (interrupt_port_ == nullptr || interrupt_pin_ == 0U) {
++            sh2_service();
++            return;
++        }
++        for (uint8_t serviced = 0U; serviced < max_packets; ++serviced) {
++            const bool continuation = next_read_len_ != kShtpHeaderLen;
++            const bool pending = HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET;
++            if (!continuation && !pending) break;
++            sh2_service();
++        }
+     }
+@@ -447,6 +471,8 @@ private:
+     uint8_t last_report_id_ = 0U;
+     int last_decode_status_ = SH2_ERR;
+     uint16_t next_read_len_ = kShtpHeaderLen;
++    GPIO_TypeDef *interrupt_port_ = nullptr;
++    uint16_t interrupt_pin_ = 0U;
+     inline static Bno85Stm32 *active_ = nullptr;
+ };
+ 
+diff --git a/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h b/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
+--- a/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
++++ b/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
+@@ -74,5 +74,8 @@ public:
+     }
+ 
+     bool read_sample(uint32_t offset_us, Icm45686Sample &sample) {
++        if (fifo_active_) {
++            return false;
++        }
+         (void)offset_us;
+         inv_imu_sensor_data_t raw;
+@@ -123,4 +126,125 @@ public:
+         return true;
+     }
+ 
++    /* Master-only recording path. Nodes intentionally keep their proven
++     * 5 ms register scheduler. The FIFO captures real 200 Hz accel+gyro frames
++     * independently of the Master superloop, so draining several frames later
++     * never fabricates repeated register snapshots. */
++    bool begin_fifo_capture_200hz() {
++        if (fifo_active_) return true;
++#if EXO_SAMPLE_FORMAT_VERSION != 4U
++        return false;
++#else
++        next_sequence_ = 0U;
++        fifo_elapsed_us_ = 0U;
++        fifo_timestamp_valid_ = false;
++
++        tmst_wom_config_t timestamp_config{};
++        int status = inv_imu_read_reg(&device_, TMST_WOM_CONFIG, 1U,
++                reinterpret_cast<uint8_t *>(&timestamp_config));
++        if (status == 0) {
++            timestamp_config.tmst_resol = TMST_WOM_CONFIG_TMST_RESOL_16_US;
++            status = inv_imu_write_reg(&device_, TMST_WOM_CONFIG, 1U,
++                    reinterpret_cast<const uint8_t *>(&timestamp_config));
++        }
++        if (status == 0) status = inv_imu_set_accel_frequency(&device_, ACCEL_CONFIG0_ACCEL_ODR_200_HZ);
++        if (status == 0) status = inv_imu_set_gyro_frequency(&device_, GYRO_CONFIG0_GYRO_ODR_200_HZ);
++
++        inv_imu_fifo_config_t fifo{};
++        fifo.accel_en = INV_IMU_ENABLE;
++        fifo.gyro_en = INV_IMU_ENABLE;
++        fifo.hires_en = INV_IMU_DISABLE;
++        fifo.fifo_wm_th = 1U;
++        fifo.fifo_mode = FIFO_CONFIG0_FIFO_MODE_STREAM;
++        fifo.fifo_depth = FIFO_CONFIG0_FIFO_DEPTH_MAX;
++        if (status == 0) status = inv_imu_set_fifo_config(&device_, &fifo);
++        if (status == 0) status = inv_imu_flush_fifo(&device_);
++        if (status != 0) {
++            fifo.fifo_mode = FIFO_CONFIG0_FIFO_MODE_BYPASS;
++            (void)inv_imu_set_fifo_config(&device_, &fifo);
++            (void)inv_imu_set_accel_frequency(&device_, EXO_ICM45686_ACCEL_ODR);
++            (void)inv_imu_set_gyro_frequency(&device_, EXO_ICM45686_GYRO_ODR);
++            last_read_status_ = static_cast<int8_t>(status);
++            return false;
++        }
++        fifo_active_ = true;
++        last_read_status_ = 0;
++        return true;
++#endif
++    }
++
++    uint8_t read_fifo_samples(Icm45686Sample *samples, uint8_t capacity) {
++#if EXO_SAMPLE_FORMAT_VERSION != 4U
++        (void)samples;
++        (void)capacity;
++        return 0U;
++#else
++        if (!fifo_active_ || samples == nullptr || capacity == 0U) return 0U;
++        uint16_t frame_count = 0U;
++        int status = inv_imu_get_frame_count(&device_, &frame_count);
++        if (status != 0) {
++            last_read_status_ = static_cast<int8_t>(status);
++            return 0U;
++        }
++        const uint16_t requested = frame_count < capacity ? frame_count : capacity;
++        uint8_t produced = 0U;
++        for (uint16_t i = 0U; i < requested; ++i) {
++            inv_imu_fifo_data_t frame{};
++            status = inv_imu_get_fifo_frame(&device_, &frame);
++            if (status != 0) {
++                last_read_status_ = static_cast<int8_t>(status);
++                break;
++            }
++            if (frame.header.bits.accel_bit == 0U || frame.header.bits.gyro_bit == 0U ||
++                    frame.header.bits.timestamp_bit == 0U) {
++                continue;
++            }
++
++            const uint16_t timestamp = frame.byte_16.timestamp;
++            if (!fifo_timestamp_valid_) {
++                fifo_timestamp_valid_ = true;
++                fifo_last_timestamp_ = timestamp;
++                fifo_elapsed_us_ = 0U;
++            } else {
++                const uint32_t delta_us = static_cast<uint32_t>(
++                        static_cast<uint16_t>(timestamp - fifo_last_timestamp_)) * 16U;
++                fifo_last_timestamp_ = timestamp;
++                /* At 200 Hz a valid delta is close to 5000 us. A zero timestamp
++                 * cannot provide ordering, so reject that frame rather than
++                 * inventing a duplicate time. */
++                if (delta_us == 0U) continue;
++                fifo_elapsed_us_ += delta_us;
++            }
++
++            Icm45686Sample sample{};
++            sample.offset_us = fifo_elapsed_us_;
++            sample.sequence = next_sequence_++;
++            sample.accel_x = frame.byte_16.accel_data[0];
++            sample.accel_y = frame.byte_16.accel_data[1];
++            sample.accel_z = frame.byte_16.accel_data[2];
++            sample.gyro_x = frame.byte_16.gyro_data[0];
++            sample.gyro_y = frame.byte_16.gyro_data[1];
++            sample.gyro_z = frame.byte_16.gyro_data[2];
++            samples[produced++] = sample;
++        }
++        if (produced > 0U) last_read_status_ = 0;
++        return produced;
++#endif
++    }
++
++    bool end_fifo_capture() {
++        if (!fifo_active_) return true;
++        inv_imu_fifo_config_t fifo{};
++        fifo.fifo_mode = FIFO_CONFIG0_FIFO_MODE_BYPASS;
++        fifo.fifo_depth = FIFO_CONFIG0_FIFO_DEPTH_MAX;
++        int status = inv_imu_set_fifo_config(&device_, &fifo);
++        status |= inv_imu_set_accel_frequency(&device_, EXO_ICM45686_ACCEL_ODR);
++        status |= inv_imu_set_gyro_frequency(&device_, EXO_ICM45686_GYRO_ODR);
++        fifo_active_ = false;
++        if (status != 0) last_read_status_ = static_cast<int8_t>(status);
++        return status == 0;
++    }
++
++    bool fifo_active() const { return fifo_active_; }
++
+ private:
+@@ -174,6 +286,10 @@ private:
+     int8_t last_read_status_ = 0;
+ #if EXO_SAMPLE_FORMAT_VERSION == 4U
+     uint32_t next_sequence_ = 0U;
++    bool fifo_active_ = false;
++    bool fifo_timestamp_valid_ = false;
++    uint16_t fifo_last_timestamp_ = 0U;
++    uint32_t fifo_elapsed_us_ = 0U;
+ #endif
+ };
+ 
+diff --git a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+--- a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+@@ -30,5 +30,8 @@ public:
+         : bno85_(bno_bus, bno85_address), icm45686_(icm_bus, icm45686_address) {}
+ 
+     bool begin() {
++#if defined(BNO_INT_GPIO_Port) && defined(BNO_INT_Pin)
++        bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin);
++#endif
+         bno_ready_ = bno85_.begin();
+         icm_ready_ = icm45686_.begin();
+@@ -74,5 +77,10 @@ public:
+ #if EXO_ACQ_DIAG_ENABLE
+             const uint64_t icm_start_us = (d != nullptr) ? EXO_ACQ_DIAG_NOW_US() : 0ULL;
+ #endif
+-            snapshot.has_icm45686 = icm45686_.read_sample(now_us, snapshot.icm45686);
++            if (record_icm_fifo_active_) {
++                snapshot.has_icm45686 =
++                        icm45686_.read_fifo_samples(&snapshot.icm45686, 1U) == 1U;
++            } else {
++                snapshot.has_icm45686 = icm45686_.read_sample(now_us, snapshot.icm45686);
++            }
+ #if EXO_ACQ_DIAG_ENABLE
+@@ -119,4 +127,25 @@ public:
+         return snapshot;
+     }
+ 
++    bool begin_record_capture() {
++        if (!icm_ready_) return false;
++        record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
++        return record_icm_fifo_active_;
++    }
++
++    uint8_t drain_record_icm_samples(Icm45686Sample *samples, uint8_t capacity) {
++        if (!record_icm_fifo_active_) return 0U;
++        return icm45686_.read_fifo_samples(samples, capacity);
++    }
++
++    void end_record_capture() {
++        if (!record_icm_fifo_active_) return;
++        (void)icm45686_.end_fifo_capture();
++        record_icm_fifo_active_ = false;
++    }
++
++    bool record_icm_fifo_active() const {
++        return record_icm_fifo_active_;
++    }
++
+     bool bno_ready() const { return bno_ready_; }
+@@ -396,5 +423,6 @@ private:
+     bool bno_ready_ = false;
+     bool icm_ready_ = false;
+     bool sd_ready_ = false;
++    bool record_icm_fifo_active_ = false;
+ #if EXO_HAS_FATFS
+ 
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+@@ -60,6 +60,9 @@ public:
+ 			}
+ 
+ 			bool begin() {
++#if defined(BNO_INT_GPIO_Port) && defined(BNO_INT_Pin)
++				bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin);
++#endif
+ 				if (!flash_.begin()) {
+ 					ready_ = false;
+ 
+diff --git a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+--- a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
++++ b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+@@ -137,12 +137,21 @@ public:
+ 
+         header_.actual_duration_ms = actual_duration_ms;
+-        header_.bno85_attempted_count = header_.bno85_sample_count + bno_failed_count_;
+-        header_.icm45686_attempted_count = header_.icm45686_sample_count + icm_failed_count_;
++        const uint32_t expected_bno = static_cast<uint32_t>(
++                (static_cast<uint64_t>(actual_duration_ms) * header_.bno85_target_rate_hz + 999ULL) / 1000ULL);
++        const uint32_t expected_icm = static_cast<uint32_t>(
++                (static_cast<uint64_t>(actual_duration_ms) * header_.icm45686_target_rate_hz + 999ULL) / 1000ULL);
++        const uint32_t observed_bno_attempts = header_.bno85_sample_count + bno_failed_count_;
++        const uint32_t observed_icm_attempts = header_.icm45686_sample_count + icm_failed_count_;
++        header_.bno85_attempted_count = expected_bno > observed_bno_attempts ? expected_bno : observed_bno_attempts;
++        header_.icm45686_attempted_count = expected_icm > observed_icm_attempts ? expected_icm : observed_icm_attempts;
+         header_.bno85_captured_count = header_.bno85_sample_count;
+         header_.icm45686_captured_count = header_.icm45686_sample_count;
+-        header_.bno85_dropped_count = bno_failed_count_;
+-        header_.icm45686_dropped_count = icm_failed_count_;
+-        header_.loss_flags = (bno_failed_count_ != 0U ? kSessionLossBnoWrite : 0U) |
+-                (icm_failed_count_ != 0U ? kSessionLossIcmWrite : 0U);
++        header_.bno85_dropped_count = header_.bno85_attempted_count - header_.bno85_captured_count;
++        header_.icm45686_dropped_count = header_.icm45686_attempted_count - header_.icm45686_captured_count;
++        header_.loss_flags =
++                (header_.bno85_dropped_count > bno_failed_count_ ? kSessionLossBnoRead : 0U) |
++                (header_.icm45686_dropped_count > icm_failed_count_ ? kSessionLossIcmRead : 0U) |
++                (bno_failed_count_ != 0U ? kSessionLossBnoWrite : 0U) |
++                (icm_failed_count_ != 0U ? kSessionLossIcmWrite : 0U);
+         header_.sensor_mask = 0U;
+ 
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -476,3 +476,4 @@ namespace {
+ 	static uint32_t g_local_icm_append_fail = 0U;
+ 	static bool g_local_stop_requested = false;
++	static bool g_local_stop_waiting_for_nodes = false;
+ 	static uint32_t g_local_finalize_duration_ms = 0U;
+@@ -1127,3 +1128,5 @@ namespace {
+ 	__attribute__((optimize("Os"))) static void local_record_reset()
+ 	{
++		hub_sensor_test_app.end_record_capture();
++		g_local_stop_waiting_for_nodes = false;
+ 		g_local_record_phase = LocalRecordPhase::Idle;
+@@ -1434,5 +1437,8 @@ namespace {
+ 		if (start_immediately) {
+ 			g_local_record_armed = false;
+ 			g_local_arm_tick_ms = 0U;
+ 			g_local_capture_start_ms = HAL_GetTick();
++			if (!hub_sensor_test_app.begin_record_capture()) {
++				EXO_LOG("[MASTER][REC] ICM FIFO unavailable; direct fallback active\r\n");
++			}
+ 			g_local_record_phase = LocalRecordPhase::Capturing;
+@@ -1662,5 +1670,13 @@ namespace {
+ 	static void record_stop_sync_process()
+ 	{
+ 		if (!g_record_stop_sync.active) return;
+ 		if (record_stop_sync_pending_mask() == 0U) {
++			if (g_local_stop_waiting_for_nodes &&
++					g_active_session_id == g_record_stop_sync.message.session_id &&
++					g_local_record_phase == LocalRecordPhase::Capturing) {
++				g_local_stop_waiting_for_nodes = false;
++				g_local_stop_requested = true;
++				EXO_LOG("[BLE][HUB][STOP] local stop released after node ACKs session=%lu\r\n",
++						static_cast<unsigned long>(g_record_stop_sync.message.session_id));
++			}
+ 			EXO_LOG("[BLE][HUB][STOP] complete session=%lu target=0x%02X attempts=%u\r\n",
+@@ -1678,3 +1697,8 @@ namespace {
+ 		const uint32_t now_ms = HAL_GetTick();
+ 		if ((now_ms - g_record_stop_sync.started_ms) >= kRecordStopTimeoutMs) {
++			if (g_local_stop_waiting_for_nodes &&
++					g_active_session_id == g_record_stop_sync.message.session_id) {
++				g_local_stop_waiting_for_nodes = false;
++				g_local_stop_requested = true;
++			}
+ 			EXO_LOG("[BLE][HUB][STOP] timeout session=%lu target=0x%02X ack=0x%02X missing=0x%02X sent=0x%02X attempts=%u\r\n",
+@@ -2012,4 +2037,10 @@ namespace {
+ 		g_ble_stream_enabled = false;
+ 		g_ble_record_transfer_mode = true;
+-		g_local_stop_requested = true;
++		/* Keep the Master capturing until selected Nodes have accepted StopRecord.
++		 * This removes the previous 1-2 second Master/Node duration skew. The
++		 * automatic duration guard below can still force a local stop at capacity. */
++		g_local_stop_waiting_for_nodes = g_active_session_node_mask != 0U;
++		if (!g_local_stop_waiting_for_nodes) {
++			g_local_stop_requested = true;
++		}
+ 		if (!record_stop_sync_begin(message, g_active_session_node_mask)) {
+@@ -2445,3 +2476,6 @@ namespace {
+ 			g_local_record_armed = false;
+ 			g_local_capture_start_ms = HAL_GetTick();
++			if (!hub_sensor_test_app.begin_record_capture()) {
++				EXO_LOG("[MASTER][REC] ICM FIFO unavailable; direct fallback active\r\n");
++			}
+ 			g_local_record_phase = LocalRecordPhase::Capturing;
+@@ -2497,3 +2532,5 @@ namespace {
+ #elif EXO_SAMPLE_FORMAT_VERSION == 4U
+-			icm_sample.offset_us = sample_offset_us;
++			if (!hub_sensor_test_app.record_icm_fifo_active()) {
++				icm_sample.offset_us = sample_offset_us;
++			}
+ #endif
+@@ -2509,4 +2546,4 @@ namespace {
+ 			if (icm_stored) {
+ 				(void)master_training_csv_coordinator.note_master_icm_time(
+-						g_local_start_msg.session_id, sample_offset_us);
++						g_local_start_msg.session_id, icm_sample.offset_us);
+ 			} else {
+@@ -2522,3 +2559,28 @@ namespace {
+ #endif
+ 		}
++		if (hub_sensor_test_app.record_icm_fifo_active()) {
++			exo::Icm45686Sample fifo_samples[16]{};
++			const uint8_t fifo_count = hub_sensor_test_app.drain_record_icm_samples(
++					fifo_samples, static_cast<uint8_t>(sizeof(fifo_samples) / sizeof(fifo_samples[0])));
++			for (uint8_t i = 0U; i < fifo_count; ++i) {
++#if EXO_ACQ_DIAG_SUPPRESS_SD
++				const bool fifo_stored = true;
++#else
++				const bool fifo_stored = g_local_session_recorder.append_icm45686(fifo_samples[i]);
++#endif
++				if (fifo_stored) {
++					(void)master_training_csv_coordinator.note_master_icm_time(
++							g_local_start_msg.session_id, fifo_samples[i].offset_us);
++				} else {
++					++g_local_icm_append_fail;
++				}
++#if EXO_ACQ_DIAG_ENABLE
++				if (fifo_stored) {
++					++g_acq_diag.sd_icm_append_ok;
++				} else {
++					++g_acq_diag.sd_icm_append_fail;
++				}
++#endif
++			}
++		}
+ 		const uint32_t elapsed_ms = HAL_GetTick() - g_local_capture_start_ms;
+@@ -2533,4 +2605,8 @@ namespace {
+ 			safety_stop.command = exo::RecordCommand::StopRecord;
+ 			safety_stop.session_id = g_local_start_msg.session_id;
+ 			(void)stop_active_session(safety_stop);
++			/* Safety timeout is a hard storage/capacity boundary. Do not wait for
++			 * a missing Node ACK beyond the requested duration. */
++			g_local_stop_waiting_for_nodes = false;
++			g_local_stop_requested = true;
+ 			EXO_LOG("[BLE][HUB][STOP] automatic capacity guard session=%lu elapsed_ms=%lu\r\n",
+@@ -2540,4 +2616,5 @@ namespace {
+ 		}
+ 		g_local_finalize_duration_ms = elapsed_ms;
++		hub_sensor_test_app.end_record_capture();
+ #if EXO_ACQ_DIAG_ENABLE
+ 
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+new file mode 100644
+--- /dev/null
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++from pathlib import Path
++import sys
++
++ROOT = Path(__file__).resolve().parents[2]
++bno = (ROOT / "Firmware/LIBRARY/CUSTOM/BNO85_STM32.h").read_text()
++icm = (ROOT / "Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h").read_text()
++hub = (ROOT / "Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h").read_text()
++node = (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h").read_text()
++master = (ROOT / "Firmware/Master/Core/Src/main.c").read_text()
++recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_text()
++
++checks = [
++    ("void service_pending(uint8_t max_packets)" in bno,
++     "BNO wrapper must expose bounded pending-packet service"),
++    ("HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET" in bno,
++     "BNO service must gate reads from the active-low data-ready level"),
++    ("next_read_len_ != kShtpHeaderLen" in bno,
++     "BNO service must finish partial SHTP transfers regardless of INT level"),
++    ("bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin)" in hub and
++     "bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin)" in node,
++     "Master and Node must wire the existing BNO INT pin into the wrapper"),
++    ("begin_fifo_capture_200hz" in icm and
++     "ACCEL_CONFIG0_ACCEL_ODR_200_HZ" in icm and
++     "GYRO_CONFIG0_GYRO_ODR_200_HZ" in icm,
++     "Master ICM recording must configure a real 200 Hz FIFO"),
++    ("inv_imu_get_frame_count" in icm and "inv_imu_get_fifo_frame" in icm,
++     "ICM recording must drain hardware FIFO frames"),
++    ("TMST_WOM_CONFIG_TMST_RESOL_16_US" in icm and "* 16U;" in icm,
++     "ICM FIFO timestamps must use explicit 16 us resolution and scale raw ticks to microseconds"),
++    ("record_icm_fifo_active_" in hub and "drain_record_icm_samples" in hub,
++     "Hub app must separate recording FIFO acquisition from live direct reads"),
++    ("g_local_stop_waiting_for_nodes" in master and
++     "local stop released after node ACKs" in master,
++     "manual Master stop must wait for Node StopRecord ACKs"),
++    ("automatic capacity guard" in master and
++     "g_local_stop_waiting_for_nodes = false;" in master,
++     "automatic duration guard must remain a hard local stop boundary"),
++    ("hub_sensor_test_app.begin_record_capture()" in master and
++     "hub_sensor_test_app.end_record_capture()" in master,
++     "Master must bracket recording with ICM FIFO capture lifecycle"),
++    ("fifo_samples[16]" in master and
++     "append_icm45686(fifo_samples[i])" in master,
++     "Master must append all drained FIFO samples, not synthetic repeated register reads"),
++    ("expected_bno" in recorder and "expected_icm" in recorder and
++     "kSessionLossBnoRead" in recorder and "kSessionLossIcmRead" in recorder,
++     "Master SessionHeader must truthfully expose acquisition shortfall"),
++]
++
++failures = [message for ok, message in checks if not ok]
++if failures:
++    for failure in failures:
++        print(f"ERROR: {failure}", file=sys.stderr)
++    raise SystemExit(1)
++print("acquisition demo invariants passed")

@@ -36,6 +36,11 @@ public:
         hal_.getTimeUs = &Bno85Stm32::get_time_us;
     }
 
+    void set_interrupt_pin(GPIO_TypeDef *port, uint16_t pin) {
+        interrupt_port_ = port;
+        interrupt_pin_ = pin;
+    }
+
     bool begin() {
         begin_open_status_ = SH2_ERR;
         begin_callback_status_ = SH2_ERR;
@@ -91,7 +96,26 @@ public:
     }
 
     void service() {
-        sh2_service();
+        service_pending(8U);
+    }
+
+    /* BNO08x INT is level-low while SHTP data is pending. Polling the level in
+     * foreground avoids a 20 ms HAL receive timeout when no packet exists and
+     * lets one superloop iteration drain a bounded backlog. I2C is never done
+     * from the GPIO ISR. A partial SHTP transfer is always finished even if INT
+     * has returned high between chunks. */
+    void service_pending(uint8_t max_packets) {
+        if (max_packets == 0U) return;
+        if (interrupt_port_ == nullptr || interrupt_pin_ == 0U) {
+            sh2_service();
+            return;
+        }
+        for (uint8_t serviced = 0U; serviced < max_packets; ++serviced) {
+            const bool continuation = next_read_len_ != kShtpHeaderLen;
+            const bool pending = HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET;
+            if (!continuation && !pending) break;
+            sh2_service();
+        }
     }
 
     bool take_latest(uint32_t offset_us, Bno85Sample &sample) {
@@ -463,6 +487,8 @@ private:
     uint8_t last_report_id_ = 0U;
     int last_decode_status_ = SH2_ERR;
     uint16_t next_read_len_ = kShtpHeaderLen;
+    GPIO_TypeDef *interrupt_port_ = nullptr;
+    uint16_t interrupt_pin_ = 0U;
     inline static Bno85Stm32 *active_ = nullptr;
 };
 

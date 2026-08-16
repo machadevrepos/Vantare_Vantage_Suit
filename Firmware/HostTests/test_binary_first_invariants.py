@@ -64,6 +64,8 @@ def main() -> int:
     finalized = main_src.find("master_training_csv_coordinator.on_master_finalized", archive)
     require(archive >= 0 and finalized > archive,
             "Master binary must be archived before the coordinator accepts it as durable", failures)
+    require("archive_attempt < 3U" in main_src and "master archive retry" in main_src,
+            "Master must retry transient canonical archive failures before declaring durability failure", failures)
     require("g_local_record_phase = LocalRecordPhase::Finished;" in main_src,
             "binary-first mode must not enter the Master-to-browser bulk transfer phase", failures)
     require("!master_training_csv_coordinator.binary_only() &&" in main_src,
@@ -96,8 +98,26 @@ def main() -> int:
     require(recorder.count("f_unlink(temp_path)") >= 2,
             "failed compact/archive attempts must clean temporary files", failures)
     installed_tail = recorder[archive_install:] if archive_install >= 0 else ""
-    require(installed_tail.count("(void)f_unlink(archive_path);") >= 2,
-            "failed post-install verification must remove the blocking archive so the same index can be retried", failures)
+    require("set_archive_cleanup_path(archive_path)" in installed_tail and
+            "service_archive_cleanup()" in recorder,
+            "failed post-install validation must remain retry-cleanable without losing a live FatFs handle", failures)
+    require("FIL archive_file_{};" in recorder and "bool archive_file_open_ = false;" in recorder,
+            "archive temp/verify handles must remain recorder-owned across close failures", failures)
+    require("bool close_tracked_file(FIL &file, bool &open_flag)" in recorder and
+            "open_flag = false;" in recorder,
+            "FatFs open-state flags must only clear through a successful tracked close", failures)
+    require("if (archive_required_)" in recorder and "last_error_ = FR_LOCKED;" in recorder,
+            "a finalized unarchived Master recording must block overwrite by a new session", failures)
+    require("if (!close_all_files())" in recorder,
+            "a new Master recording must not start while a prior FatFs handle cannot be closed", failures)
+    require("set_archive_cleanup_path(temp_path)" in recorder and
+            "set_archive_cleanup_path(archive_path)" in recorder,
+            "failed temp/final archive closes must remain retry-cleanable", failures)
+    durable = recorder.find("archive_required_ = false;", archive_install)
+    durable_tail = recorder[durable:] if durable >= 0 else ""
+    require(durable >= 0 and "sparse_cleanup_pending_ = true;" in durable_tail and
+            "return true;" in durable_tail,
+            "once R####M.BIN is validated, cleanup-only failures must not revoke durability", failures)
 
     if failures:
         for failure in failures:

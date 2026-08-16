@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Exoskeleton BLE Plotter Android</title>
+  <title>Vantare Vantage | Session Console</title>
   <style>
 :root {
   --bg: #f6f8fa;
@@ -633,7 +633,7 @@ input[type="checkbox"] {
 </head>
 <body>
   <header class="topbar">
-    <h1>Exoskeleton BLE Plotter Android</h1>
+    <h1>Vantare Vantage Session Console</h1>
     <div class="status-wrap">
       <span class="label">BLE</span>
       <span id="bleStatus" class="status">Disconnected</span>
@@ -694,8 +694,9 @@ input[type="checkbox"] {
         <label>Session Nodes</label>
         <div id="sessionNodes">Discover Nodes to select participants</div>
       </div>
+      <div class="note">Authoritative recording is stored on the Master SD as R####M.BIN and R####N#.BIN. Browser is control/status/live preview only.</div>
       <div >
-        <h2>Transfer Tuning</h2>
+        <h2>Master SD Collection Link Tuning</h2>
         <div class="row">
           <label for="transferProfileSelect">Profile</label>
           <select id="transferProfileSelect">
@@ -734,7 +735,7 @@ input[type="checkbox"] {
         </div>
       </div>
       <div class="transfer-box">
-        <div id="transferStatus" class="transfer-status">Transfer: idle</div>
+        <div id="transferStatus" class="transfer-status">Master SD Collection: idle</div>
         <progress id="transferProgress" max="100" value="0"></progress>
         <div id="laneProgress" class="lane-progress"></div>
         <div id="transferSources" class="transfer-sources"></div>
@@ -807,7 +808,7 @@ input[type="checkbox"] {
         <div>Invalid</div><div id="invalidCount">0</div>
         <div>Unknown Sensor</div><div id="unknownCount">0</div>
       </div>
-      <p class="note">Record mode stores on flash first, then transfers after RECORD done signal. Manual stream controls stay for testing.</p>
+      <p class="note">Master records binary data to SD; Nodes record to local flash and are collected sequentially by the Master after Stop. Manual stream controls remain for live testing only.</p>
       </details>
       </div>
     </details>
@@ -931,17 +932,19 @@ input[type="checkbox"] {
     RESET_RECORD_STATE: 0xB3,
     GET_DISCOVERED_NODES: 0xB4,
     RECORD_TRANSFER_TUNING: 0xB5,
-    TRAINING_CSV_STATUS: 0xB6,
+    MASTER_SD_STATUS: 0xB6,
     REPORT_SET_NODE_ID_RESULT: 0xC0,
     REPORT_GET_NODE_ID_RESULT: 0xC1
   };
 
-  // Mirrors exo::TrainingCsvState in MASTER_TRAINING_CSV_COORDINATOR.h
-  const TRAINING_CSV_STATES = [
-    "Idle", "WaitingForMaster", "ConvertMasterBno", "ConvertMasterIcm",
-    "WaitingForNode", "ReceiveNode", "ValidateNode", "ConvertNodeBno",
-    "ConvertNodeIcm", "Complete", "CsvError", "StageError"
+  // Wire values mirror the coordinator enum; production firmware is binary-only.
+  const MASTER_SD_COLLECTION_STATES = [
+    "Idle", "WaitingForMasterFinalize", "LegacyConvertMasterBno", "LegacyConvertMasterIcm",
+    "WaitingForNode", "ReceivingNode", "ValidatingNode", "LegacyConvertNodeBno",
+    "LegacyConvertNodeIcm", "Complete", "CoordinatorError", "StageError",
+    "BinaryFinalizeNode"
   ];
+  const BINARY_FIRST_SD_MODE = true;
 
   // FatFs FRESULT codes, for the fr= fields in the training status report
   const FRESULT_NAMES = [
@@ -1221,8 +1224,7 @@ input[type="checkbox"] {
     startRecordAckTimer: null,
     startRecordAckDeadlineMs: 0,
     pendingTrainingTerminalState: null,
-    // Last TRAIN CSV status report. Tells us which node uploads the Master is
-    // currently driving, so we stay out of their flow control.
+    // Last Master SD collector status report (wire-compatible with coordinator v1).
     trainingCsv: { state: 0, expected: 0, completed: 0 },
     pointsWindow: 600,
     counters: { packets: 0, invalid: 0, unknown: 0 },
@@ -1373,12 +1375,12 @@ input[type="checkbox"] {
   installCanvasInteractions();
   installPanelInteractions();
   requestRender();
-  resetTransferUi("Transfer: idle");
+  resetTransferUi("Master SD Collection: idle");
   syncTransferTuningUi(state.recordTransferTuning);
   syncTestSliderValues();
   setRecordingUi(false);
   setConnectedUi(false);
-  log("DesktopTools Android build marker: android-noresp-v1-session-v4");
+  log("Vantage Session Console: binary-first SD mode v5");
 
   function el(id) { return document.getElementById(id); }
 
@@ -1815,7 +1817,7 @@ input[type="checkbox"] {
     state.pendingAckBySession.clear();
     abortBleWrites(new Error("BLE disconnected"));
     state.connectReadyAtMs = 0;
-    resetTransferUi("Transfer: idle");
+    resetTransferUi("Master SD Collection: idle");
     state.startRecordInFlight = false;
     clearStartRecordAckTimer();
     state.discoveredNodes = [];
@@ -1851,9 +1853,9 @@ input[type="checkbox"] {
     if (!state.cmdChar) return "Master is not connected";
     if (state.startRecordInFlight) return "a Start Record request is already in flight";
     if (state.awaitingRecordDone) return "the current recording has not reported done";
-    if (state.receivingTransfer ||
+    if (!BINARY_FIRST_SD_MODE && (state.receivingTransfer ||
         state.recordTransfers.size > 0 ||
-        state.activeRecordOwnerKey) {
+        state.activeRecordOwnerKey)) {
       return "a source transfer is active";
     }
     if (state.pendingAckBySession.size > 0 ||
@@ -1861,7 +1863,7 @@ input[type="checkbox"] {
         state.cmdWriteQueue.length > 0) {
       return "a BLE control write is still pending";
     }
-    if (["Preparing", "Streaming", "Stopping", "Transferring", "FinalizingCsv"]
+    if (["Preparing", "Streaming", "Stopping", "Collecting", "Finalizing", "Incomplete", "Error", "Transferring", "FinalizingCsv"]
         .includes(state.sessionState)) {
       return `session state is ${state.sessionState}`;
     }
@@ -1883,7 +1885,7 @@ input[type="checkbox"] {
     ui.bleStatus.classList.toggle("ok", connected);
     ui.connectBtn.disabled = connected;
     ui.disconnectBtn.disabled = !connected;
-    ui.startBtn.disabled = !connected || ["Preparing", "Streaming", "Stopping", "Transferring", "FinalizingCsv"].includes(state.sessionState);
+    ui.startBtn.disabled = !connected || ["Preparing", "Streaming", "Stopping", "Collecting", "Finalizing", "Incomplete", "Error", "Transferring", "FinalizingCsv"].includes(state.sessionState);
     ui.stopBtn.disabled = !connected || !["Preparing", "Streaming"].includes(state.sessionState);
     ui.setIntervalBtn.disabled = !connected;
     refreshStartRecordAvailability();
@@ -2078,7 +2080,7 @@ input[type="checkbox"] {
     state.sessionState = nextState;
     if (ui.sessionState) ui.sessionState.textContent = nextState;
     const connected = !!state.cmdChar;
-    const blockedStates = ["Preparing", "Streaming", "Stopping", "Transferring", "FinalizingCsv"];
+    const blockedStates = ["Preparing", "Streaming", "Stopping", "Collecting", "Finalizing", "Incomplete", "Error", "Transferring", "FinalizingCsv"];
     ui.startBtn.disabled = !connected || blockedStates.includes(nextState);
     ui.stopBtn.disabled = !connected || !["Preparing", "Streaming"].includes(nextState);
     setRecordingUi(nextState === "Streaming");
@@ -2087,7 +2089,7 @@ input[type="checkbox"] {
       state.activeTransferSessionId = null;
       state.activeRecordOwnerKey = null;
       clearStartRecordAckTimer();
-      resetTransferUi("Session incomplete \u2014 start a new session to recover missing data");
+      resetTransferUi("Session incomplete \u2014 Do not start a new session; recover or deliberately discard retained Node data first");
       state.awaitingRecordDone = false;
       state.startRecordInFlight = false;
       clearExpectedRecordSources();
@@ -2602,13 +2604,13 @@ input[type="checkbox"] {
       if (ownDriven > 0) {
         state.pendingTrainingTerminalState = trainingState;
         syncReceivingTransferState();
-        log(`TRAIN CSV Complete deferred: ${ownDriven} browser transfer(s) still active.`);
+        log(`Master SD Collection complete deferred: ${ownDriven} legacy browser transfer(s) still active.`);
         return false;
       }
     }
     if (trainingState === 10 || trainingState === 11) {
       state.pendingTrainingTerminalState = null;
-      abortActiveRecordTransfers("Master CSV failure");
+      abortActiveRecordTransfers("Master SD collection failure");
       state.awaitingRecordDone = false;
       state.startRecordInFlight = false;
       setSessionState("Error");
@@ -3148,7 +3150,7 @@ input[type="checkbox"] {
           return;
         }
         if (echoedCmd === 0x0E) {
-          setSessionState(accepted ? "Transferring" : "Error");
+          setSessionState(accepted ? "Collecting" : "Error");
           log(`Session Stop ACK ${accepted ? "accepted" : "rejected"}.`);
           return;
         }
@@ -3197,7 +3199,7 @@ input[type="checkbox"] {
         renderDiscoveredNodes();
       } else if (reportId === CMD.RECORD_TRANSFER_TUNING && reportLen >= 8) {
         logDiscoveryReport(data, reportLen);
-      } else if (reportId === CMD.TRAINING_CSV_STATUS && reportLen >= 8) {
+      } else if (reportId === CMD.MASTER_SD_STATUS && reportLen >= 8) {
         const srcMask = (m) => {
           const names = [];
           if (m & 0x01) names.push("MASTER");
@@ -3210,8 +3212,19 @@ input[type="checkbox"] {
           stageOp, stageFr, csvOp, csvFr
         } = status;
         state.trainingCsv = { state: st, expected, completed };
-        let line = `TRAIN CSV: state=${TRAINING_CSV_STATES[st] ?? st}` +
+        const sdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
+        let line = `Master SD Collection: state=${sdState}` +
           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
+        if (st === 9) {
+          setSessionState("Complete");
+        } else if (st === 10 || st === 11) {
+          setSessionState("Error");
+        } else if (st === 1 && ["Stopping", "Collecting", "Finalizing"].includes(state.sessionState)) {
+          setSessionState("Finalizing");
+        } else if (st >= 4 && st <= 12) {
+          setSessionState("Collecting");
+        }
+        resetTransferUi(`Master SD Collection: ${sdState} \u00b7 ${srcMask(completed)} complete`);
         if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
         if (failureNode) line += ` node=NODE${failureNode}`;
         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
@@ -3484,6 +3497,9 @@ input[type="checkbox"] {
       return;
     }
     if (command === RECORD.SESSION_CHUNK) {
+      if (BINARY_FIRST_SD_MODE && command === RECORD.SESSION_CHUNK) {
+        return;
+      }
       handleSessionChunk(data);
       return;
     }
@@ -3664,6 +3680,9 @@ input[type="checkbox"] {
       log(`RECORD reliable payload crc fail source=${sourceLabel(sourceId)} session=${sessionId} type=${frameType}`);
       return;
     }
+    if (BINARY_FIRST_SD_MODE && (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK)) {
+      return;
+    }
     if (frameType === RECORD_REL.MANIFEST) {
       handleReliableManifest(sourceId, sessionId, payload);
       return;
@@ -3708,6 +3727,11 @@ input[type="checkbox"] {
     }
     if (laneId === RECORD_V3.LANE_CONTROL && msgType === RECORD_V3.MSG_DONE) {
       handleRecordDonePayload(sourceId, sessionId, payload);
+      return;
+    }
+    if (BINARY_FIRST_SD_MODE &&
+        (laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
+        msgType === RECORD_V3.MSG_CHUNK) {
       return;
     }
     if ((laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
@@ -3791,6 +3815,15 @@ input[type="checkbox"] {
     }
     if (!isExpectedRecordTransfer(sessionId, nodeId)) {
       log(`RECORD done ignored: unexpected source/session source=${sourceLabel(nodeId)} session=${sessionId} active=${state.activeRecordSessionId}`);
+      return;
+    }
+    if (BINARY_FIRST_SD_MODE) {
+      state.awaitingRecordDone = false;
+      setSessionState("Collecting");
+      setRecordingUi(false);
+      resetTransferUi(`Master SD Collection: ${sourceLabel(nodeId)} finalized; collecting selected sources`);
+      log(`RECORD done observed: source=${sourceLabel(nodeId)} session=${sessionId} size=${totalSize} duration_ms=${actualDurationMs}. Master SD collector owns the authoritative transfer.`);
+      refreshStartRecordAvailability();
       return;
     }
     const existing = getTransfer(sessionId, nodeId);

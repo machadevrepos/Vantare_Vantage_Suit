@@ -21,7 +21,16 @@ public:
 
     bool start(uint16_t node_id, uint32_t session_id, uint64_t start_timestamp_us, uint32_t duration_ms) {
 #if EXO_HAS_FATFS
-        close_session();
+        /* A finalized-but-not-archived MREC.BIN is the last durable copy of the
+         * Master recording. Never silently overwrite it with a new session. */
+        if (archive_required_) {
+            (void)service_archive_cleanup();
+            last_error_ = FR_LOCKED;
+            return false;
+        }
+        if (!close_all_files()) {
+            return false;
+        }
         reset_runtime();
 
         FRESULT result = FR_OK;
@@ -139,13 +148,22 @@ public:
         }
 
         header_.actual_duration_ms = actual_duration_ms;
-        header_.bno85_attempted_count = header_.bno85_sample_count + bno_failed_count_;
-        header_.icm45686_attempted_count = header_.icm45686_sample_count + icm_failed_count_;
+        const uint32_t expected_bno = static_cast<uint32_t>(
+                (static_cast<uint64_t>(actual_duration_ms) * header_.bno85_target_rate_hz + 999ULL) / 1000ULL);
+        const uint32_t expected_icm = static_cast<uint32_t>(
+                (static_cast<uint64_t>(actual_duration_ms) * header_.icm45686_target_rate_hz + 999ULL) / 1000ULL);
+        const uint32_t observed_bno_attempts = header_.bno85_sample_count + bno_failed_count_;
+        const uint32_t observed_icm_attempts = header_.icm45686_sample_count + icm_failed_count_;
+        header_.bno85_attempted_count = expected_bno > observed_bno_attempts ? expected_bno : observed_bno_attempts;
+        header_.icm45686_attempted_count = expected_icm > observed_icm_attempts ? expected_icm : observed_icm_attempts;
         header_.bno85_captured_count = header_.bno85_sample_count;
         header_.icm45686_captured_count = header_.icm45686_sample_count;
-        header_.bno85_dropped_count = bno_failed_count_;
-        header_.icm45686_dropped_count = icm_failed_count_;
-        header_.loss_flags = (bno_failed_count_ != 0U ? kSessionLossBnoWrite : 0U) |
+        header_.bno85_dropped_count = header_.bno85_attempted_count - header_.bno85_captured_count;
+        header_.icm45686_dropped_count = header_.icm45686_attempted_count - header_.icm45686_captured_count;
+        header_.loss_flags =
+                (header_.bno85_dropped_count > bno_failed_count_ ? kSessionLossBnoRead : 0U) |
+                (header_.icm45686_dropped_count > icm_failed_count_ ? kSessionLossIcmRead : 0U) |
+                (bno_failed_count_ != 0U ? kSessionLossBnoWrite : 0U) |
                 (icm_failed_count_ != 0U ? kSessionLossIcmWrite : 0U);
         header_.sensor_mask = 0U;
         if (header_.bno85_sample_count > 0U) {
@@ -172,6 +190,7 @@ public:
         }
         recording_ = false;
         ready_ = true;
+        archive_required_ = true;
         return true;
 #else
         (void)actual_duration_ms;
@@ -223,6 +242,9 @@ public:
         if (!ready_ || !session_open_ || index == 0U || index > 9999U) {
             return false;
         }
+        if (!service_archive_cleanup()) {
+            return false;
+        }
 
         char archive_path[32] = "/SESSIONS/R0000M.BIN";
         char temp_path[32] = "/SESSIONS/R0000T.BIN";
@@ -252,12 +274,13 @@ public:
             return false;
         }
 
-        FIL compact_file{};
-        result = f_open(&compact_file, temp_path, FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
+        memset(&archive_file_, 0, sizeof(archive_file_));
+        result = f_open(&archive_file_, temp_path, FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
         if (result != FR_OK) {
             last_error_ = result;
             return false;
         }
+        archive_file_open_ = true;
 
         bool compact_ok = true;
         uint32_t logical_offset = 0U;
@@ -270,7 +293,7 @@ public:
                 break;
             }
             UINT written = 0U;
-            result = f_write(&compact_file, copy_buffer_, chunk, &written);
+            result = f_write(&archive_file_, copy_buffer_, chunk, &written);
             if (result != FR_OK || written != chunk) {
                 compact_ok = false;
                 last_error_ = (result == FR_OK) ? FR_DISK_ERR : result;
@@ -280,24 +303,23 @@ public:
         }
 
         if (compact_ok) {
-            result = f_sync(&compact_file);
+            result = f_sync(&archive_file_);
             if (result != FR_OK) {
                 compact_ok = false;
                 last_error_ = result;
             }
         }
-        if (compact_ok && !validate_compact_archive(compact_file)) {
+        if (compact_ok && !validate_compact_archive(archive_file_)) {
             compact_ok = false;
             last_error_ = FR_INT_ERR;
         }
-
-        result = f_close(&compact_file);
-        if (result != FR_OK) {
-            compact_ok = false;
-            last_error_ = result;
-        }
         if (!compact_ok) {
-            (void)f_unlink(temp_path);
+            set_archive_cleanup_path(temp_path);
+            (void)service_archive_cleanup();
+            return false;
+        }
+        if (!close_tracked_file(archive_file_, archive_file_open_)) {
+            set_archive_cleanup_path(temp_path);
             return false;
         }
 
@@ -311,36 +333,46 @@ public:
             return false;
         }
 
-        FIL verify_file{};
-        result = f_open(&verify_file, archive_path, FA_READ);
+        memset(&archive_file_, 0, sizeof(archive_file_));
+        result = f_open(&archive_file_, archive_path, FA_READ);
         if (result != FR_OK) {
             last_error_ = result;
-            (void)f_unlink(archive_path);
+            set_archive_cleanup_path(archive_path);
             return false;
         }
-        const bool installed_ok = validate_compact_archive(verify_file);
-        const FRESULT verify_close = f_close(&verify_file);
-        if (!installed_ok || verify_close != FR_OK) {
-            last_error_ = installed_ok ? verify_close : FR_INT_ERR;
-            (void)f_unlink(archive_path);
+        archive_file_open_ = true;
+        const bool installed_ok = validate_compact_archive(archive_file_);
+        if (!installed_ok) {
+            last_error_ = FR_INT_ERR;
+            set_archive_cleanup_path(archive_path);
+            (void)service_archive_cleanup();
             return false;
         }
 
-        result = f_close(&session_file_);
-        session_open_ = false;
-        if (result != FR_OK) {
-            last_error_ = result;
-            return false;
+        /* The compact archive is now independently validated and was synced
+         * before rename. From this point onward failures are cleanup failures;
+         * they must not revoke the durable recording or lose ownership of an
+         * open FIL when FatFs f_close() reports an error. */
+        archive_required_ = false;
+        if (!close_tracked_file(archive_file_, archive_file_open_)) {
+            sparse_cleanup_pending_ = true;
+            return true;
         }
+        if (!close_tracked_file(session_file_, session_open_)) {
+            sparse_cleanup_pending_ = true;
+            return true;
+        }
+
         result = f_open(&session_file_, archive_path, FA_READ);
         if (result != FR_OK) {
             last_error_ = result;
-            /* The sparse source remains on disk. Best-effort reopen preserves
-             * logical reads for a retry/recovery path. */
+            sparse_cleanup_pending_ = true;
+            /* R####M.BIN is already validated and durable. Reopen MREC only to
+             * preserve logical reads until the next cleanup opportunity. */
             if (f_open(&session_file_, EXO_MASTER_REC_FINAL_PATH, FA_READ) == FR_OK) {
                 session_open_ = true;
             }
-            return false;
+            return true;
         }
         session_open_ = true;
 
@@ -349,7 +381,11 @@ public:
         result = f_unlink(EXO_MASTER_REC_FINAL_PATH);
         if (result != FR_OK && result != FR_NO_FILE) {
             last_error_ = result;
+            sparse_cleanup_pending_ = true;
+        } else {
+            sparse_cleanup_pending_ = false;
         }
+        if (!sparse_cleanup_pending_) last_error_ = FR_OK;
         return true;
 #else
         (void)index;
@@ -358,8 +394,21 @@ public:
     }
 
     void reset() {
-        close_session();
-        reset_runtime();
+#if EXO_HAS_FATFS
+        /* Preserve a finalized sparse recording until archive_to_index() has
+         * produced and validated its canonical R####M.BIN. */
+        if (archive_required_) {
+            (void)service_archive_cleanup();
+            recording_ = false;
+            return;
+        }
+#endif
+        if (close_all_files()) {
+            reset_runtime();
+        } else {
+            recording_ = false;
+            ready_ = false;
+        }
     }
 
     bool ready() const { return ready_; }
@@ -391,6 +440,7 @@ private:
         icm_buffer_count_ = 0U;
         recording_ = false;
         ready_ = false;
+        archive_required_ = false;
         last_error_ = FR_OK;
         bno_failed_count_ = 0U;
         icm_failed_count_ = 0U;
@@ -547,11 +597,71 @@ private:
         return false;
     }
 
-    void close_session() {
-        if (session_open_) {
-            f_close(&session_file_);
-            session_open_ = false;
+    bool close_tracked_file(FIL &file, bool &open_flag) {
+        if (!open_flag) {
+            return true;
         }
+        const FRESULT result = f_close(&file);
+        if (result != FR_OK) {
+            last_error_ = result;
+            return false;
+        }
+        open_flag = false;
+        memset(&file, 0, sizeof(file));
+        return true;
+    }
+
+    void set_archive_cleanup_path(const char *path) {
+        if (path == nullptr) {
+            archive_cleanup_path_[0] = '\0';
+            return;
+        }
+        strncpy(archive_cleanup_path_, path, sizeof(archive_cleanup_path_) - 1U);
+        archive_cleanup_path_[sizeof(archive_cleanup_path_) - 1U] = '\0';
+    }
+
+    bool service_archive_cleanup() {
+        if (!close_tracked_file(archive_file_, archive_file_open_)) {
+            return false;
+        }
+        if (archive_cleanup_path_[0] == '\0') {
+            return true;
+        }
+        const FRESULT result = f_unlink(archive_cleanup_path_);
+        if (result != FR_OK && result != FR_NO_FILE) {
+            last_error_ = result;
+            return false;
+        }
+        archive_cleanup_path_[0] = '\0';
+        return true;
+    }
+
+    bool service_sparse_cleanup() {
+        if (!sparse_cleanup_pending_ || session_open_) {
+            return true;
+        }
+        const FRESULT result = f_unlink(EXO_MASTER_REC_FINAL_PATH);
+        if (result != FR_OK && result != FR_NO_FILE) {
+            last_error_ = result;
+            return false;
+        }
+        sparse_cleanup_pending_ = false;
+        return true;
+    }
+
+    bool close_all_files() {
+        bool ok = service_archive_cleanup();
+        if (!close_tracked_file(session_file_, session_open_)) {
+            ok = false;
+        }
+        if (!session_open_ && !service_sparse_cleanup()) {
+            ok = false;
+        }
+        return ok;
+    }
+
+    void close_session() {
+        (void)close_all_files();
     }
 
     static uint32_t min_u32(uint32_t a, uint32_t b) {
@@ -559,9 +669,14 @@ private:
     }
 
     FIL session_file_{};
+    FIL archive_file_{};
     bool session_open_ = false;
+    bool archive_file_open_ = false;
+    bool sparse_cleanup_pending_ = false;
+    char archive_cleanup_path_[32]{};
     uint8_t copy_buffer_[kCopyBufferBytes]{};
 #else
+    bool close_all_files() { return true; }
     void close_session() {}
 #endif
 
@@ -572,6 +687,7 @@ private:
     uint32_t icm_buffer_count_ = 0U;
     bool recording_ = false;
     bool ready_ = false;
+    bool archive_required_ = false;
     FRESULT last_error_ = FR_OK;
     uint32_t bno_failed_count_ = 0U;
     uint32_t icm_failed_count_ = 0U;

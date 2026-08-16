@@ -48,6 +48,9 @@ namespace exo {
 			}
 
 			bool begin() {
+#if defined(BNO_INT_GPIO_Port) && defined(BNO_INT_Pin)
+				bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin);
+#endif
 				if (!flash_.begin()) {
 					ready_ = false;
 					return false;

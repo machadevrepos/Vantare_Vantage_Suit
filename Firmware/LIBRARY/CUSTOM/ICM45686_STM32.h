@@ -65,6 +65,9 @@ public:
     }
 
     bool read_sample(uint32_t offset_us, Icm45686Sample &sample) {
+        if (fifo_active_) {
+            return false;
+        }
         (void)offset_us;
         inv_imu_sensor_data_t raw;
         const int status = inv_imu_get_register_data(&device_, &raw);
@@ -104,6 +107,127 @@ public:
 #endif
         return true;
     }
+
+    /* Master-only recording path. Nodes intentionally keep their proven
+     * 5 ms register scheduler. The FIFO captures real 200 Hz accel+gyro frames
+     * independently of the Master superloop, so draining several frames later
+     * never fabricates repeated register snapshots. */
+    bool begin_fifo_capture_200hz() {
+        if (fifo_active_) return true;
+#if EXO_SAMPLE_FORMAT_VERSION != 4U
+        return false;
+#else
+        next_sequence_ = 0U;
+        fifo_elapsed_us_ = 0U;
+        fifo_timestamp_valid_ = false;
+
+        tmst_wom_config_t timestamp_config{};
+        int status = inv_imu_read_reg(&device_, TMST_WOM_CONFIG, 1U,
+                reinterpret_cast<uint8_t *>(&timestamp_config));
+        if (status == 0) {
+            timestamp_config.tmst_resol = TMST_WOM_CONFIG_TMST_RESOL_16_US;
+            status = inv_imu_write_reg(&device_, TMST_WOM_CONFIG, 1U,
+                    reinterpret_cast<const uint8_t *>(&timestamp_config));
+        }
+        if (status == 0) status = inv_imu_set_accel_frequency(&device_, ACCEL_CONFIG0_ACCEL_ODR_200_HZ);
+        if (status == 0) status = inv_imu_set_gyro_frequency(&device_, GYRO_CONFIG0_GYRO_ODR_200_HZ);
+
+        inv_imu_fifo_config_t fifo{};
+        fifo.accel_en = INV_IMU_ENABLE;
+        fifo.gyro_en = INV_IMU_ENABLE;
+        fifo.hires_en = INV_IMU_DISABLE;
+        fifo.fifo_wm_th = 1U;
+        fifo.fifo_mode = FIFO_CONFIG0_FIFO_MODE_STREAM;
+        fifo.fifo_depth = FIFO_CONFIG0_FIFO_DEPTH_MAX;
+        if (status == 0) status = inv_imu_set_fifo_config(&device_, &fifo);
+        if (status == 0) status = inv_imu_flush_fifo(&device_);
+        if (status != 0) {
+            fifo.fifo_mode = FIFO_CONFIG0_FIFO_MODE_BYPASS;
+            (void)inv_imu_set_fifo_config(&device_, &fifo);
+            (void)inv_imu_set_accel_frequency(&device_, EXO_ICM45686_ACCEL_ODR);
+            (void)inv_imu_set_gyro_frequency(&device_, EXO_ICM45686_GYRO_ODR);
+            last_read_status_ = static_cast<int8_t>(status);
+            return false;
+        }
+        fifo_active_ = true;
+        last_read_status_ = 0;
+        return true;
+#endif
+    }
+
+    uint8_t read_fifo_samples(Icm45686Sample *samples, uint8_t capacity) {
+#if EXO_SAMPLE_FORMAT_VERSION != 4U
+        (void)samples;
+        (void)capacity;
+        return 0U;
+#else
+        if (!fifo_active_ || samples == nullptr || capacity == 0U) return 0U;
+        uint16_t frame_count = 0U;
+        int status = inv_imu_get_frame_count(&device_, &frame_count);
+        if (status != 0) {
+            last_read_status_ = static_cast<int8_t>(status);
+            return 0U;
+        }
+        const uint16_t requested = frame_count < capacity ? frame_count : capacity;
+        uint8_t produced = 0U;
+        for (uint16_t i = 0U; i < requested; ++i) {
+            inv_imu_fifo_data_t frame{};
+            status = inv_imu_get_fifo_frame(&device_, &frame);
+            if (status != 0) {
+                last_read_status_ = static_cast<int8_t>(status);
+                break;
+            }
+            if (frame.header.bits.accel_bit == 0U || frame.header.bits.gyro_bit == 0U ||
+                    frame.header.bits.timestamp_bit == 0U) {
+                continue;
+            }
+
+            const uint16_t timestamp = frame.byte_16.timestamp;
+            if (!fifo_timestamp_valid_) {
+                fifo_timestamp_valid_ = true;
+                fifo_last_timestamp_ = timestamp;
+                fifo_elapsed_us_ = 0U;
+            } else {
+                const uint32_t delta_us = static_cast<uint32_t>(
+                        static_cast<uint16_t>(timestamp - fifo_last_timestamp_)) * 16U;
+                fifo_last_timestamp_ = timestamp;
+                /* At 200 Hz a valid delta is close to 5000 us. A zero timestamp
+                 * cannot provide ordering, so reject that frame rather than
+                 * inventing a duplicate time. */
+                if (delta_us == 0U) continue;
+                fifo_elapsed_us_ += delta_us;
+            }
+
+            Icm45686Sample sample{};
+            sample.offset_us = fifo_elapsed_us_;
+            sample.sequence = next_sequence_++;
+            sample.accel_x = frame.byte_16.accel_data[0];
+            sample.accel_y = frame.byte_16.accel_data[1];
+            sample.accel_z = frame.byte_16.accel_data[2];
+            sample.gyro_x = frame.byte_16.gyro_data[0];
+            sample.gyro_y = frame.byte_16.gyro_data[1];
+            sample.gyro_z = frame.byte_16.gyro_data[2];
+            samples[produced++] = sample;
+        }
+        if (produced > 0U) last_read_status_ = 0;
+        return produced;
+#endif
+    }
+
+    bool end_fifo_capture() {
+        if (!fifo_active_) return true;
+        inv_imu_fifo_config_t fifo{};
+        fifo.fifo_mode = FIFO_CONFIG0_FIFO_MODE_BYPASS;
+        fifo.fifo_depth = FIFO_CONFIG0_FIFO_DEPTH_MAX;
+        int status = inv_imu_set_fifo_config(&device_, &fifo);
+        status |= inv_imu_set_accel_frequency(&device_, EXO_ICM45686_ACCEL_ODR);
+        status |= inv_imu_set_gyro_frequency(&device_, EXO_ICM45686_GYRO_ODR);
+        fifo_active_ = false;
+        if (status != 0) last_read_status_ = static_cast<int8_t>(status);
+        return status == 0;
+    }
+
+    bool fifo_active() const { return fifo_active_; }
 
 private:
     void recover_i2c_bus() {
@@ -154,6 +278,10 @@ private:
     int8_t last_read_status_ = 0;
 #if EXO_SAMPLE_FORMAT_VERSION == 4U
     uint32_t next_sequence_ = 0U;
+    bool fifo_active_ = false;
+    bool fifo_timestamp_valid_ = false;
+    uint16_t fifo_last_timestamp_ = 0U;
+    uint32_t fifo_elapsed_us_ = 0U;
 #endif
 };
 
