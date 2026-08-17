@@ -27,9 +27,9 @@ namespace exo {
 			static constexpr uint32_t kDefaultLeadTimeUs = 300000U;
 			static constexpr uint32_t kDataRateLogPeriodMs = 10000U;
 			static constexpr uint32_t kIcmPeriodUs = 5000U;
-			/* BNO08x fusion maximum: the driver queues one sample per game
-			 * rotation vector report at this rate (EXO_BNO85_RV_REPORT_INTERVAL_US). */
-			static constexpr uint16_t kBnoTargetRateHz = 400U;
+			/* Recorded fusion target. The BNO wrapper queues one composite sample
+			 * per 100 Hz game-rotation-vector report; ICM remains hardware-FIFO 200 Hz. */
+			static constexpr uint16_t kBnoTargetRateHz = 100U;
 			static constexpr uint16_t kIcmTargetRateHz = 200U;
 			static constexpr uint8_t kMaxBnoDrainPerTick = 8U;
 			static constexpr uint8_t kBnoLiveSensorId = 1U;
@@ -777,12 +777,19 @@ namespace exo {
 					((finalize_duration_ms_ * kBnoTargetRateHz) + 999U) / 1000U;
 			const uint32_t expected_icm =
 					((finalize_duration_ms_ * kIcmTargetRateHz) + 999U) / 1000U;
-			bno_attempted_count_ = (expected_bno > stored_bno) ? expected_bno : stored_bno;
-			icm_attempted_count_ = (expected_icm > stored_icm) ? expected_icm : stored_icm;
 			const uint32_t bno_local_loss =
 					bno85_.queue_drops() + bno_record_buf_.drops + bno_append_fail_count_;
 			const uint32_t icm_local_loss =
 					icm_record_buf_.drops + icm_append_fail_count_;
+			/* Known FIFO/buffer/write losses are real attempts even when the sensor
+			 * temporarily over-delivered versus the nominal duration-derived rate.
+			 * Never allow a loss flag with dropped_count == 0. */
+			const uint32_t observed_bno_attempts = stored_bno + bno_local_loss;
+			const uint32_t observed_icm_attempts = stored_icm + icm_local_loss;
+			bno_attempted_count_ =
+					(expected_bno > observed_bno_attempts) ? expected_bno : observed_bno_attempts;
+			icm_attempted_count_ =
+					(expected_icm > observed_icm_attempts) ? expected_icm : observed_icm_attempts;
 			if (bno85_.queue_drops() != 0U) {
 				loss_flags_ |= kSessionLossBnoBuffer;
 			}

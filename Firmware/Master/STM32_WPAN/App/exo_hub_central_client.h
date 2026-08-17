@@ -14,6 +14,7 @@ void exo_hub_central_client_init(void);
 void exo_hub_central_client_set_ble_ready(void);
 void exo_hub_central_client_process(void);
 void exo_hub_central_client_request_scan(void);
+void exo_hub_central_client_set_discovery_hold(uint8_t hold);
 
 uint8_t exo_hub_central_client_broadcast_blepipe(uint8_t msg_type,
                                                  uint16_t src_id,

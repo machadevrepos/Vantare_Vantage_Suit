@@ -60,7 +60,7 @@ public:
         header_.session_id = session_id;
         header_.start_timestamp_us = start_timestamp_us;
         header_.requested_duration_ms = duration_ms;
-        header_.bno85_target_rate_hz = 400U;
+        header_.bno85_target_rate_hz = 100U;
         header_.icm45686_target_rate_hz = 200U;
 
         UINT written = 0U;

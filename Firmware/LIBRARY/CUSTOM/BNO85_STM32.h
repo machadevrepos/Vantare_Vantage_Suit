@@ -24,12 +24,12 @@ namespace exo {
 #define EXO_BNO85_REPORT_INTERVAL_US 10000U
 #endif
 
-/* The game rotation vector is the recorded anchor and runs at 400 Hz.
- * Auxiliary values are merged into the next anchor sample and do not need
- * the same cadence. 50 Hz keeps the total BNO report load near 550 reports/s
- * (400 + 3x50) and leaves foreground time for BLE, flash and ICM service. */
+/* The game rotation vector is the recorded anchor and runs at 100 Hz.
+ * Auxiliary values are merged into the next anchor sample at 50 Hz. This
+ * keeps the complete BNO report load near 250 reports/s (100 + 3x50), which
+ * leaves deterministic foreground time for BLE, flash and the 200 Hz ICM. */
 #ifndef EXO_BNO85_RV_REPORT_INTERVAL_US
-#define EXO_BNO85_RV_REPORT_INTERVAL_US 2500U
+#define EXO_BNO85_RV_REPORT_INTERVAL_US 10000U
 #endif
 
 #ifndef EXO_BNO85_AUX_REPORT_INTERVAL_US
@@ -214,16 +214,16 @@ public:
             q_head_ = 0U;
             q_count_ = 0U;
             queue_drops_ = 0U;
-            capture_timestamp_origin_valid_ = false;
-            capture_timestamp_origin_us_ = 0U;
+            capture_start_us_ = micros32();
+            capture_start_valid_ = true;
         }
     }
 
     void clear_capture_queue() {
         q_head_ = 0U;
         q_count_ = 0U;
-        capture_timestamp_origin_valid_ = false;
-        capture_timestamp_origin_us_ = 0U;
+        capture_start_valid_ = false;
+        capture_start_us_ = 0U;
     }
 
     bool capture_queue_enabled() const { return capture_queue_enabled_; }
@@ -589,12 +589,14 @@ private:
             return;
         }
         Bno85Sample sample { };
-        if (!capture_timestamp_origin_valid_) {
-            capture_timestamp_origin_us_ = latest_sensor_timestamp_us_;
-            capture_timestamp_origin_valid_ = true;
-        }
-        sample.offset_us =
-            static_cast<uint32_t>(latest_sensor_timestamp_us_ - capture_timestamp_origin_us_);
+        /* SH-2's decoded sensor timestamp is not a reliable record-local clock
+         * on the observed BNO08x stream: it can move backwards between GRV
+         * reports. Timestamp accepted GRV frames from the monotonic DWT clock
+         * instead, relative to the instant capture was enabled. */
+        const uint32_t now_us = micros32();
+        sample.offset_us = capture_start_valid_
+                ? static_cast<uint32_t>(now_us - capture_start_us_)
+                : 0U;
         sample.quat_i = latest_quat_i_;
         sample.quat_j = latest_quat_j_;
         sample.quat_k = latest_quat_k_;
@@ -672,8 +674,8 @@ private:
     uint8_t q_count_ = 0U;
     uint32_t queue_drops_ = 0U;
     bool capture_queue_enabled_ = false;
-    bool capture_timestamp_origin_valid_ = false;
-    uint32_t capture_timestamp_origin_us_ = 0U;
+    bool capture_start_valid_ = false;
+    uint32_t capture_start_us_ = 0U;
     inline static Bno85Stm32 *active_ = nullptr;
 };
 

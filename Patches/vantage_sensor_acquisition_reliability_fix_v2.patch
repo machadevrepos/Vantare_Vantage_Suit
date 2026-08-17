@@ -1,0 +1,280 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h b/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
+--- a/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
++++ b/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
+@@ -25,7 +25,7 @@
+-/* The game rotation vector is the recorded anchor and runs at 400 Hz.
+- * Auxiliary values are merged into the next anchor sample and do not need
+- * the same cadence. 50 Hz keeps the total BNO report load near 550 reports/s
+- * (400 + 3x50) and leaves foreground time for BLE, flash and ICM service. */
++/* The game rotation vector is the recorded anchor and runs at 100 Hz.
++ * Auxiliary values are merged into the next anchor sample at 50 Hz. This
++ * keeps the complete BNO report load near 250 reports/s (100 + 3x50), which
++ * leaves deterministic foreground time for BLE, flash and the 200 Hz ICM. */
+ #ifndef EXO_BNO85_RV_REPORT_INTERVAL_US
+-#define EXO_BNO85_RV_REPORT_INTERVAL_US 2500U
++#define EXO_BNO85_RV_REPORT_INTERVAL_US 10000U
+ #endif
+@@ -220,14 +220,14 @@
+             q_head_ = 0U;
+             q_count_ = 0U;
+             queue_drops_ = 0U;
+-            capture_timestamp_origin_valid_ = false;
+-            capture_timestamp_origin_us_ = 0U;
++            capture_start_us_ = micros32();
++            capture_start_valid_ = true;
+         }
+     }
+ 
+     void clear_capture_queue() {
+         q_head_ = 0U;
+         q_count_ = 0U;
+-        capture_timestamp_origin_valid_ = false;
+-        capture_timestamp_origin_us_ = 0U;
++        capture_start_valid_ = false;
++        capture_start_us_ = 0U;
+     }
+@@ -600,8 +600,10 @@
+         Bno85Sample sample { };
+-        if (!capture_timestamp_origin_valid_) {
+-            capture_timestamp_origin_us_ = latest_sensor_timestamp_us_;
+-            capture_timestamp_origin_valid_ = true;
+-        }
+-        sample.offset_us =
+-            static_cast<uint32_t>(latest_sensor_timestamp_us_ - capture_timestamp_origin_us_);
++        /* SH-2's decoded sensor timestamp is not a reliable record-local clock
++         * on the observed BNO08x stream: it can move backwards between GRV
++         * reports. Timestamp accepted GRV frames from the monotonic DWT clock
++         * instead, relative to the instant capture was enabled. */
++        const uint32_t now_us = micros32();
++        sample.offset_us = capture_start_valid_
++                ? static_cast<uint32_t>(now_us - capture_start_us_)
++                : 0U;
+         sample.quat_i = latest_quat_i_;
+@@ -690,5 +690,5 @@
+     uint32_t queue_drops_ = 0U;
+     bool capture_queue_enabled_ = false;
+-    bool capture_timestamp_origin_valid_ = false;
+-    uint32_t capture_timestamp_origin_us_ = 0U;
++    bool capture_start_valid_ = false;
++    uint32_t capture_start_us_ = 0U;
+     inline static Bno85Stm32 *active_ = nullptr;
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+@@ -27,4 +27,4 @@
+-			/* BNO08x fusion maximum: the driver queues one sample per game
+-			 * rotation vector report at this rate (EXO_BNO85_RV_REPORT_INTERVAL_US). */
+-			static constexpr uint16_t kBnoTargetRateHz = 400U;
++			/* Recorded fusion target. The BNO wrapper queues one composite sample
++			 * per 100 Hz game-rotation-vector report; ICM remains hardware-FIFO 200 Hz. */
++			static constexpr uint16_t kBnoTargetRateHz = 100U;
+ 			static constexpr uint16_t kIcmTargetRateHz = 200U;
+@@ -735,6 +735,13 @@
+-			bno_attempted_count_ = (expected_bno > stored_bno) ? expected_bno : stored_bno;
+-			icm_attempted_count_ = (expected_icm > stored_icm) ? expected_icm : stored_icm;
+ 			const uint32_t bno_local_loss =
+ 					bno85_.queue_drops() + bno_record_buf_.drops + bno_append_fail_count_;
+ 			const uint32_t icm_local_loss =
+ 					icm_record_buf_.drops + icm_append_fail_count_;
++			/* Known FIFO/buffer/write losses are real attempts even when the sensor
++			 * temporarily over-delivered versus the nominal duration-derived rate.
++			 * Never allow a loss flag with dropped_count == 0. */
++			const uint32_t observed_bno_attempts = stored_bno + bno_local_loss;
++			const uint32_t observed_icm_attempts = stored_icm + icm_local_loss;
++			bno_attempted_count_ =
++					(expected_bno > observed_bno_attempts) ? expected_bno : observed_bno_attempts;
++			icm_attempted_count_ =
++					(expected_icm > observed_icm_attempts) ? expected_icm : observed_icm_attempts;
+diff --git a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+--- a/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
++++ b/Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h
+@@ -330,2 +330,2 @@
+-        header_.bno85_target_rate_hz = 400U;
++        header_.bno85_target_rate_hz = 100U;
+         header_.icm45686_target_rate_hz = 200U;
+diff --git a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h
+--- a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h
++++ b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h
+@@ -14,4 +14,5 @@
+ void exo_hub_central_client_process(void);
+ void exo_hub_central_client_request_scan(void);
++void exo_hub_central_client_set_discovery_hold(uint8_t hold);
+ 
+ uint8_t exo_hub_central_client_broadcast_blepipe(uint8_t msg_type,
+diff --git a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+--- a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
++++ b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+@@ -135,3 +135,4 @@
+ static uint8_t g_scan_timeout_stop = 0U;
+ static uint8_t g_scan_proc_code = EXO_HUB_PROC_GENERAL_DISCOVERY;
+ static uint8_t g_last_logged_all_ready_mask = 0U;
++static uint8_t g_discovery_hold = 0U;
+@@ -565,4 +565,5 @@
+   if (g_ble_ready == 0U ||
++      g_discovery_hold != 0U ||
+       g_scan_active != 0U ||
+       g_connect_busy != 0U ||
+       g_discovery_active != 0U ||
+@@ -1170,3 +1170,4 @@
+   g_scan_proc_code = EXO_HUB_PROC_GENERAL_DISCOVERY;
+   g_last_logged_all_ready_mask = 0U;
++  g_discovery_hold = 0U;
+   EXO_LOG("[BLE][HUB][DISC] init leaf_max=%u cfg_links=%u\r\n",
+@@ -1201,4 +1201,11 @@
+ {
+   uint8_t i;
+   const uint32_t now = HAL_GetTick();
++  if (g_discovery_hold != 0U)
++  {
++    /* Do not let scan/connect scheduler work compete with an established
++     * recording or reliable Node->Master artifact transfer. Existing GATT
++     * links and their notifications continue normally. */
++    return;
++  }
+   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+@@ -1261,3 +1261,35 @@
+     g_leaf_slots[i].seen_in_scan = 0U;
+   }
+ }
++
++void exo_hub_central_client_set_discovery_hold(uint8_t hold)
++{
++  const uint8_t requested = (uint8_t)(hold != 0U ? 1U : 0U);
++  if (requested == g_discovery_hold)
++  {
++    return;
++  }
++  g_discovery_hold = requested;
++  EXO_LOG("[BLE][HUB][DISC] session hold=%u scan=%u connect=%u discovery=%u transport_mask=0x%02X\r\n",
++          (unsigned)g_discovery_hold,
++          (unsigned)g_scan_active,
++          (unsigned)g_connect_busy,
++          (unsigned)g_discovery_active,
++          (unsigned)exo_hub_central_client_transport_ready_node_mask());
++  if (g_discovery_hold != 0U)
++  {
++    /* Cancel only a passive scan. Never tear down an established leaf link or
++     * a GATT procedure. Discovered slots remain available after the session. */
++    g_connect_after_scan_slot = 0xFFU;
++    g_connect_after_scan_ms = 0U;
++    if (g_scan_active != 0U && g_connect_busy == 0U && g_discovery_active == 0U)
++    {
++      (void)aci_gap_terminate_gap_proc(g_scan_proc_code);
++    }
++  }
++  else
++  {
++    g_scan_requested = 1U;
++    g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RETRY_MS;
++  }
++}
+@@ -1510,4 +1510,6 @@
+   uint8_t node_id = 0U;
+   exo_leaf_slot_t *slot;
++  exo_leaf_slot_t *logical_slot;
+   (void)Num_Reports;
+-  if (Advertising_Report == 0 || g_scan_active == 0U || g_connect_busy != 0U)
++  if (Advertising_Report == 0 || g_discovery_hold != 0U ||
++      g_scan_active == 0U || g_connect_busy != 0U)
+@@ -1530,5 +1530,47 @@
+   exo_log_adv_report(Advertising_Report, node_id);
+-  slot = exo_claim_slot(Advertising_Report->Address_Type, Advertising_Report->Address);
++
++  /* Logical Node ID is the routing identity. Never allow two BLE addresses to
++   * occupy independent central slots for the same Node ID: masks collapse by
++   * Node ID, while control writes otherwise pick whichever duplicate slot is
++   * found first. That can route ACK/credit to the wrong physical link. */
++  logical_slot = exo_find_slot_by_node(node_id);
++  if (logical_slot != 0 &&
++      (logical_slot->addr_type != Advertising_Report->Address_Type ||
++       memcmp(logical_slot->addr, Advertising_Report->Address, 6U) != 0))
++  {
++    if (logical_slot->state == EXO_LEAF_SLOT_DISCOVERED ||
++        logical_slot->state == EXO_LEAF_SLOT_BACKOFF)
++    {
++      EXO_LOG("[BLE][HUB][DISC] logical rebind node=%u slot=%u old_state=%u\r\n",
++              (unsigned)node_id,
++              (unsigned)(logical_slot - &g_leaf_slots[0]),
++              (unsigned)logical_slot->state);
++      exo_leaf_slot_reset_handles(logical_slot);
++      logical_slot->state = EXO_LEAF_SLOT_DISCOVERED;
++      logical_slot->addr_type = Advertising_Report->Address_Type;
++      memcpy(logical_slot->addr, Advertising_Report->Address, 6U);
++      logical_slot->connection_handle = 0xFFFFU;
++      logical_slot->retry_after_ms = 0U;
++      slot = logical_slot;
++    }
++    else
++    {
++      EXO_LOG("[BLE][HUB][DISC] duplicate logical node ignored node=%u owner_slot=%u owner_state=%u\r\n",
++              (unsigned)node_id,
++              (unsigned)(logical_slot - &g_leaf_slots[0]),
++              (unsigned)logical_slot->state);
++      exo_send_disc_report(EXO_DISC_EVT_ADV_SKIPPED,
++                           node_id,
++                           (uint8_t)(logical_slot - &g_leaf_slots[0]),
++                           (uint8_t)logical_slot->state,
++                           0xD001U);
++      return;
++    }
++  }
++  else
++  {
++    slot = exo_claim_slot(Advertising_Report->Address_Type, Advertising_Report->Address);
++  }
+   if (slot == 0)
+   {
+     EXO_LOG("[BLE][HUB][DISC] adv claim failed node=%u\r\n", (unsigned)node_id);
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -2340,5 +2340,8 @@
+ 			EXO_LOG("[RECORD][MASTER] START session=%lu duration_ms=%lu mode=delayed\r\n",
+ 					static_cast<unsigned long>(g_local_start_msg.session_id),
+ 					static_cast<unsigned long>(g_local_start_msg.requested_duration_ms));
++			/* hub_snapshot was acquired before begin_record_capture(). Never let
++			 * that pre-capture snapshot become sample zero of the new session. */
++			return;
+ 		}
+ 		if (g_local_record_phase != LocalRecordPhase::Capturing) {
+@@ -3260,3 +3260,10 @@
+ 		local_record_collect(hub_snapshot);
+ 		master_training_csv_replay_pending_node_done();
++		/* Scanning/new central connections are commissioning work, not session
++		 * work. Protect the radio scheduler while capture or reliable collection
++		 * owns the established Node links. */
++		exo_hub_central_client_set_discovery_hold(
++				(g_ble_start_or_record_in_progress ||
++				 g_ble_record_transfer_mode ||
++				 g_remote_transfer_active) ? 1U : 0U);
+ #if EXO_ACQ_DIAG_ENABLE
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -11,3 +11,5 @@
+ recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_text()
++central = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c").read_text()
++central_h = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h").read_text()
+ 
+ checks = [
+@@ -17,2 +17,13 @@
+     ("HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET" in bno,
+      "BNO service must gate reads from the active-low data-ready level"),
++    ("#define EXO_BNO85_RV_REPORT_INTERVAL_US 10000U" in bno and
++     "kBnoTargetRateHz = 100U" in node and
++     "header_.bno85_target_rate_hz = 100U" in recorder,
++     "recording contract must use the reliable 100 Hz BNO target end-to-end"),
++    ("capture_start_us_ = micros32()" in bno and
++     "latest_sensor_timestamp_us_ - capture_timestamp_origin_us_" not in bno,
++     "BNO record offsets must use the monotonic local capture clock"),
++    ("exo_hub_central_client_set_discovery_hold" in central_h and
++     "g_discovery_hold" in central and
++     "duplicate logical node ignored" in central,
++     "central client must protect active sessions and enforce one slot per logical Node ID"),
+@@ -42,3 +42,6 @@
+     ("expected_bno" in recorder and "expected_icm" in recorder and
+      "kSessionLossBnoRead" in recorder and "kSessionLossIcmRead" in recorder,
+      "Master SessionHeader must truthfully expose acquisition shortfall"),
++    ("observed_icm_attempts = stored_icm + icm_local_loss" in node and
++     "observed_bno_attempts = stored_bno + bno_local_loss" in node,
++     "Node attempted/dropped metadata must include known buffer/write losses"),

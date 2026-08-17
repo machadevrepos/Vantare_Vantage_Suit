@@ -141,6 +141,7 @@ static uint32_t g_scan_started_ms = 0U;
 static uint8_t g_scan_timeout_stop = 0U;
 static uint8_t g_scan_proc_code = EXO_HUB_PROC_GENERAL_DISCOVERY;
 static uint8_t g_last_logged_all_ready_mask = 0U;
+static uint8_t g_discovery_hold = 0U;
 
 static const uint8_t k_blepipe_service_uuid[16] = { 0x3f, 0x88, 0x10, 0x00, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
 static const uint8_t k_blepipe_data_uuid[16]    = { 0x3f, 0x88, 0x10, 0x01, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
@@ -587,6 +588,7 @@ static void exo_request_scan_if_needed(void)
   const uint16_t scan_window = exo_scan_window_for_state();
   tBleStatus status;
   if (g_ble_ready == 0U ||
+      g_discovery_hold != 0U ||
       g_scan_active != 0U ||
       g_connect_busy != 0U ||
       g_discovery_active != 0U ||
@@ -1223,6 +1225,7 @@ void exo_hub_central_client_init(void)
   g_scan_timeout_stop = 0U;
   g_scan_proc_code = EXO_HUB_PROC_GENERAL_DISCOVERY;
   g_last_logged_all_ready_mask = 0U;
+  g_discovery_hold = 0U;
   EXO_LOG("[BLE][HUB][DISC] init leaf_max=%u cfg_links=%u\r\n",
           (unsigned)EXO_HUB_LEAF_MAX,
           (unsigned)CFG_BLE_NUM_LINK);
@@ -1241,6 +1244,13 @@ void exo_hub_central_client_process(void)
 {
   uint8_t i;
   const uint32_t now = HAL_GetTick();
+  if (g_discovery_hold != 0U)
+  {
+    /* Do not let scan/connect scheduler work compete with an established
+     * recording or reliable Node->Master artifact transfer. Existing GATT
+     * links and their notifications continue normally. */
+    return;
+  }
   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
   {
     if (g_leaf_slots[i].state == EXO_LEAF_SLOT_BACKOFF &&
@@ -1510,8 +1520,10 @@ void hci_le_advertising_report_event(uint8_t Num_Reports,
 {
   uint8_t node_id = 0U;
   exo_leaf_slot_t *slot;
+  exo_leaf_slot_t *logical_slot;
   (void)Num_Reports;
-  if (Advertising_Report == 0 || g_scan_active == 0U || g_connect_busy != 0U)
+  if (Advertising_Report == 0 || g_discovery_hold != 0U ||
+      g_scan_active == 0U || g_connect_busy != 0U)
   {
     return;
   }
@@ -1524,7 +1536,49 @@ void hci_le_advertising_report_event(uint8_t Num_Reports,
     return;
   }
   exo_log_adv_report(Advertising_Report, node_id);
-  slot = exo_claim_slot(Advertising_Report->Address_Type, Advertising_Report->Address);
+
+  /* Logical Node ID is the routing identity. Never allow two BLE addresses to
+   * occupy independent central slots for the same Node ID: masks collapse by
+   * Node ID, while control writes otherwise pick whichever duplicate slot is
+   * found first. That can route ACK/credit to the wrong physical link. */
+  logical_slot = exo_find_slot_by_node(node_id);
+  if (logical_slot != 0 &&
+      (logical_slot->addr_type != Advertising_Report->Address_Type ||
+       memcmp(logical_slot->addr, Advertising_Report->Address, 6U) != 0))
+  {
+    if (logical_slot->state == EXO_LEAF_SLOT_DISCOVERED ||
+        logical_slot->state == EXO_LEAF_SLOT_BACKOFF)
+    {
+      EXO_LOG("[BLE][HUB][DISC] logical rebind node=%u slot=%u old_state=%u\r\n",
+              (unsigned)node_id,
+              (unsigned)(logical_slot - &g_leaf_slots[0]),
+              (unsigned)logical_slot->state);
+      exo_leaf_slot_reset_handles(logical_slot);
+      logical_slot->state = EXO_LEAF_SLOT_DISCOVERED;
+      logical_slot->addr_type = Advertising_Report->Address_Type;
+      memcpy(logical_slot->addr, Advertising_Report->Address, 6U);
+      logical_slot->connection_handle = 0xFFFFU;
+      logical_slot->retry_after_ms = 0U;
+      slot = logical_slot;
+    }
+    else
+    {
+      EXO_LOG("[BLE][HUB][DISC] duplicate logical node ignored node=%u owner_slot=%u owner_state=%u\r\n",
+              (unsigned)node_id,
+              (unsigned)(logical_slot - &g_leaf_slots[0]),
+              (unsigned)logical_slot->state);
+      exo_send_disc_report(EXO_DISC_EVT_ADV_SKIPPED,
+                           node_id,
+                           (uint8_t)(logical_slot - &g_leaf_slots[0]),
+                           (uint8_t)logical_slot->state,
+                           0xD001U);
+      return;
+    }
+  }
+  else
+  {
+    slot = exo_claim_slot(Advertising_Report->Address_Type, Advertising_Report->Address);
+  }
   if (slot == 0)
   {
     EXO_LOG("[BLE][HUB][DISC] adv claim failed node=%u\r\n", (unsigned)node_id);
@@ -1932,5 +1986,37 @@ void aci_gatt_proc_complete_event(uint16_t Connection_Handle,
                          (uint8_t)(slot - &g_leaf_slots[0]),
                          (uint8_t)slot->state,
                          (uint16_t)slot->notify_mask);
+  }
+}
+
+void exo_hub_central_client_set_discovery_hold(uint8_t hold)
+{
+  const uint8_t requested = (uint8_t)(hold != 0U ? 1U : 0U);
+  if (requested == g_discovery_hold)
+  {
+    return;
+  }
+  g_discovery_hold = requested;
+  EXO_LOG("[BLE][HUB][DISC] session hold=%u scan=%u connect=%u discovery=%u transport_mask=0x%02X\r\n",
+          (unsigned)g_discovery_hold,
+          (unsigned)g_scan_active,
+          (unsigned)g_connect_busy,
+          (unsigned)g_discovery_active,
+          (unsigned)exo_hub_central_client_transport_ready_node_mask());
+  if (g_discovery_hold != 0U)
+  {
+    /* Cancel only a passive scan. Never tear down an established leaf link or
+     * a GATT procedure. Discovered slots remain available after the session. */
+    g_connect_after_scan_slot = 0xFFU;
+    g_connect_after_scan_ms = 0U;
+    if (g_scan_active != 0U && g_connect_busy == 0U && g_discovery_active == 0U)
+    {
+      (void)aci_gap_terminate_gap_proc(g_scan_proc_code);
+    }
+  }
+  else
+  {
+    g_scan_requested = 1U;
+    g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RETRY_MS;
   }
 }

@@ -2502,6 +2502,9 @@ namespace {
 			EXO_LOG("[RECORD][MASTER] START session=%lu duration_ms=%lu mode=delayed\r\n",
 					static_cast<unsigned long>(g_local_start_msg.session_id),
 					static_cast<unsigned long>(g_local_start_msg.requested_duration_ms));
+			/* hub_snapshot was acquired before begin_record_capture(). Never let
+			 * that pre-capture snapshot become sample zero of the new session. */
+			return;
 		}
 		if (g_local_record_phase != LocalRecordPhase::Capturing) {
 			return;
@@ -3005,6 +3008,13 @@ int main(void)
 #endif
 		local_record_collect(hub_snapshot);
 		master_training_csv_replay_pending_node_done();
+		/* Scanning/new central connections are commissioning work, not session
+		 * work. Protect the radio scheduler while capture or reliable collection
+		 * owns the established Node links. */
+		exo_hub_central_client_set_discovery_hold(
+				(g_ble_start_or_record_in_progress ||
+				 g_ble_record_transfer_mode ||
+				 g_remote_transfer_active) ? 1U : 0U);
 #if EXO_ACQ_DIAG_ENABLE
 		if (g_acq_diag.claim_summary()) {
 			/* Exactly one summary per completed session, emitted after capture. */
