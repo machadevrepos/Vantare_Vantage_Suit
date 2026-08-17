@@ -1,5 +1,45 @@
-SESSIONS/
-Output/
-Session_output/
-Firmware/Master/.settings/language.settings.xml
-Firmware/Node/.settings/language.settings.xml
+```
+# Compiled and build artifacts
+*.o
+*.obj
+*.bin
+*.hex
+*.elf
+*.out
+
+# Dependencies
+lib/
+Libraries/
+CMSIS/
+Drivers/
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*.~
+*.swp
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build outputs
+build/
+output/
+Debug/
+Release/
+*.map
+*.lst
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```

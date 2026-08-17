@@ -83,10 +83,21 @@ public:
         begin_open_status_ = SH2_ERR;
         begin_callback_status_ = SH2_ERR;
         begin_config_status_ = SH2_ERR;
+        
+        /* Game Rotation Vector runs at 400 Hz native rate.
+         * sensorSpecific encodes the internal OD R setting:
+         * - bits [7:0]: Sensor Hub internal report rate index
+         * - Value 4 selects ~400 Hz processing rate per BNO085 spec */
         sh2_SensorConfig_t rv_config = {};
         rv_config.reportInterval_us = EXO_BNO85_RV_REPORT_INTERVAL_US;
+        rv_config.sensorSpecific = 4U;  // Enable 400 Hz internal processing
+        
+        /* Auxiliary sensors run at 50 Hz.
+         * sensorSpecific = 0 allows default rate for these sensors */
         sh2_SensorConfig_t aux_config = {};
         aux_config.reportInterval_us = EXO_BNO85_AUX_REPORT_INTERVAL_US;
+        aux_config.sensorSpecific = 0U;
+        
         int open_status = SH2_ERR_IO;
         for (uint8_t attempt = 0U; attempt < 5U; ++attempt) {
             open_status = sh2_open(&hal_, &Bno85Stm32::async_event_callback, nullptr);
