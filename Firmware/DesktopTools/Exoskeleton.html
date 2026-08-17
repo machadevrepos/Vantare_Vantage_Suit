@@ -2714,6 +2714,7 @@ input[type="checkbox"] {
 
   function decodeTrainingCsvStatus(data, reportLen) {
     const hasFailureSite = reportLen >= 9;
+    const hasMasks = reportLen >= 11;
     return {
       state: data[3],
       expected: data[4],
@@ -2723,7 +2724,9 @@ input[type="checkbox"] {
       stageOp: hasFailureSite ? data[8] : data[7],
       stageFr: hasFailureSite ? data[9] : data[8],
       csvOp: hasFailureSite ? data[10] : data[9],
-      csvFr: hasFailureSite ? data[11] : data[10]
+      csvFr: hasFailureSite ? data[11] : data[10],
+      failedSourceMask: hasMasks ? data[12] : 0,
+      cleanupPendingMask: hasMasks ? data[13] : 0
     };
   }
 
@@ -2747,8 +2750,18 @@ input[type="checkbox"] {
     refreshStartRecordAvailability();
   }
 
-  function applyTrainingCsvTerminalState(trainingState) {
+  function applyTrainingCsvTerminalState(trainingState, expected = null, completed = null, failed = null) {
+    expected = expected ?? state.trainingCsv?.expected ?? 0;
+    completed = completed ?? state.trainingCsv?.completed ?? 0;
+    failed = failed ?? state.trainingCsv?.failed ?? 0;
     if (trainingState === 9) {
+      if (expected !== 0 && ((completed & expected) !== expected)) {
+        state.pendingTrainingTerminalState = null;
+        state.awaitingRecordDone = false;
+        state.startRecordInFlight = false;
+        setSessionState(failed ? "Error" : "Incomplete");
+        return true;
+      }
       // Node uploads the Master staged are read-only here and are expected to be
       // incomplete in the browser, so they must not hold Complete back forever.
       // Only wait on transfers this tool actually drives.
@@ -3362,14 +3375,16 @@ input[type="checkbox"] {
         const status = decodeTrainingCsvStatus(data, reportLen);
         const {
           state: st, expected, completed, failureSite, failureNode,
-          stageOp, stageFr, csvOp, csvFr
+          stageOp, stageFr, csvOp, csvFr, failedSourceMask, cleanupPendingMask
         } = status;
-        state.trainingCsv = { state: st, expected, completed };
+        state.trainingCsv = { state: st, expected, completed, failed: failedSourceMask, cleanupPending: cleanupPendingMask };
         const sdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
         let line = `Master SD Collection: state=${sdState}` +
           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
+        if (failedSourceMask) line += ` failed=${srcMask(failedSourceMask)}`;
+        if (cleanupPendingMask) line += ` cleanup_pending=${srcMask(cleanupPendingMask)}`;
         if (st === 9) {
-          setSessionState("Complete");
+          setSessionState(expected !== 0 && ((completed & expected) !== expected) ? "Incomplete" : "Complete");
         } else if (st === 10 || st === 11) {
           setSessionState("Error");
         } else if (st === 1 && ["Stopping", "Collecting", "Finalizing"].includes(state.sessionState)) {
@@ -3379,12 +3394,12 @@ input[type="checkbox"] {
         }
         resetTransferUi(`Master SD Collection: ${sdState} \u00b7 ${srcMask(completed)} complete`);
         renderDevices();
-        if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
+        if ((st === 10 || st === 11) && failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
         if (failureNode) line += ` node=NODE${failureNode}`;
         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
         if (csvOp || csvFr) line += ` csv_op=${csvOp} csv_fr=${csvFr}(${FRESULT_NAMES[csvFr] ?? "?"})`;
         log(line);
-        applyTrainingCsvTerminalState(st);
+        applyTrainingCsvTerminalState(st, expected, completed, failedSourceMask);
       } else if (reportId === CMD.REPORT_SET_NODE_ID_RESULT && reportLen >= 3) {
         const currentId = data[3];
         const newId = data[4];
@@ -6092,6 +6107,27 @@ input[type="checkbox"] {
     return points;
   }
 
+  function liveExpectedCadenceMs(arr, sourceId) {
+    if (arr && arr.length >= 3) {
+      const deltas = [];
+      const start = Math.max(1, arr.length - 32);
+      for (let i = start; i < arr.length; i += 1) {
+        const delta = arr[i].x - arr[i - 1].x;
+        if (Number.isFinite(delta) && delta > 0 && delta < 1000) {
+          deltas.push(delta);
+        }
+      }
+      if (deltas.length > 0) {
+        deltas.sort((a, b) => a - b);
+        const median = deltas[Math.floor(deltas.length / 2)];
+        if (Number.isFinite(median)) {
+          return Math.max(5, Math.min(250, median));
+        }
+      }
+    }
+    return sourceId === 0 ? 20 : 40;
+  }
+
   function graphGapBands(sourceId, chart, viewport) {
     const key = `gaps|${state.plotMode}|${state.activeVerifiedSessionId}|${sourceId}|${chart.sensor}|` +
       `${viewport.minMs.toFixed(3)}|${viewport.maxMs.toFixed(3)}`;
@@ -6107,10 +6143,9 @@ input[type="checkbox"] {
     } else {
       const arr = state.liveTraceStore.get(liveKey(sourceId, chart.sensor, chart.signals[0])) || [];
       if (arr.length > 1) {
-        // Use actual sensor period for gap detection, not stream interval.
-        // ICM runs at ~200Hz (5ms period), BNO at ~100Hz (10ms period).
-        const sensorPeriodMs = chart.sensor === SENSOR.ICM ? GRAPH_FALLBACK_ICM_PERIOD_MS : GRAPH_FALLBACK_BNO_PERIOD_MS;
-        bands = findGapBands(arrayAccessor(arr), viewport, sensorPeriodMs);
+        /* Live preview is intentionally decimated; classify gaps against the
+         * observed delivery cadence, not the physical sensor ODR. */
+        bands = findGapBands(arrayAccessor(arr), viewport, liveExpectedCadenceMs(arr, sourceId));
       }
     }
     if (state.graphSeriesCache.size > 600) state.graphSeriesCache.clear();

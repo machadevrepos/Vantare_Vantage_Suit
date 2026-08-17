@@ -1,0 +1,847 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h b/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
+--- a/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
++++ b/Firmware/LIBRARY/CUSTOM/BNO85_STM32.h
+@@ -27,36 +27,28 @@ namespace exo {
+ #define EXO_BNO85_REPORT_INTERVAL_US 10000U
+ #endif
+ 
+-/* The BNO08x caps every fused report (game rotation vector, linear
+- * acceleration, gravity, calibrated gyro) at 400 Hz = 2500 us. The game
+- * rotation vector anchors one recorded sample per report, so it runs at the
+- * fusion maximum. The auxiliary reports run slower: every report costs the
+- * superloop ~0.7 ms of blocking I2C, so 400 + 3x100 reports/s saturated the
+- * Node loop (measured: GRV delivered at ~125 Hz, ICM sagged to ~125 Hz).
+- * 400 + 3x50 = 550 reports/s leaves the loop headroom for flash flushes,
+- * the ICM schedule and BLE. */
++/* The game rotation vector is the recorded anchor and runs at 400 Hz.
++ * Auxiliary values are merged into the next anchor sample and do not need
++ * the same cadence. 50 Hz keeps the total BNO report load near 550 reports/s
++ * (400 + 3x50) and leaves foreground time for BLE, flash and ICM service. */
+ #ifndef EXO_BNO85_RV_REPORT_INTERVAL_US
+ #define EXO_BNO85_RV_REPORT_INTERVAL_US 2500U
+ #endif
+ 
+ #ifndef EXO_BNO85_AUX_REPORT_INTERVAL_US
+-#define EXO_BNO85_AUX_REPORT_INTERVAL_US 5000U
++#define EXO_BNO85_AUX_REPORT_INTERVAL_US 20000U
+ #endif
+ 
+-/* SHTP packets drained per service() call while recording. At 400 Hz +
+- * 3x50 Hz the bus produces ~0.55 packets/ms, so the budget must cover the
+- * backlog left by a worst-case superloop iteration (BLE + storage bursts). */
++/* Keep each foreground service burst bounded. A HAL read reconstructs one
++ * complete SHTP transfer, so this is a packet budget rather than an I2C
++ * fragment budget. */
+ #ifndef EXO_BNO85_SERVICE_BUDGET
+-#define EXO_BNO85_SERVICE_BUDGET 16U
++#define EXO_BNO85_SERVICE_BUDGET 8U
+ #endif
+ 
+-/* Packets drained per service() call while NOT recording. The sensor keeps
+- * producing reports at the configured rate forever; draining them at the
+- * full budget made idle loops (live preview, and especially the flash
+- * upload phase after a recording) spend half their time in I2C, which
+- * starved BLE and contributed to node upload stalls. Preview needs ~25 Hz,
+- * which a small budget delivers while keeping the loop responsive. */
++/* Idle/live preview must never monopolize the superloop. Upload states skip
++ * sensor housekeeping entirely in NodeRecordingApp. */
+ #ifndef EXO_BNO85_IDLE_SERVICE_BUDGET
+-#define EXO_BNO85_IDLE_SERVICE_BUDGET 4U
++#define EXO_BNO85_IDLE_SERVICE_BUDGET 2U
+ #endif
+ 
+@@ -79,7 +79,6 @@ public:
+         begin_open_status_ = SH2_ERR;
+         begin_callback_status_ = SH2_ERR;
+         begin_config_status_ = SH2_ERR;
+-        next_read_len_ = kShtpHeaderLen;
+         sh2_SensorConfig_t rv_config = {};
+         rv_config.reportInterval_us = EXO_BNO85_RV_REPORT_INTERVAL_US;
+         sh2_SensorConfig_t aux_config = {};
+@@ -119,8 +118,9 @@ public:
+         const int gyro_status = sh2_setSensorConfig(SH2_GYROSCOPE_CALIBRATED, &aux_config);
+ #endif
+         const int config_status =
+-            (grv_status == SH2_OK || la_status == SH2_OK || grav_status == SH2_OK || gyro_status == SH2_OK)
+-                ? SH2_OK
+-                : grv_status;
++            (grv_status != SH2_OK) ? grv_status :
++            (la_status != SH2_OK) ? la_status :
++            (grav_status != SH2_OK) ? grav_status :
++            gyro_status;
+         begin_config_status_ = config_status;
+         last_begin_status_ = config_status;
+@@ -140,9 +139,8 @@ public:
+             return;
+         }
+         for (uint8_t serviced = 0U; serviced < max_packets; ++serviced) {
+-            const bool continuation = next_read_len_ != kShtpHeaderLen;
+             const bool pending = HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET;
+-            if (!continuation && !pending) break;
++            if (!pending) break;
+             sh2_service();
+         }
+     }
+@@ -219,17 +217,24 @@ public:
+      * reports. At 400 Hz the queue spans depth * 2.5 ms of stall. */
+     void set_capture_queue_enabled(bool enabled) {
+         capture_queue_enabled_ = enabled;
+-        q_head_ = 0U;
+-        q_count_ = 0U;
+-        pop_offset_valid_ = false;
+-        pop_offset_us_ = 0U;
+         if (enabled) {
+-            /* Counters start clean per session; on disable they survive so
+-             * the finalizer can still report the session's queue drops. */
++            /* A new capture starts with a clean queue. Disabling capture only
++             * freezes the producer; queued tail samples remain drainable. */
++            q_head_ = 0U;
++            q_count_ = 0U;
+             queue_drops_ = 0U;
++            capture_timestamp_origin_valid_ = false;
++            capture_timestamp_origin_us_ = 0U;
+         }
+     }
+ 
++    void clear_capture_queue() {
++        q_head_ = 0U;
++        q_count_ = 0U;
++        capture_timestamp_origin_valid_ = false;
++        capture_timestamp_origin_us_ = 0U;
++    }
++
+     bool capture_queue_enabled() const { return capture_queue_enabled_; }
+ 
+     uint8_t queued_sample_count() const { return q_count_; }
+@@ -241,25 +246,10 @@ public:
+             return 0U;
+         }
+         const uint8_t n = (q_count_ < capacity) ? q_count_ : capacity;
+-        /* The sensor samples on a uniform 1/rate grid; arrival times only
+-         * reflect when the superloop drained the bus. Rebuild that grid:
+-         * continue from the last assigned offset, or re-anchor to now when
+-         * the grid fell far behind (the device dropped reports during a
+-         * stall) so the timeline jumps forward instead of compressing. */
+-        uint32_t newest = pop_offset_valid_
+-                ? pop_offset_us_ + (static_cast<uint32_t>(n) * EXO_BNO85_RV_REPORT_INTERVAL_US)
+-                : micros32();
+-        if ((static_cast<int32_t>(micros32() - newest)) >
+-                static_cast<int32_t>(2U * EXO_BNO85_RV_REPORT_INTERVAL_US)) {
+-            newest = micros32();
+-        }
+         for (uint8_t i = 0U; i < n; ++i) {
+             out[i] = queue_[(q_head_ + i) & kQueueMask];
+-            out[i].offset_us = newest - (static_cast<uint32_t>(n - 1U - i) * EXO_BNO85_RV_REPORT_INTERVAL_US);
+         }
+         q_head_ = static_cast<uint8_t>((q_head_ + n) & kQueueMask);
+         q_count_ = static_cast<uint8_t>(q_count_ - n);
+-        pop_offset_us_ = newest;
+-        pop_offset_valid_ = true;
+         return n;
+     }
+@@ -419,66 +407,75 @@ private:
+     static void close(sh2_Hal_t *) {}
+ 
+     static int read(sh2_Hal_t *, uint8_t *buffer, unsigned len, uint32_t *timestamp_us) {
+         if (active_ == nullptr || len < kShtpHeaderLen) {
+             return 0;
+         }
+-        uint16_t read_len =
+-            (active_->next_read_len_ > len) ? static_cast<uint16_t>(len) : active_->next_read_len_;
+-        if (read_len > kMaxI2cReadLen) {
+-            read_len = kMaxI2cReadLen;
++        if (active_->interrupt_port_ != nullptr && active_->interrupt_pin_ != 0U &&
++                HAL_GPIO_ReadPin(active_->interrupt_port_, active_->interrupt_pin_) != GPIO_PIN_RESET) {
++            return 0;
+         }
+-        const HAL_StatusTypeDef read_status =
+-            HAL_I2C_Master_Receive(&active_->bus_, active_->address_, buffer, read_len, 20U);
+-        if (read_len == kShtpHeaderLen) {
+-            active_->last_read_header_hal_status_ = read_status;
+-        } else {
+-            active_->last_read_packet_hal_status_ = read_status;
+-        }
++
++        uint8_t header[kShtpHeaderLen] = {0U, 0U, 0U, 0U};
++        const HAL_StatusTypeDef header_status =
++            HAL_I2C_Master_Receive(&active_->bus_, active_->address_, header, kShtpHeaderLen, 20U);
++        active_->last_read_header_hal_status_ = header_status;
+ #if EXO_BNO85_I2C_TRACE
+-        debug.snprint("BNO I2C RX st=%d err=0x%08lX len=%u raw=[%02X %02X %02X %02X]\r\n",
+-                      static_cast<int>(read_status),
++        debug.snprint("BNO I2C HDR st=%d err=0x%08lX raw=[%02X %02X %02X %02X]\r\n",
++                      static_cast<int>(header_status),
+                       static_cast<unsigned long>(HAL_I2C_GetError(&active_->bus_)),
+-                      static_cast<unsigned>(read_len),
+-                      buffer[0], buffer[1], buffer[2], buffer[3]);
++                      header[0], header[1], header[2], header[3]);
+ #endif
+-        if (read_status != HAL_OK) {
++        if (header_status != HAL_OK) {
+             active_->last_i2c_error_ = HAL_I2C_GetError(&active_->bus_);
+-            active_->next_read_len_ = kShtpHeaderLen;
+             return 0;
+         }
+-        active_->last_i2c_error_ = 0U;
+-        const uint16_t transfer_len = static_cast<uint16_t>((buffer[1] << 8U) | buffer[0]) & 0x7FFFU;
++        const uint16_t transfer_len =
++            static_cast<uint16_t>((static_cast<uint16_t>(header[1]) << 8U) | header[0]) & 0x7FFFU;
+ #if EXO_BNO85_I2C_TRACE
+         debug.snprint("BNO I2C RX parsed transfer_len=%u chan=%u seq=%u\r\n",
+                       static_cast<unsigned>(transfer_len),
+-                      static_cast<unsigned>(buffer[2]),
+-                      static_cast<unsigned>(buffer[3]));
++                      static_cast<unsigned>(header[2]),
++                      static_cast<unsigned>(header[3]));
+ #endif
+         if (transfer_len < kShtpHeaderLen || transfer_len > len) {
+-#if EXO_BNO85_I2C_TRACE
+-            debug.snprint("BNO I2C RX invalid transfer_len=%u (max=%u)\r\n",
+-                          static_cast<unsigned>(transfer_len),
+-                          static_cast<unsigned>(len));
+-#endif
+-            active_->next_read_len_ = kShtpHeaderLen;
+             return 0;
+         }
+ 
+-        // Every BNO08x I2C read begins with a fresh SHTP header. If this
+-        // transaction only returned part of the cargo, the next read must ask
+-        // for the remainder plus the next transfer header.
+-        if (transfer_len > read_len) {
+-            active_->next_read_len_ =
+-                static_cast<uint16_t>((transfer_len - read_len) + kShtpHeaderLen);
+-        } else {
+-            active_->next_read_len_ = kShtpHeaderLen;
++        /* sh2_hal.h requires a complete SHTP transfer or 0. BNO08x prepends
++         * the same 4-byte SHTP header to every physical I2C chunk, so rebuild
++         * the transfer here and hide physical chunking from shtp_service(). */
++        uint8_t chunk[kMaxI2cReadLen] = {};
++        uint16_t cargo_remaining = transfer_len;
++        uint16_t copied = 0U;
++        bool first_read = true;
++        *timestamp_us = micros32();
++        while (cargo_remaining > 0U) {
++            uint16_t read_len = first_read
++                ? ((cargo_remaining < kMaxI2cReadLen) ? cargo_remaining : kMaxI2cReadLen)
++                : static_cast<uint16_t>(cargo_remaining + kShtpHeaderLen);
++            if (read_len > kMaxI2cReadLen) {
++                read_len = kMaxI2cReadLen;
++            }
++            const HAL_StatusTypeDef packet_status =
++                HAL_I2C_Master_Receive(&active_->bus_, active_->address_, chunk, read_len, 20U);
++            active_->last_read_packet_hal_status_ = packet_status;
++            if (packet_status != HAL_OK) {
++                active_->last_i2c_error_ = HAL_I2C_GetError(&active_->bus_);
++                return 0;
++            }
++            const uint16_t cargo_read = first_read
++                ? read_len
++                : static_cast<uint16_t>(read_len - kShtpHeaderLen);
++            if (cargo_read == 0U || cargo_read > cargo_remaining) {
++                return 0;
++            }
++            memcpy(buffer + copied,
++                   first_read ? chunk : (chunk + kShtpHeaderLen),
++                   cargo_read);
++            copied = static_cast<uint16_t>(copied + cargo_read);
++            cargo_remaining = static_cast<uint16_t>(cargo_remaining - cargo_read);
++            first_read = false;
+         }
+-#if EXO_BNO85_I2C_TRACE
+-        debug.snprint("BNO I2C RX-DONE got=%u next=%u first=[%02X %02X %02X %02X]\r\n",
+-                      static_cast<unsigned>(read_len),
+-                      static_cast<unsigned>(active_->next_read_len_),
+-                      buffer[0], buffer[1], buffer[2], buffer[3]);
+-#endif
+-        *timestamp_us = get_time_us(nullptr);
+-        return static_cast<int>(read_len);
++        active_->last_i2c_error_ = 0U;
++        return static_cast<int>(transfer_len);
+     }
+@@ -552,6 +555,7 @@ private:
+                 active_->latest_quat_real_ = active_->latest_.un.gameRotationVector.real;
+                 active_->latest_available_mask_ |= 0x01U;
+                 active_->has_rotation_ = true;
++                active_->has_new_data_ = true;
+                 break;
+             case SH2_LINEAR_ACCELERATION:
+                 active_->latest_linear_accel_x_ = active_->latest_.un.linearAcceleration.x;
+@@ -581,12 +585,11 @@ private:
+             active_->latest_sequence_ = active_->latest_.sequence;
+             active_->latest_sensor_timestamp_us_ = static_cast<uint32_t>(active_->latest_.timestamp);
+             active_->latest_delay_us_ = active_->latest_.delay;
+-            active_->has_new_data_ = true;
+             /* The anchor report seals one queued sample from the merged
+              * latest values; auxiliary reports only refresh the merge. */
+             if (id == SH2_GAME_ROTATION_VECTOR && active_->capture_queue_enabled_) {
+                 active_->push_capture_sample_();
+             }
+         }
+     }
+ 
+@@ -599,7 +601,12 @@ private:
+             return;
+         }
+         Bno85Sample sample { };
+-        /* offset_us is assigned on pop from the uniform report grid. */
++        if (!capture_timestamp_origin_valid_) {
++            capture_timestamp_origin_us_ = latest_sensor_timestamp_us_;
++            capture_timestamp_origin_valid_ = true;
++        }
++        sample.offset_us =
++            static_cast<uint32_t>(latest_sensor_timestamp_us_ - capture_timestamp_origin_us_);
+         sample.quat_i = latest_quat_i_;
+         sample.quat_j = latest_quat_j_;
+         sample.quat_k = latest_quat_k_;
+@@ -675,7 +682,6 @@ private:
+ #endif
+     uint8_t last_report_id_ = 0U;
+     int last_decode_status_ = SH2_ERR;
+-    uint16_t next_read_len_ = kShtpHeaderLen;
+     GPIO_TypeDef *interrupt_port_ = nullptr;
+     uint16_t interrupt_pin_ = 0U;
+     Bno85Sample queue_[EXO_BNO85_SAMPLE_QUEUE_DEPTH] { };
+@@ -684,8 +690,8 @@ private:
+     uint8_t q_count_ = 0U;
+     uint32_t queue_drops_ = 0U;
+     bool capture_queue_enabled_ = false;
+-    bool pop_offset_valid_ = false;
+-    uint32_t pop_offset_us_ = 0U;
++    bool capture_timestamp_origin_valid_ = false;
++    uint32_t capture_timestamp_origin_us_ = 0U;
+     inline static Bno85Stm32 *active_ = nullptr;
+ };
+ 
+diff --git a/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h b/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
+--- a/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
++++ b/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
+@@ -96,4 +96,4 @@ public:
+-    /* Master-only recording path. Nodes intentionally keep their proven
+-     * 5 ms register scheduler. The FIFO captures real 200 Hz accel+gyro frames
+-     * independently of the Master superloop, so draining several frames later
++    /* Recording path shared by Master and Nodes. The FIFO captures real
++     * 200 Hz accel+gyro frames independently of the foreground superloop,
++     * so draining several frames later
+      * never fabricates repeated register snapshots. */
+diff --git a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+--- a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+@@ -137,13 +137,20 @@ public:
+     }
+ 
+     uint8_t drain_record_bno_samples(Bno85Sample *samples, uint8_t capacity) {
+-        if (!record_bno_queue_active_) return 0U;
+         return bno85_.pop_samples(samples, capacity);
+     }
+ 
++    void freeze_record_bno_capture() {
++        bno85_.set_capture_queue_enabled(false);
++        record_bno_queue_active_ = false;
++    }
++
++    void clear_record_bno_samples() {
++        bno85_.clear_capture_queue();
++    }
++
+     void end_record_capture() {
+-        bno85_.set_capture_queue_enabled(false);
+-        record_bno_queue_active_ = false;
++        freeze_record_bno_capture();
+         if (!record_icm_fifo_active_) return;
+         (void)icm45686_.end_fifo_capture();
+         record_icm_fifo_active_ = false;
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+@@ -186,6 +186,7 @@ public:
+                     return false;
+                 }
+                 finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
++                bno85_.set_capture_queue_enabled(false);
+                 record_finalize_pending_ = true;
+                 set_live_stream_enabled(false);
+                 return true;
+@@ -209,6 +210,16 @@ public:
+                 if (!ready_) {
+                     return;
+                 }
+-                // Keep sensors serviced continuously so first recorded samples don't incur startup latency.
+-                bno85_.service();
++                const RecorderState current_state = recorder_.state();
++                const bool transfer_priority =
++                    current_state == RecorderState::ReadyForUpload ||
++                    current_state == RecorderState::Uploading ||
++                    current_state == RecorderState::AwaitingAck ||
++                    current_state == RecorderState::EraseAfterAck;
++                /* Once capture has finalized, BLE upload/control has priority.
++                 * Do not burn foreground time draining a sensor stream whose
++                 * samples cannot be used in the retained session. */
++                if (!transfer_priority && !record_finalize_pending_) {
++                    bno85_.service();
++                }
+                 if (armed_) {
+@@ -243,5 +253,8 @@ public:
+                         return;
+                     }
+                 }
++                if (transfer_priority) {
++                    return;
++                }
+                 if (recorder_.state() != RecorderState::Recording) {
+                     const uint32_t now_us = HAL_GetTick() * 1000U;
+@@ -329,5 +342,10 @@ public:
+                     return false;
+                 }
+                 bno85_.set_capture_queue_enabled(false);
++                bno85_.clear_capture_queue();
++                if (record_icm_fifo_active_) {
++                    (void)icm45686_.end_fifo_capture();
++                    record_icm_fifo_active_ = false;
++                }
+                 armed_ = false;
+                 prepared_ = false;
+@@ -232,6 +245,7 @@ public:
+                         return;
+                     }
+                     bno85_.set_capture_queue_enabled(true);
++                    record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
+                     reset_capture_schedule();
+                     record_finalize_pending_ = false;
+                     reset_data_rate_log();
+@@ -470,6 +484,7 @@ private:
+                     return false;
+                 }
+                 bno85_.set_capture_queue_enabled(true);
++                record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
+                 reset_capture_schedule();
+                 record_finalize_pending_ = false;
+                 reset_data_rate_log();
+@@ -568,28 +583,44 @@ private:
+-            uint8_t catchup = 0U;
+-                while (record_next_icm_us_ < duration_us &&
+-                        static_cast<int32_t>(elapsed_us - record_next_icm_us_) >= 0 && catchup < 4U) {
+-                    ++icm_attempted_count_;
+-                    Icm45686Sample sample { };
+-                    if (icm45686_.read_sample(record_next_icm_us_, sample)) {
+-                        sample.sequence = icm_captured_count_;
+-                        ++icm_captured_count_;
+-                        ++data_rate_icm_count_;
+-                        if (!icm_record_buf_.enqueue(sample)) {
+-                            loss_flags_ |= kSessionLossIcmBuffer;
+-                        }
+-                        (void)live_queue_.offer(kIcmLiveSensorId, &sample,
+-                                static_cast<uint8_t>(sizeof(sample)),
+-                                recording_started_ms_ + (record_next_icm_us_ / 1000U));
+-                    } else {
+-                        loss_flags_ |= kSessionLossIcmRead;
+-                    }
+-                    record_next_icm_us_ += kIcmPeriodUs;
+-                    ++catchup;
+-                }
++            if (record_icm_fifo_active_) {
++                const uint8_t icm_count =
++                    icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
++                for (uint8_t i = 0U; i < icm_count; ++i) {
++                    ++icm_captured_count_;
++                    ++data_rate_icm_count_;
++                    if (!icm_record_buf_.enqueue(icm_drain_buf_[i])) {
++                        loss_flags_ |= kSessionLossIcmBuffer;
++                    }
++                    (void)live_queue_.offer(kIcmLiveSensorId, &icm_drain_buf_[i],
++                            static_cast<uint8_t>(sizeof(icm_drain_buf_[i])),
++                            recording_started_ms_ + (icm_drain_buf_[i].offset_us / 1000U));
++                }
++            } else {
++                uint8_t catchup = 0U;
++                while (record_next_icm_us_ < duration_us &&
++                        static_cast<int32_t>(elapsed_us - record_next_icm_us_) >= 0 && catchup < 4U) {
++                    ++icm_attempted_count_;
++                    Icm45686Sample sample { };
++                    if (icm45686_.read_sample(record_next_icm_us_, sample)) {
++                        sample.sequence = icm_captured_count_;
++                        ++icm_captured_count_;
++                        ++data_rate_icm_count_;
++                        if (!icm_record_buf_.enqueue(sample)) {
++                            loss_flags_ |= kSessionLossIcmBuffer;
++                        }
++                        (void)live_queue_.offer(kIcmLiveSensorId, &sample,
++                                static_cast<uint8_t>(sizeof(sample)),
++                                recording_started_ms_ + (record_next_icm_us_ / 1000U));
++                    } else {
++                        loss_flags_ |= kSessionLossIcmRead;
++                    }
++                    record_next_icm_us_ += kIcmPeriodUs;
++                    ++catchup;
++                }
++            }
+ 
+             if (elapsed_us >= duration_us &&
+-                    record_next_icm_us_ >= duration_us) {
++                    (record_icm_fifo_active_ || record_next_icm_us_ >= duration_us)) {
+                 finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
++                bno85_.set_capture_queue_enabled(false);
+                 record_finalize_pending_ = true;
+                 set_live_stream_enabled(false);
+             }
+@@ -677,7 +692,42 @@ private:
+                 if (!record_finalize_pending_ || recorder_.state() != RecorderState::Recording) {
+                     return;
+                 }
+-                bno85_.set_capture_queue_enabled(false);
++                /* Freeze the producer, then drain the preserved tail before
++                 * declaring the double-buffer partial batch final. */
++                bno85_.set_capture_queue_enabled(false);
++                const uint8_t bno_tail = bno85_.pop_samples(
++                    bno_drain_buf_, kMaxBnoDrainPerTick);
++                for (uint8_t i = 0U; i < bno_tail; ++i) {
++                    ++bno_captured_count_;
++                    ++data_rate_bno_count_;
++                    if (!bno_record_buf_.enqueue(bno_drain_buf_[i])) {
++                        loss_flags_ |= kSessionLossBnoBuffer;
++                    }
++                }
++                if (bno_tail != 0U) {
++                    process_writer_budget();
++                    return;
++                }
++                if (record_icm_fifo_active_) {
++                    const uint8_t icm_tail =
++                        icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
++                    for (uint8_t i = 0U; i < icm_tail; ++i) {
++                        ++icm_captured_count_;
++                        ++data_rate_icm_count_;
++                        if (!icm_record_buf_.enqueue(icm_drain_buf_[i])) {
++                            loss_flags_ |= kSessionLossIcmBuffer;
++                        }
++                    }
++                    if (icm_tail >= kMaxIcmDrainPerTick) {
++                        process_writer_budget();
++                        return;
++                    }
++                    /* Less than a full drain means we caught the FIFO tail.
++                     * Stop it immediately so new frames cannot keep finalization
++                     * alive forever. */
++                    (void)icm45686_.end_fifo_capture();
++                    record_icm_fifo_active_ = false;
++                }
+                 bno_record_buf_.mark_partial_pending();
+                 icm_record_buf_.mark_partial_pending();
+                 process_writer_budget();
+@@ -704,9 +738,12 @@ private:
+                 bno_attempted_count_ = (expected_bno > stored_bno) ? expected_bno : stored_bno;
+                 icm_attempted_count_ = (expected_icm > stored_icm) ? expected_icm : stored_icm;
+                 const uint32_t bno_local_loss =
+-                        bno_record_buf_.drops + bno_append_fail_count_;
++                        bno85_.queue_drops() + bno_record_buf_.drops + bno_append_fail_count_;
+                 const uint32_t icm_local_loss =
+                         icm_record_buf_.drops + icm_append_fail_count_;
++                if (bno85_.queue_drops() != 0U) {
++                    loss_flags_ |= kSessionLossBnoBuffer;
++                }
+                 if ((bno_attempted_count_ - stored_bno) > bno_local_loss) {
+                     loss_flags_ |= kSessionLossBnoRead;
+                 }
+@@ -734,5 +771,6 @@ private:
+                             static_cast<unsigned long>(recorder_.header().bno85_sample_count),
+                             static_cast<unsigned long>(recorder_.header().icm45686_sample_count));
+                 }
++                bno85_.clear_capture_queue();
+                 record_finalize_pending_ = false;
+             }
+@@ -776,3 +836,4 @@ private:
+             static constexpr uint32_t kBnoBatchSamples = 8U;
+             static constexpr uint32_t kIcmBatchSamples = 8U;
+             static constexpr uint8_t kFlushBatchesPerTick = 4U;
++            static constexpr uint8_t kMaxIcmDrainPerTick = 16U;
+@@ -794,3 +855,5 @@ private:
+             DoubleBatchBuffer<Bno85Sample, kBnoBatchSamples> bno_record_buf_ { };
+             DoubleBatchBuffer<Icm45686Sample, kIcmBatchSamples> icm_record_buf_ { };
+             Bno85Sample bno_drain_buf_[kMaxBnoDrainPerTick] { };
++            Icm45686Sample icm_drain_buf_[kMaxIcmDrainPerTick] { };
++            bool record_icm_fifo_active_ = false;
+diff --git a/Firmware/Node/Core/Src/main.c b/Firmware/Node/Core/Src/main.c
+--- a/Firmware/Node/Core/Src/main.c
++++ b/Firmware/Node/Core/Src/main.c
+@@ -1707,8 +1707,11 @@ int main(void)
+         static bool ignore_touch_until_release = (HAL_GPIO_ReadPin(TOUCH_MCU_GPIO_Port, TOUCH_MCU_Pin) == GPIO_PIN_SET);
+ 
+ #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
+-        node_recording_app.process();
+-        node_blepipe_process_live_samples();
++        /* BLE/control owns the foreground immediately after StopRecord. Process
++         * retained-session upload/status before sensor housekeeping so a busy
++         * BNO can never starve the reliable transport. */
+         node_blepipe_process_recording_upload();
++        node_blepipe_process_live_samples();
+         (void)node_blepipe_send_record_ready_status(false);
++        node_recording_app.process();
+ #endif
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -1034,5 +1034,6 @@ namespace {
+     __attribute__((optimize("Os"))) static void local_record_reset()
+     {
+         hub_sensor_test_app.end_record_capture();
++        hub_sensor_test_app.clear_record_bno_samples();
+         g_local_stop_waiting_for_nodes = false;
+         g_local_record_phase = LocalRecordPhase::Idle;
+@@ -2648,7 +2649,38 @@ namespace {
+             EXO_LOG("[BLE][HUB][STOP] automatic capacity guard session=%lu elapsed_ms=%lu\r\n",
+                     static_cast<unsigned long>(safety_stop.session_id),
+                     static_cast<unsigned long>(elapsed_ms));
+         }
+         g_local_finalize_duration_ms = elapsed_ms;
++        /* Stop accepting new GRV reports first, then persist every queued tail
++         * sample before the session CRC/header are finalized. */
++        hub_sensor_test_app.freeze_record_bno_capture();
++        {
++            exo::Bno85Sample bno_tail[16] {};
++            for (;;) {
++                const uint8_t tail_count = hub_sensor_test_app.drain_record_bno_samples(
++                    bno_tail, static_cast<uint8_t>(sizeof(bno_tail) / sizeof(bno_tail[0])));
++                if (tail_count == 0U) {
++                    break;
++                }
++                for (uint8_t i = 0U; i < tail_count; ++i) {
++#if EXO_ACQ_DIAG_SUPPRESS_SD
++                    const bool stored = true;
++#else
++                    const bool stored = g_local_session_recorder.append_bno85(bno_tail[i]);
++#endif
++                    if (!stored) {
++                        ++g_local_bno_append_fail;
++                    }
++#if EXO_ACQ_DIAG_ENABLE
++                    if (stored) {
++                        ++g_acq_diag.sd_bno_append_ok;
++                    } else {
++                        ++g_acq_diag.sd_bno_append_fail;
++                    }
++#endif
++                }
++            }
++        }
+         hub_sensor_test_app.end_record_capture();
++        hub_sensor_test_app.clear_record_bno_samples();
+ #if EXO_ACQ_DIAG_ENABLE
+@@ -3097,4 +3128,4 @@ namespace {
+-            uint8_t training_report[9];
++            uint8_t training_report[11];
+             training_report[0] = static_cast<uint8_t>(training_state);
+             training_report[1] = master_training_csv_coordinator.expected_source_mask();
+             training_report[2] = training_completed_mask;
+@@ -3108,5 +3141,7 @@ namespace {
+             training_report[6] = static_cast<uint8_t>(master_training_csv_coordinator.failure_stager_result());
+             training_report[7] = static_cast<uint8_t>(master_training_csv_coordinator.failure_csv_operation());
+             training_report[8] = static_cast<uint8_t>(master_training_csv_coordinator.failure_csv_result());
++            training_report[9] = master_training_csv_coordinator.failed_source_mask();
++            training_report[10] = master_training_csv_coordinator.cleanup_pending_mask();
+             (void) Custom_APP_SendCmdReport(kTrainingCsvStatusReportId,
+                     training_report, static_cast<uint8_t>(sizeof(training_report)));
+@@ -3442,25 +3477,43 @@ int main(void)
+         /* Exactly one notification attempt per loop iteration: a failed send
+          * leaves the sample pending and keeps the preference so it is retried
+          * first on the next iteration. */
+         if (g_ble_stream_enabled_now) {
+-            const bool try_icm = ble_prefer_icm_next;
+-            if (try_icm && ble_icm_send_pending) {
++            if (ble_prefer_icm_next && ble_icm_send_pending) {
+                 if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Icm45686),
+                         reinterpret_cast<const uint8_t*>(&ble_pending_icm_sample),
+                         static_cast<uint8_t>(sizeof(ble_pending_icm_sample)))) {
+                     ble_icm_send_pending = false;
+                     ble_prefer_icm_next = false;
+                 } else {
+                     ++g_ble_tx_drop_count;
+                 }
+-            } else if (!try_icm && ble_bno_send_pending) {
++            } else if (!ble_prefer_icm_next && ble_bno_send_pending) {
+                 if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Bno85),
+                         reinterpret_cast<const uint8_t*>(&ble_pending_bno_sample),
+                         static_cast<uint8_t>(sizeof(ble_pending_bno_sample)))) {
+                     ble_bno_send_pending = false;
+                     ble_prefer_icm_next = true;
+                 } else {
+                     ++g_ble_tx_drop_count;
+                 }
++            } else if (ble_icm_send_pending) {
++                /* Preferred source has no frame: do not idle the BLE lane. */
++                if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Icm45686),
++                        reinterpret_cast<const uint8_t*>(&ble_pending_icm_sample),
++                        static_cast<uint8_t>(sizeof(ble_pending_icm_sample)))) {
++                    ble_icm_send_pending = false;
++                    ble_prefer_icm_next = false;
++                } else {
++                    ++g_ble_tx_drop_count;
++                }
++            } else if (ble_bno_send_pending) {
++                if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Bno85),
++                        reinterpret_cast<const uint8_t*>(&ble_pending_bno_sample),
++                        static_cast<uint8_t>(sizeof(ble_pending_bno_sample)))) {
++                    ble_bno_send_pending = false;
++                    ble_prefer_icm_next = true;
++                } else {
++                    ++g_ble_tx_drop_count;
++                }
+             }
+         } else {
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -2718,14 +2718,17 @@
+   function decodeTrainingCsvStatus(data, reportLen) {
+     const hasFailureSite = reportLen >= 9;
++    const hasMasks = reportLen >= 11;
+     return {
+       state: data[3],
+       expected: data[4],
+       completed: data[5],
+       failureSite: hasFailureSite ? data[6] : 0xFF,
+       failureNode: hasFailureSite ? data[7] : data[6],
+       stageOp: hasFailureSite ? data[8] : data[7],
+       stageFr: hasFailureSite ? data[9] : data[8],
+       csvOp: hasFailureSite ? data[10] : data[9],
+-      csvFr: hasFailureSite ? data[11] : data[10]
++      csvFr: hasFailureSite ? data[11] : data[10],
++      failedSourceMask: hasMasks ? data[12] : 0,
++      cleanupPendingMask: hasMasks ? data[13] : 0
+     };
+   }
+@@ -2748,3 +2752,13 @@
+-  function applyTrainingCsvTerminalState(trainingState) {
++  function applyTrainingCsvTerminalState(trainingState, expected = null, completed = null, failed = null) {
++    expected = expected ?? state.trainingCsv?.expected ?? 0;
++    completed = completed ?? state.trainingCsv?.completed ?? 0;
++    failed = failed ?? state.trainingCsv?.failed ?? 0;
+     if (trainingState === 9) {
++      if (expected !== 0 && ((completed & expected) !== expected)) {
++        state.pendingTrainingTerminalState = null;
++        state.awaitingRecordDone = false;
++        state.startRecordInFlight = false;
++        setSessionState(failed ? "Error" : "Incomplete");
++        return true;
++      }
+       // Node uploads the Master staged are read-only here and are expected to be
+@@ -3370,13 +3380,15 @@
+         const status = decodeTrainingCsvStatus(data, reportLen);
+         const {
+           state: st, expected, completed, failureSite, failureNode,
+-          stageOp, stageFr, csvOp, csvFr
++          stageOp, stageFr, csvOp, csvFr, failedSourceMask, cleanupPendingMask
+         } = status;
+-        state.trainingCsv = { state: st, expected, completed };
++        state.trainingCsv = { state: st, expected, completed, failed: failedSourceMask, cleanupPending: cleanupPendingMask };
+         const sdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
+         let line = `Master SD Collection: state=${sdState}` +
+           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
++        if (failedSourceMask) line += ` failed=${srcMask(failedSourceMask)}`;
++        if (cleanupPendingMask) line += ` cleanup_pending=${srcMask(cleanupPendingMask)}`;
+         if (st === 9) {
+-          setSessionState("Complete");
++          setSessionState(expected !== 0 && ((completed & expected) !== expected) ? "Incomplete" : "Complete");
+         } else if (st === 10 || st === 11) {
+           setSessionState("Error");
+@@ -3389,9 +3401,9 @@
+         }
+         resetTransferUi(`Master SD Collection: ${sdState} \u00b7 ${srcMask(completed)} complete`);
+         renderDevices();
+-        if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
++        if ((st === 10 || st === 11) && failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
+         if (failureNode) line += ` node=NODE${failureNode}`;
+         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
+         if (csvOp || csvFr) line += ` csv_op=${csvOp} csv_fr=${csvFr}(${FRESULT_NAMES[csvFr] ?? "?"})`;
+         log(line);
+-        applyTrainingCsvTerminalState(st);
++        applyTrainingCsvTerminalState(st, expected, completed, failedSourceMask);
+@@ -6120,4 +6132,25 @@
+     return cached;
+   }
+ 
++  function liveExpectedCadenceMs(arr, sourceId) {
++    if (arr && arr.length >= 3) {
++      const deltas = [];
++      const start = Math.max(1, arr.length - 32);
++      for (let i = start; i < arr.length; i += 1) {
++        const delta = arr[i].x - arr[i - 1].x;
++        if (Number.isFinite(delta) && delta > 0 && delta < 1000) {
++          deltas.push(delta);
++        }
++      }
++      if (deltas.length > 0) {
++        deltas.sort((a, b) => a - b);
++        const median = deltas[Math.floor(deltas.length / 2)];
++        if (Number.isFinite(median)) {
++          return Math.max(5, Math.min(250, median));
++        }
++      }
++    }
++    return sourceId === 0 ? 20 : 40;
++  }
++
+   function graphGapBands(sourceId, chart, viewport) {
+@@ -6139,9 +6172,8 @@
+     } else {
+       const arr = state.liveTraceStore.get(liveKey(sourceId, chart.sensor, chart.signals[0])) || [];
+       if (arr.length > 1) {
+-        // Use actual sensor period for gap detection, not stream interval.
+-        // ICM runs at ~200Hz (5ms period), BNO at ~100Hz (10ms period).
+-        const sensorPeriodMs = chart.sensor === SENSOR.ICM ? GRAPH_FALLBACK_ICM_PERIOD_MS : GRAPH_FALLBACK_BNO_PERIOD_MS;
+-        bands = findGapBands(arrayAccessor(arr), viewport, sensorPeriodMs);
++        /* Live preview is intentionally decimated; classify gaps against the
++         * observed delivery cadence, not the physical sensor ODR. */
++        bands = findGapBands(arrayAccessor(arr), viewport, liveExpectedCadenceMs(arr, sourceId));
+       }
+     }
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -8,5 +8,6 @@ hub = (ROOT / "Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h").read_text()
+ node = (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h").read_text()
+ master = (ROOT / "Firmware/Master/Core/Src/main.c").read_text()
+ recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_text()
++node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
+ 
+ checks = [
+@@ -16,4 +17,11 @@ checks = [
+     ("HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET" in bno,
+      "BNO service must gate reads from the active-low data-ready level"),
+-    ("next_read_len_ != kShtpHeaderLen" in bno,
+-     "BNO service must finish partial SHTP transfers regardless of INT level"),
++    ("next_read_len_" not in bno,
++     "BNO HAL must not expose physical I2C chunking as SHTP fragments"),
++    ("cargo_remaining" in bno and "chunk + kShtpHeaderLen" in bno and
++     "return static_cast<int>(transfer_len)" in bno,
++     "BNO HAL must reconstruct one complete SHTP transfer per read"),
++    ("#define EXO_BNO85_AUX_REPORT_INTERVAL_US 20000U" in bno,
++     "BNO auxiliary reports must be 50 Hz, not the accidental 200 Hz load"),
++    ("clear_capture_queue()" in bno and "capture_timestamp_origin_us_" in bno,
++     "BNO capture queue must preserve a drainable tail and use sensor-relative time"),
+@@ -38,4 +45,14 @@ checks = [
+     ("expected_bno" in recorder and "expected_icm" in recorder and
+      "kSessionLossBnoRead" in recorder and "kSessionLossIcmRead" in recorder,
+      "Master SessionHeader must truthfully expose acquisition shortfall"),
++    ("freeze_record_bno_capture" in master and "drain_record_bno_samples" in master,
++     "Master stop must freeze then drain the final BNO queue tail"),
++    ("begin_fifo_capture_200hz" in node and "read_fifo_samples(icm_drain_buf_" in node and
++     "record_icm_fifo_active_" in node,
++     "Node recording must use the real 200 Hz ICM FIFO instead of synthetic catch-up reads"),
++    (node_main.index("node_blepipe_process_recording_upload();") <
++     node_main.index("node_recording_app.process();"),
++     "Node reliable upload/control must run before sensor housekeeping"),
++    ("Preferred source has no frame" in master,
++     "Master live BLE sender must fall back when the preferred sensor has no frame"),
+ ]
+diff --git a/Firmware/HostTests/test_desktop_binary_first.py b/Firmware/HostTests/test_desktop_binary_first.py
+--- a/Firmware/HostTests/test_desktop_binary_first.py
++++ b/Firmware/HostTests/test_desktop_binary_first.py
+@@ -22,3 +22,9 @@ checks = [
+     ("Do not start a new session" in HTML,
+      "incomplete-session UI must protect retained Node data from accidental reset"),
++    ("failedSourceMask" in HTML and "cleanupPendingMask" in HTML,
++     "Master SD status UI must expose failed/cleanup source masks"),
++    ("(completed & expected) !== expected" in HTML,
++     "Master SD Complete state must not hide an incomplete expected-source mask"),
++    ("liveExpectedCadenceMs" in HTML,
++     "live graph gap detection must use preview delivery cadence"),
+     ("TRAIN CSV:" not in HTML, "legacy TRAIN CSV user-facing status must be removed"),

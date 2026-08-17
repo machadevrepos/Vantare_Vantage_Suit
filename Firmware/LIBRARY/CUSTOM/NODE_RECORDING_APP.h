@@ -201,6 +201,7 @@ namespace exo {
 					return false;
 				}
 				finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
+				bno85_.set_capture_queue_enabled(false);
 				record_finalize_pending_ = true;
 				set_live_stream_enabled(false);
 				return true;
@@ -222,8 +223,18 @@ namespace exo {
 				if (!ready_) {
 					return;
 				}
-				// Keep sensors serviced continuously so first recorded samples don't incur startup latency.
-				bno85_.service();
+				const RecorderState current_state = recorder_.state();
+				const bool transfer_priority =
+						current_state == RecorderState::ReadyForUpload ||
+						current_state == RecorderState::Uploading ||
+						current_state == RecorderState::AwaitingAck ||
+						current_state == RecorderState::EraseAfterAck;
+				/* Once capture has finalized, BLE upload/control has priority.
+				 * Do not burn foreground time draining a sensor stream whose
+				 * samples cannot be used in the retained session. */
+				if (!transfer_priority && !record_finalize_pending_) {
+					bno85_.service();
+				}
 				if (armed_) {
 					const uint32_t lead_time_ms = static_cast<uint32_t>(pending_start_.start_timestamp_us / 1000ULL);
 					const uint32_t elapsed_from_cmd_ms = HAL_GetTick() - armed_tick_ms_;
@@ -241,6 +252,7 @@ namespace exo {
 							return;
 						}
 						bno85_.set_capture_queue_enabled(true);
+						record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
 						reset_capture_schedule();
 						record_finalize_pending_ = false;
 						reset_data_rate_log();
@@ -255,6 +267,9 @@ namespace exo {
 					} else {
 						return;
 					}
+				}
+				if (transfer_priority) {
+					return;
 				}
 				if (recorder_.state() != RecorderState::Recording) {
 					const uint32_t now_us = HAL_GetTick() * 1000U;
@@ -333,6 +348,11 @@ namespace exo {
 					return false;
 				}
 				bno85_.set_capture_queue_enabled(false);
+				bno85_.clear_capture_queue();
+				if (record_icm_fifo_active_) {
+					(void)icm45686_.end_fifo_capture();
+					record_icm_fifo_active_ = false;
+				}
 				armed_ = false;
 				prepared_ = false;
 				armed_tick_ms_ = 0U;
@@ -467,6 +487,7 @@ namespace exo {
 					return false;
 				}
 				bno85_.set_capture_queue_enabled(true);
+				record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
 				reset_capture_schedule();
 				record_finalize_pending_ = false;
 				reset_data_rate_log();
@@ -589,7 +610,21 @@ namespace exo {
 						recording_started_ms_ + (bno_drain_buf_[i].offset_us / 1000U));
 			}
 
-			uint8_t catchup = 0U;
+			if (record_icm_fifo_active_) {
+				const uint8_t icm_count =
+						icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
+				for (uint8_t i = 0U; i < icm_count; ++i) {
+					++icm_captured_count_;
+					++data_rate_icm_count_;
+					if (!icm_record_buf_.enqueue(icm_drain_buf_[i])) {
+						loss_flags_ |= kSessionLossIcmBuffer;
+					}
+					(void)live_queue_.offer(kIcmLiveSensorId, &icm_drain_buf_[i],
+							static_cast<uint8_t>(sizeof(icm_drain_buf_[i])),
+							recording_started_ms_ + (icm_drain_buf_[i].offset_us / 1000U));
+				}
+			} else {
+				uint8_t catchup = 0U;
 				while (record_next_icm_us_ < duration_us &&
 						static_cast<int32_t>(elapsed_us - record_next_icm_us_) >= 0 && catchup < 4U) {
 					++icm_attempted_count_;
@@ -610,10 +645,12 @@ namespace exo {
 					record_next_icm_us_ += kIcmPeriodUs;
 					++catchup;
 				}
+			}
 
 			if (elapsed_us >= duration_us &&
-					record_next_icm_us_ >= duration_us) {
+					(record_icm_fifo_active_ || record_next_icm_us_ >= duration_us)) {
 					finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
+					bno85_.set_capture_queue_enabled(false);
 					record_finalize_pending_ = true;
 					set_live_stream_enabled(false);
 				}
@@ -687,7 +724,42 @@ namespace exo {
 				if (!record_finalize_pending_ || recorder_.state() != RecorderState::Recording) {
 					return;
 				}
+				/* Freeze the producer, then drain the preserved tail before
+				 * declaring the double-buffer partial batch final. */
 				bno85_.set_capture_queue_enabled(false);
+				const uint8_t bno_tail = bno85_.pop_samples(
+						bno_drain_buf_, kMaxBnoDrainPerTick);
+				for (uint8_t i = 0U; i < bno_tail; ++i) {
+					++bno_captured_count_;
+					++data_rate_bno_count_;
+					if (!bno_record_buf_.enqueue(bno_drain_buf_[i])) {
+						loss_flags_ |= kSessionLossBnoBuffer;
+					}
+				}
+				if (bno_tail != 0U) {
+					process_writer_budget();
+					return;
+				}
+				if (record_icm_fifo_active_) {
+					const uint8_t icm_tail =
+							icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
+					for (uint8_t i = 0U; i < icm_tail; ++i) {
+						++icm_captured_count_;
+						++data_rate_icm_count_;
+						if (!icm_record_buf_.enqueue(icm_drain_buf_[i])) {
+							loss_flags_ |= kSessionLossIcmBuffer;
+						}
+					}
+					if (icm_tail >= kMaxIcmDrainPerTick) {
+						process_writer_budget();
+						return;
+					}
+					/* Less than a full drain means we caught the FIFO tail.
+					 * Stop it immediately so new frames cannot keep finalization
+					 * alive forever. */
+					(void)icm45686_.end_fifo_capture();
+					record_icm_fifo_active_ = false;
+				}
 				bno_record_buf_.mark_partial_pending();
 			icm_record_buf_.mark_partial_pending();
 			process_writer_budget();
@@ -708,9 +780,12 @@ namespace exo {
 			bno_attempted_count_ = (expected_bno > stored_bno) ? expected_bno : stored_bno;
 			icm_attempted_count_ = (expected_icm > stored_icm) ? expected_icm : stored_icm;
 			const uint32_t bno_local_loss =
-					bno_record_buf_.drops + bno_append_fail_count_;
+					bno85_.queue_drops() + bno_record_buf_.drops + bno_append_fail_count_;
 			const uint32_t icm_local_loss =
 					icm_record_buf_.drops + icm_append_fail_count_;
+			if (bno85_.queue_drops() != 0U) {
+				loss_flags_ |= kSessionLossBnoBuffer;
+			}
 			if ((bno_attempted_count_ - stored_bno) > bno_local_loss) {
 				loss_flags_ |= kSessionLossBnoRead;
 			}
@@ -742,6 +817,7 @@ namespace exo {
 							static_cast<unsigned long>(recorder_.header().bno85_sample_count),
 							static_cast<unsigned long>(recorder_.header().icm45686_sample_count));
 				}
+				bno85_.clear_capture_queue();
 				record_finalize_pending_ = false;
 			}
 
@@ -773,6 +849,7 @@ namespace exo {
 			static constexpr uint32_t kBnoBatchSamples = 8U;
 			static constexpr uint32_t kIcmBatchSamples = 8U;
 			static constexpr uint8_t kFlushBatchesPerTick = 4U;
+			static constexpr uint8_t kMaxIcmDrainPerTick = 16U;
 
 			NodeRecordingConfig config_;
 			Bno85Stm32 bno85_;
@@ -789,6 +866,8 @@ namespace exo {
 			DoubleBatchBuffer<Bno85Sample, kBnoBatchSamples> bno_record_buf_ { };
 			DoubleBatchBuffer<Icm45686Sample, kIcmBatchSamples> icm_record_buf_ { };
 			Bno85Sample bno_drain_buf_[kMaxBnoDrainPerTick] { };
+			Icm45686Sample icm_drain_buf_[kMaxIcmDrainPerTick] { };
+			bool record_icm_fifo_active_ = false;
 			uint8_t bno_flush_rr_ = 0U;
 			uint8_t icm_flush_rr_ = 0U;
 			bool prefer_bno_flush_ = true;

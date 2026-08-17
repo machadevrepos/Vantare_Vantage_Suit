@@ -1717,10 +1717,13 @@ int main(void)
 		static bool ignore_touch_until_release = (HAL_GPIO_ReadPin(TOUCH_MCU_GPIO_Port, TOUCH_MCU_Pin) == GPIO_PIN_SET);
 
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
-		node_recording_app.process();
-		node_blepipe_process_live_samples();
+		/* BLE/control owns the foreground immediately after StopRecord. Process
+		 * retained-session upload/status before sensor housekeeping so a busy
+		 * BNO can never starve the reliable transport. */
 		node_blepipe_process_recording_upload();
+		node_blepipe_process_live_samples();
 		(void)node_blepipe_send_record_ready_status(false);
+		node_recording_app.process();
 #endif
 #if EXO_NODE_SENSOR_TEST_ENABLE
 		(void)hub_sensor_test_app.process();

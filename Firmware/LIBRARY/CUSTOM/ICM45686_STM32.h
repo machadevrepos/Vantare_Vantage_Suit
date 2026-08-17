@@ -108,9 +108,9 @@ public:
         return true;
     }
 
-    /* Master-only recording path. Nodes intentionally keep their proven
-     * 5 ms register scheduler. The FIFO captures real 200 Hz accel+gyro frames
-     * independently of the Master superloop, so draining several frames later
+    /* Recording path shared by Master and Nodes. The FIFO captures real
+     * 200 Hz accel+gyro frames independently of the foreground superloop,
+     * so draining several frames later
      * never fabricates repeated register snapshots. */
     bool begin_fifo_capture_200hz() {
         if (fifo_active_) return true;

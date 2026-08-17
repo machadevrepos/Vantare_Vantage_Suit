@@ -24,37 +24,29 @@ namespace exo {
 #define EXO_BNO85_REPORT_INTERVAL_US 10000U
 #endif
 
-/* The BNO08x caps every fused report (game rotation vector, linear
- * acceleration, gravity, calibrated gyro) at 400 Hz = 2500 us. The game
- * rotation vector anchors one recorded sample per report, so it runs at the
- * fusion maximum. The auxiliary reports run slower: every report costs the
- * superloop ~0.7 ms of blocking I2C, so 400 + 3x100 reports/s saturated the
- * Node loop (measured: GRV delivered at ~125 Hz, ICM sagged to ~125 Hz).
- * 400 + 3x50 = 550 reports/s leaves the loop headroom for flash flushes,
- * the ICM schedule and BLE. */
+/* The game rotation vector is the recorded anchor and runs at 400 Hz.
+ * Auxiliary values are merged into the next anchor sample and do not need
+ * the same cadence. 50 Hz keeps the total BNO report load near 550 reports/s
+ * (400 + 3x50) and leaves foreground time for BLE, flash and ICM service. */
 #ifndef EXO_BNO85_RV_REPORT_INTERVAL_US
 #define EXO_BNO85_RV_REPORT_INTERVAL_US 2500U
 #endif
 
 #ifndef EXO_BNO85_AUX_REPORT_INTERVAL_US
-#define EXO_BNO85_AUX_REPORT_INTERVAL_US 5000U
+#define EXO_BNO85_AUX_REPORT_INTERVAL_US 20000U
 #endif
 
-/* SHTP packets drained per service() call while recording. At 400 Hz +
- * 3x50 Hz the bus produces ~0.55 packets/ms, so the budget must cover the
- * backlog left by a worst-case superloop iteration (BLE + storage bursts). */
+/* Keep each foreground service burst bounded. A HAL read reconstructs one
+ * complete SHTP transfer, so this is a packet budget rather than an I2C
+ * fragment budget. */
 #ifndef EXO_BNO85_SERVICE_BUDGET
-#define EXO_BNO85_SERVICE_BUDGET 16U
+#define EXO_BNO85_SERVICE_BUDGET 8U
 #endif
 
-/* Packets drained per service() call while NOT recording. The sensor keeps
- * producing reports at the configured rate forever; draining them at the
- * full budget made idle loops (live preview, and especially the flash
- * upload phase after a recording) spend half their time in I2C, which
- * starved BLE and contributed to node upload stalls. Preview needs ~25 Hz,
- * which a small budget delivers while keeping the loop responsive. */
+/* Idle/live preview must never monopolize the superloop. Upload states skip
+ * sensor housekeeping entirely in NodeRecordingApp. */
 #ifndef EXO_BNO85_IDLE_SERVICE_BUDGET
-#define EXO_BNO85_IDLE_SERVICE_BUDGET 4U
+#define EXO_BNO85_IDLE_SERVICE_BUDGET 2U
 #endif
 
 /* Capture queue depth (power of two). While enabled, every game rotation
@@ -91,7 +83,6 @@ public:
         begin_open_status_ = SH2_ERR;
         begin_callback_status_ = SH2_ERR;
         begin_config_status_ = SH2_ERR;
-        next_read_len_ = kShtpHeaderLen;
         sh2_SensorConfig_t rv_config = {};
         rv_config.reportInterval_us = EXO_BNO85_RV_REPORT_INTERVAL_US;
         sh2_SensorConfig_t aux_config = {};
@@ -135,9 +126,10 @@ public:
         const int gyro_status = sh2_setSensorConfig(SH2_GYROSCOPE_CALIBRATED, &aux_config);
 #endif
         const int config_status =
-            (grv_status == SH2_OK || la_status == SH2_OK || grav_status == SH2_OK || gyro_status == SH2_OK)
-                ? SH2_OK
-                : grv_status;
+            (grv_status != SH2_OK) ? grv_status :
+            (la_status != SH2_OK) ? la_status :
+            (grav_status != SH2_OK) ? grav_status :
+            gyro_status;
         begin_config_status_ = config_status;
         last_begin_status_ = config_status;
         return config_status == SH2_OK;
@@ -161,9 +153,8 @@ public:
             return;
         }
         for (uint8_t serviced = 0U; serviced < max_packets; ++serviced) {
-            const bool continuation = next_read_len_ != kShtpHeaderLen;
             const bool pending = HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET;
-            if (!continuation && !pending) break;
+            if (!pending) break;
             sh2_service();
         }
     }
@@ -217,15 +208,22 @@ public:
      * ICM45686 hardware FIFO. */
     void set_capture_queue_enabled(bool enabled) {
         capture_queue_enabled_ = enabled;
+        if (enabled) {
+            /* A new capture starts with a clean queue. Disabling capture only
+             * freezes the producer; queued tail samples remain drainable. */
+            q_head_ = 0U;
+            q_count_ = 0U;
+            queue_drops_ = 0U;
+            capture_timestamp_origin_valid_ = false;
+            capture_timestamp_origin_us_ = 0U;
+        }
+    }
+
+    void clear_capture_queue() {
         q_head_ = 0U;
         q_count_ = 0U;
-        pop_offset_valid_ = false;
-        pop_offset_us_ = 0U;
-        if (enabled) {
-            /* Counters start clean per session; on disable they survive so
-             * the finalizer can still report the session's queue drops. */
-            queue_drops_ = 0U;
-        }
+        capture_timestamp_origin_valid_ = false;
+        capture_timestamp_origin_us_ = 0U;
     }
 
     bool capture_queue_enabled() const { return capture_queue_enabled_; }
@@ -239,26 +237,11 @@ public:
             return 0U;
         }
         const uint8_t n = (q_count_ < capacity) ? q_count_ : capacity;
-        /* The sensor samples on a uniform 1/rate grid; arrival times only
-         * reflect when the superloop drained the bus. Rebuild that grid:
-         * continue from the last assigned offset, or re-anchor to now when
-         * the grid fell far behind (the device dropped reports during a
-         * stall) so the timeline jumps forward instead of compressing. */
-        uint32_t newest = pop_offset_valid_
-                ? pop_offset_us_ + (static_cast<uint32_t>(n) * EXO_BNO85_RV_REPORT_INTERVAL_US)
-                : micros32();
-        if ((static_cast<int32_t>(micros32() - newest)) >
-                static_cast<int32_t>(2U * EXO_BNO85_RV_REPORT_INTERVAL_US)) {
-            newest = micros32();
-        }
         for (uint8_t i = 0U; i < n; ++i) {
             out[i] = queue_[(q_head_ + i) & kQueueMask];
-            out[i].offset_us = newest - (static_cast<uint32_t>(n - 1U - i) * EXO_BNO85_RV_REPORT_INTERVAL_US);
         }
         q_head_ = static_cast<uint8_t>((q_head_ + n) & kQueueMask);
         q_count_ = static_cast<uint8_t>(q_count_ - n);
-        pop_offset_us_ = newest;
-        pop_offset_valid_ = true;
         return n;
     }
 
@@ -428,65 +411,74 @@ private:
         if (active_ == nullptr || len < kShtpHeaderLen) {
             return 0;
         }
-        uint16_t read_len =
-            (active_->next_read_len_ > len) ? static_cast<uint16_t>(len) : active_->next_read_len_;
-        if (read_len > kMaxI2cReadLen) {
-            read_len = kMaxI2cReadLen;
-        }
-        const HAL_StatusTypeDef read_status =
-            HAL_I2C_Master_Receive(&active_->bus_, active_->address_, buffer, read_len, 20U);
-        if (read_len == kShtpHeaderLen) {
-            active_->last_read_header_hal_status_ = read_status;
-        } else {
-            active_->last_read_packet_hal_status_ = read_status;
-        }
-#if EXO_BNO85_I2C_TRACE
-        debug.snprint("BNO I2C RX st=%d err=0x%08lX len=%u raw=[%02X %02X %02X %02X]\r\n",
-                      static_cast<int>(read_status),
-                      static_cast<unsigned long>(HAL_I2C_GetError(&active_->bus_)),
-                      static_cast<unsigned>(read_len),
-                      buffer[0], buffer[1], buffer[2], buffer[3]);
-#endif
-        if (read_status != HAL_OK) {
-            active_->last_i2c_error_ = HAL_I2C_GetError(&active_->bus_);
-            active_->next_read_len_ = kShtpHeaderLen;
-            return 0;
-        }
-        active_->last_i2c_error_ = 0U;
-        const uint16_t transfer_len = static_cast<uint16_t>((buffer[1] << 8U) | buffer[0]) & 0x7FFFU;
-#if EXO_BNO85_I2C_TRACE
-        debug.snprint("BNO I2C RX parsed transfer_len=%u chan=%u seq=%u\r\n",
-                      static_cast<unsigned>(transfer_len),
-                      static_cast<unsigned>(buffer[2]),
-                      static_cast<unsigned>(buffer[3]));
-#endif
-        if (transfer_len < kShtpHeaderLen || transfer_len > len) {
-#if EXO_BNO85_I2C_TRACE
-            debug.snprint("BNO I2C RX invalid transfer_len=%u (max=%u)\r\n",
-                          static_cast<unsigned>(transfer_len),
-                          static_cast<unsigned>(len));
-#endif
-            active_->next_read_len_ = kShtpHeaderLen;
+        if (active_->interrupt_port_ != nullptr && active_->interrupt_pin_ != 0U &&
+                HAL_GPIO_ReadPin(active_->interrupt_port_, active_->interrupt_pin_) != GPIO_PIN_RESET) {
             return 0;
         }
 
-        // Every BNO08x I2C read begins with a fresh SHTP header. If this
-        // transaction only returned part of the cargo, the next read must ask
-        // for the remainder plus the next transfer header.
-        if (transfer_len > read_len) {
-            active_->next_read_len_ =
-                static_cast<uint16_t>((transfer_len - read_len) + kShtpHeaderLen);
-        } else {
-            active_->next_read_len_ = kShtpHeaderLen;
-        }
+        uint8_t header[kShtpHeaderLen] = {0U, 0U, 0U, 0U};
+        const HAL_StatusTypeDef header_status =
+            HAL_I2C_Master_Receive(&active_->bus_, active_->address_, header, kShtpHeaderLen, 20U);
+        active_->last_read_header_hal_status_ = header_status;
 #if EXO_BNO85_I2C_TRACE
-        debug.snprint("BNO I2C RX-DONE got=%u next=%u first=[%02X %02X %02X %02X]\r\n",
-                      static_cast<unsigned>(read_len),
-                      static_cast<unsigned>(active_->next_read_len_),
-                      buffer[0], buffer[1], buffer[2], buffer[3]);
+        debug.snprint("BNO I2C HDR st=%d err=0x%08lX raw=[%02X %02X %02X %02X]\r\n",
+                      static_cast<int>(header_status),
+                      static_cast<unsigned long>(HAL_I2C_GetError(&active_->bus_)),
+                      header[0], header[1], header[2], header[3]);
 #endif
-        *timestamp_us = get_time_us(nullptr);
-        return static_cast<int>(read_len);
+        if (header_status != HAL_OK) {
+            active_->last_i2c_error_ = HAL_I2C_GetError(&active_->bus_);
+            return 0;
+        }
+        const uint16_t transfer_len =
+            static_cast<uint16_t>((static_cast<uint16_t>(header[1]) << 8U) | header[0]) & 0x7FFFU;
+#if EXO_BNO85_I2C_TRACE
+        debug.snprint("BNO I2C RX parsed transfer_len=%u chan=%u seq=%u\r\n",
+                      static_cast<unsigned>(transfer_len),
+                      static_cast<unsigned>(header[2]),
+                      static_cast<unsigned>(header[3]));
+#endif
+        if (transfer_len < kShtpHeaderLen || transfer_len > len) {
+            return 0;
+        }
+
+        /* sh2_hal.h requires a complete SHTP transfer or 0. BNO08x prepends
+         * the same 4-byte SHTP header to every physical I2C chunk, so rebuild
+         * the transfer here and hide physical chunking from shtp_service(). */
+        uint8_t chunk[kMaxI2cReadLen] = {};
+        uint16_t cargo_remaining = transfer_len;
+        uint16_t copied = 0U;
+        bool first_read = true;
+        *timestamp_us = micros32();
+        while (cargo_remaining > 0U) {
+            uint16_t read_len = first_read
+                ? ((cargo_remaining < kMaxI2cReadLen) ? cargo_remaining : kMaxI2cReadLen)
+                : static_cast<uint16_t>(cargo_remaining + kShtpHeaderLen);
+            if (read_len > kMaxI2cReadLen) {
+                read_len = kMaxI2cReadLen;
+            }
+            const HAL_StatusTypeDef packet_status =
+                HAL_I2C_Master_Receive(&active_->bus_, active_->address_, chunk, read_len, 20U);
+            active_->last_read_packet_hal_status_ = packet_status;
+            if (packet_status != HAL_OK) {
+                active_->last_i2c_error_ = HAL_I2C_GetError(&active_->bus_);
+                return 0;
+            }
+            const uint16_t cargo_read = first_read
+                ? read_len
+                : static_cast<uint16_t>(read_len - kShtpHeaderLen);
+            if (cargo_read == 0U || cargo_read > cargo_remaining) {
+                return 0;
+            }
+            memcpy(buffer + copied,
+                   first_read ? chunk : (chunk + kShtpHeaderLen),
+                   cargo_read);
+            copied = static_cast<uint16_t>(copied + cargo_read);
+            cargo_remaining = static_cast<uint16_t>(cargo_remaining - cargo_read);
+            first_read = false;
+        }
+        active_->last_i2c_error_ = 0U;
+        return static_cast<int>(transfer_len);
     }
 
     static int write(sh2_Hal_t *, uint8_t *buffer, unsigned len) {
@@ -554,6 +546,7 @@ private:
                 active_->latest_quat_real_ = active_->latest_.un.gameRotationVector.real;
                 active_->latest_available_mask_ |= 0x01U;
                 active_->has_rotation_ = true;
+                active_->has_new_data_ = true;
                 break;
             case SH2_LINEAR_ACCELERATION:
                 active_->latest_linear_accel_x_ = active_->latest_.un.linearAcceleration.x;
@@ -582,7 +575,6 @@ private:
             active_->latest_sequence_ = active_->latest_.sequence;
             active_->latest_sensor_timestamp_us_ = static_cast<uint32_t>(active_->latest_.timestamp);
             active_->latest_delay_us_ = active_->latest_.delay;
-            active_->has_new_data_ = true;
             /* The anchor report seals one queued sample from the merged
              * latest values; auxiliary reports only refresh the merge. */
             if (id == SH2_GAME_ROTATION_VECTOR && active_->capture_queue_enabled_) {
@@ -597,7 +589,12 @@ private:
             return;
         }
         Bno85Sample sample { };
-        /* offset_us is assigned on pop from the uniform report grid. */
+        if (!capture_timestamp_origin_valid_) {
+            capture_timestamp_origin_us_ = latest_sensor_timestamp_us_;
+            capture_timestamp_origin_valid_ = true;
+        }
+        sample.offset_us =
+            static_cast<uint32_t>(latest_sensor_timestamp_us_ - capture_timestamp_origin_us_);
         sample.quat_i = latest_quat_i_;
         sample.quat_j = latest_quat_j_;
         sample.quat_k = latest_quat_k_;
@@ -668,7 +665,6 @@ private:
 #endif
     uint8_t last_report_id_ = 0U;
     int last_decode_status_ = SH2_ERR;
-    uint16_t next_read_len_ = kShtpHeaderLen;
     GPIO_TypeDef *interrupt_port_ = nullptr;
     uint16_t interrupt_pin_ = 0U;
     Bno85Sample queue_[EXO_BNO85_SAMPLE_QUEUE_DEPTH] { };
@@ -676,8 +672,8 @@ private:
     uint8_t q_count_ = 0U;
     uint32_t queue_drops_ = 0U;
     bool capture_queue_enabled_ = false;
-    bool pop_offset_valid_ = false;
-    uint32_t pop_offset_us_ = 0U;
+    bool capture_timestamp_origin_valid_ = false;
+    uint32_t capture_timestamp_origin_us_ = 0U;
     inline static Bno85Stm32 *active_ = nullptr;
 };
 

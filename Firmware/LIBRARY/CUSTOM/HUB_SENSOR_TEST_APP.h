@@ -143,13 +143,20 @@ public:
     }
 
     uint8_t drain_record_bno_samples(Bno85Sample *samples, uint8_t capacity) {
-        if (!record_bno_queue_active_) return 0U;
         return bno85_.pop_samples(samples, capacity);
     }
 
-    void end_record_capture() {
+    void freeze_record_bno_capture() {
         bno85_.set_capture_queue_enabled(false);
         record_bno_queue_active_ = false;
+    }
+
+    void clear_record_bno_samples() {
+        bno85_.clear_capture_queue();
+    }
+
+    void end_record_capture() {
+        freeze_record_bno_capture();
         if (!record_icm_fifo_active_) return;
         (void)icm45686_.end_fifo_capture();
         record_icm_fifo_active_ = false;

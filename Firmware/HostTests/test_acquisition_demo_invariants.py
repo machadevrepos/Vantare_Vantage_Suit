@@ -9,14 +9,22 @@ hub = (ROOT / "Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h").read_text()
 node = (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h").read_text()
 master = (ROOT / "Firmware/Master/Core/Src/main.c").read_text()
 recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_text()
+node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
 
 checks = [
     ("void service_pending(uint8_t max_packets)" in bno,
      "BNO wrapper must expose bounded pending-packet service"),
     ("HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) == GPIO_PIN_RESET" in bno,
      "BNO service must gate reads from the active-low data-ready level"),
-    ("next_read_len_ != kShtpHeaderLen" in bno,
-     "BNO service must finish partial SHTP transfers regardless of INT level"),
+    ("next_read_len_" not in bno,
+     "BNO HAL must not expose physical I2C chunking as SHTP fragments"),
+    ("cargo_remaining" in bno and "chunk + kShtpHeaderLen" in bno and
+     "return static_cast<int>(transfer_len)" in bno,
+     "BNO HAL must reconstruct one complete SHTP transfer per read"),
+    ("#define EXO_BNO85_AUX_REPORT_INTERVAL_US 20000U" in bno,
+     "BNO auxiliary reports must be 50 Hz, not the accidental 200 Hz load"),
+    ("clear_capture_queue()" in bno and "capture_timestamp_origin_us_" in bno,
+     "BNO capture queue must preserve a drainable tail and use sensor-relative time"),
     ("bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin)" in hub and
      "bno85_.set_interrupt_pin(BNO_INT_GPIO_Port, BNO_INT_Pin)" in node,
      "Master and Node must wire the existing BNO INT pin into the wrapper"),
@@ -45,6 +53,16 @@ checks = [
     ("expected_bno" in recorder and "expected_icm" in recorder and
      "kSessionLossBnoRead" in recorder and "kSessionLossIcmRead" in recorder,
      "Master SessionHeader must truthfully expose acquisition shortfall"),
+    ("freeze_record_bno_capture" in master and "drain_record_bno_samples" in master,
+     "Master stop must freeze then drain the final BNO queue tail"),
+    ("begin_fifo_capture_200hz" in node and "read_fifo_samples(icm_drain_buf_" in node and
+     "record_icm_fifo_active_" in node,
+     "Node recording must use the real 200 Hz ICM FIFO instead of synthetic catch-up reads"),
+    (node_main.index("node_blepipe_process_recording_upload();") <
+     node_main.index("node_recording_app.process();"),
+     "Node reliable upload/control must run before sensor housekeeping"),
+    ("Preferred source has no frame" in master,
+     "Master live BLE sender must fall back when the preferred sensor has no frame"),
 ]
 
 failures = [message for ok, message in checks if not ok]

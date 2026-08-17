@@ -1,0 +1,103 @@
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -169,6 +169,7 @@ void on_master_finalized(MasterSdSessionRecorder &recorder)
+ completed_source_mask_ = static_cast<uint8_t>(completed_source_mask_ | 0x01U);
+ state_ = ((completed_source_mask_ | failed_source_mask_) & expected_source_mask_) == expected_source_mask_ ?
+ TrainingCsvState::Complete : TrainingCsvState::WaitingForNode;
++++progress_seq_;
+ return;
+ }
+ master_ledger_matches_ = !ledger_.overflowed() &&
+@@ -181,6 +182,7 @@ void on_master_finalized(MasterSdSessionRecorder &recorder)
+ return;
+ }
+ state_ = TrainingCsvState::ConvertMasterBno;
++++progress_seq_;
+ }
+ void on_node_record_done(const RecordDoneMessage &done)
+ {
+@@ -205,6 +207,7 @@ void on_node_record_done(const RecordDoneMessage &done)
+ active_node_id_ = static_cast<uint8_t>(done.node_id);
+ node_bno_index_ = node_icm_index_ = 0U;
+ state_ = TrainingCsvState::ReceiveNode;
++++progress_seq_;
+ }
+ void on_node_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length)
+ {
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -2750,5 +2750,16 @@
+-  function applyTrainingCsvTerminalState(trainingState) {
+-    if (trainingState === 9) {
++  function applyTrainingCsvTerminalState(trainingState, terminalSuccess = trainingState === 9) {
++    // State 9 means the coordinator reached a terminal condition. It does not
++    // necessarily mean every expected source was collected: the firmware can
++    // publish a partial session after a node stall and still report state 9.
++    if (trainingState === 9 && !terminalSuccess) {
++      state.pendingTrainingTerminalState = null;
++      syncReceivingTransferState();
++      state.awaitingRecordDone = false;
++      state.startRecordInFlight = false;
++      setSessionState("Incomplete");
++      return true;
++    }
++    if (trainingState === 9 && terminalSuccess) {
+       // Node uploads the Master staged are read-only here and are expected to be
+       // incomplete in the browser, so they must not hold Complete back forever.
+       // Only wait on transfers this tool actually drives.
+@@ -3317,28 +3328,34 @@
+         const {
+           state: st, expected, completed, failureSite, failureNode,
+           stageOp, stageFr, csvOp, csvFr
+         } = status;
+         state.trainingCsv = { state: st, expected, completed };
+-        const sdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
++        const maskComplete = expected !== 0 && (completed & expected) === expected;
++        const terminalSuccess = st === 9 && failureSite === 0xFF && maskComplete;
++        const terminalIncomplete = st === 9 && !terminalSuccess;
++        const rawSdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
++        const sdState = terminalIncomplete ? "Incomplete" : rawSdState;
+         let line = `Master SD Collection: state=${sdState}` +
+           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
+-        if (st === 9) {
+-          setSessionState("Complete");
+-        } else if (st === 10 || st === 11) {
+-          setSessionState("Error");
+-        } else if (st === 1 && ["Stopping", "Collecting", "Finalizing"].includes(state.sessionState)) {
++        if (st === 1 && ["Stopping", "Collecting", "Finalizing"].includes(state.sessionState)) {
+           setSessionState("Finalizing");
+-        } else if (st >= 4 && st <= 12) {
++        } else if (st >= 4 && st <= 12 && st !== 9 && st !== 10 && st !== 11) {
+           setSessionState("Collecting");
+         }
+         resetTransferUi(`Master SD Collection: ${sdState} \u00b7 ${srcMask(completed)} complete`);
+         renderDevices();
+-        if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
++        if (failureSite !== 0xFF) {
++          const failureName = failureSite === 21 ? "SessionStall" : `Site${failureSite}`;
++          line += ` failure_site=${failureSite}(${failureName})`;
++        }
++        if (terminalIncomplete) {
++          line += ` missing=${srcMask(expected & ~completed)}`;
++        }
+         if (failureNode) line += ` node=NODE${failureNode}`;
+         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
+         if (csvOp || csvFr) line += ` csv_op=${csvOp} csv_fr=${csvFr}(${FRESULT_NAMES[csvFr] ?? "?"})`;
+         log(line);
+-        applyTrainingCsvTerminalState(st);
++        applyTrainingCsvTerminalState(st, terminalSuccess);
+       } else if (reportId === CMD.REPORT_SET_NODE_ID_RESULT && reportLen >= 3) {
+         const currentId = data[3];
+         const newId = data[4];
+@@ -3618,8 +3639,8 @@
+     // Firmware can begin emitting preview frames immediately after the capture
+     // commit, before the phone receives Start ACK, and can have notifications
+     // already queued when Stop ACK is processed. Keep those boundary samples;
+     // reliable-transfer frames are demultiplexed by onRecordNotify().
+-    if (!["Preparing", "Streaming", "Stopping"].includes(state.sessionState)) {
++    if (!["Preparing", "Streaming", "Stopping", "Collecting", "Finalizing"].includes(state.sessionState)) {
+       return;
+     }
+     state.counters.packets += 1;

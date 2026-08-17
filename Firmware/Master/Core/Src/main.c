@@ -1050,6 +1050,7 @@ namespace {
 	__attribute__((optimize("Os"))) static void local_record_reset()
 	{
 		hub_sensor_test_app.end_record_capture();
+		hub_sensor_test_app.clear_record_bno_samples();
 		g_local_stop_waiting_for_nodes = false;
 		g_local_record_phase = LocalRecordPhase::Idle;
 		g_local_record_armed = false;
@@ -2635,7 +2636,38 @@ namespace {
 					static_cast<unsigned long>(elapsed_ms));
 		}
 		g_local_finalize_duration_ms = elapsed_ms;
+		/* Stop accepting new GRV reports first, then persist every queued tail
+		 * sample before the session CRC/header are finalized. */
+		hub_sensor_test_app.freeze_record_bno_capture();
+		{
+			exo::Bno85Sample bno_tail[16] {};
+			for (;;) {
+				const uint8_t tail_count = hub_sensor_test_app.drain_record_bno_samples(
+						bno_tail, static_cast<uint8_t>(sizeof(bno_tail) / sizeof(bno_tail[0])));
+				if (tail_count == 0U) {
+					break;
+				}
+				for (uint8_t i = 0U; i < tail_count; ++i) {
+#if EXO_ACQ_DIAG_SUPPRESS_SD
+					const bool stored = true;
+#else
+					const bool stored = g_local_session_recorder.append_bno85(bno_tail[i]);
+#endif
+					if (!stored) {
+						++g_local_bno_append_fail;
+					}
+#if EXO_ACQ_DIAG_ENABLE
+					if (stored) {
+						++g_acq_diag.sd_bno_append_ok;
+					} else {
+						++g_acq_diag.sd_bno_append_fail;
+					}
+#endif
+				}
+			}
+		}
 		hub_sensor_test_app.end_record_capture();
+		hub_sensor_test_app.clear_record_bno_samples();
 #if EXO_ACQ_DIAG_ENABLE
 		/* Capture is over from here on; the summary is only queued so the
 		 * printing happens back in the superloop, never mid-capture. */
@@ -3097,7 +3129,7 @@ int main(void)
 		 * state change is also reported to the desktop tool over the existing report channel. */
 		if (training_state != master_training_csv_reported_state ||
 				training_completed_mask != master_training_csv_reported_completed_mask) {
-			uint8_t training_report[9];
+			uint8_t training_report[11];
 			training_report[0] = static_cast<uint8_t>(training_state);
 			training_report[1] = master_training_csv_coordinator.expected_source_mask();
 			training_report[2] = training_completed_mask;
@@ -3107,6 +3139,8 @@ int main(void)
 			training_report[6] = static_cast<uint8_t>(master_training_csv_coordinator.failure_stager_result());
 			training_report[7] = static_cast<uint8_t>(master_training_csv_coordinator.failure_csv_operation());
 			training_report[8] = static_cast<uint8_t>(master_training_csv_coordinator.failure_csv_result());
+			training_report[9] = master_training_csv_coordinator.failed_source_mask();
+			training_report[10] = master_training_csv_coordinator.cleanup_pending_mask();
 			(void) Custom_APP_SendCmdReport(kTrainingCsvStatusReportId,
 					training_report, static_cast<uint8_t>(sizeof(training_report)));
 		}
@@ -3462,8 +3496,7 @@ int main(void)
 		 * leaves the sample pending and keeps the preference so it is retried
 		 * first on the next iteration. */
 		if (g_ble_stream_enabled_now) {
-			const bool try_icm = ble_prefer_icm_next;
-			if (try_icm && ble_icm_send_pending) {
+			if (ble_prefer_icm_next && ble_icm_send_pending) {
 				if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Icm45686),
 						reinterpret_cast<const uint8_t*>(&ble_pending_icm_sample),
 						static_cast<uint8_t>(sizeof(ble_pending_icm_sample)))) {
@@ -3472,7 +3505,26 @@ int main(void)
 				} else {
 					++g_ble_tx_drop_count;
 				}
-			} else if (!try_icm && ble_bno_send_pending) {
+			} else if (!ble_prefer_icm_next && ble_bno_send_pending) {
+				if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Bno85),
+						reinterpret_cast<const uint8_t*>(&ble_pending_bno_sample),
+						static_cast<uint8_t>(sizeof(ble_pending_bno_sample)))) {
+					ble_bno_send_pending = false;
+					ble_prefer_icm_next = true;
+				} else {
+					++g_ble_tx_drop_count;
+				}
+			} else if (ble_icm_send_pending) {
+				/* Preferred source has no frame: do not idle the BLE lane. */
+				if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Icm45686),
+						reinterpret_cast<const uint8_t*>(&ble_pending_icm_sample),
+						static_cast<uint8_t>(sizeof(ble_pending_icm_sample)))) {
+					ble_icm_send_pending = false;
+					ble_prefer_icm_next = false;
+				} else {
+					++g_ble_tx_drop_count;
+				}
+			} else if (ble_bno_send_pending) {
 				if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Bno85),
 						reinterpret_cast<const uint8_t*>(&ble_pending_bno_sample),
 						static_cast<uint8_t>(sizeof(ble_pending_bno_sample)))) {
