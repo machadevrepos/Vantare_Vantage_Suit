@@ -222,6 +222,7 @@ namespace {
 	constexpr uint16_t kRecordChunkPayloadBytes = 180U;
 	constexpr uint32_t kLocalRecordChunkGapMs = 1U;
 	constexpr uint8_t kLocalRecordBurstLimit = 4U;
+	constexpr uint8_t kLocalRecordFinalizeIcmDrainPasses = 16U;
 	constexpr uint8_t kRecordTransferTuningCmd = 0xB5U;
 	constexpr uint8_t kRecordTransferTuningVersion = 1U;
 	constexpr uint8_t kTrainingCsvStatusReportId = 0xB6U;
@@ -2667,6 +2668,43 @@ namespace {
 					}
 #endif
 				}
+			}
+		}
+		/* Stop defines the duration boundary, but pre-stop frames may still
+		 * be resident in the ICM hardware FIFO. Drain that tail before
+		 * end_record_capture() switches the FIFO to BYPASS. The bounded loop
+		 * prevents a damaged/non-empty FIFO from making Stop unbounded. */
+		if (hub_sensor_test_app.record_icm_fifo_active()) {
+			static exo::Icm45686Sample icm_tail[32];
+			const uint8_t tail_capacity =
+					static_cast<uint8_t>(sizeof(icm_tail) / sizeof(icm_tail[0]));
+			uint8_t last_tail_count = 0U;
+			for (uint8_t pass = 0U;
+					pass < kLocalRecordFinalizeIcmDrainPasses;
+					++pass) {
+				last_tail_count = hub_sensor_test_app.drain_record_icm_samples(
+						icm_tail, tail_capacity);
+				for (uint8_t i = 0U; i < last_tail_count; ++i) {
+#if EXO_ACQ_DIAG_SUPPRESS_SD
+					const bool tail_stored = true;
+#else
+					const bool tail_stored =
+							g_local_session_recorder.append_icm45686(icm_tail[i]);
+#endif
+					if (tail_stored) {
+						(void)master_training_csv_coordinator.note_master_icm_time(
+								g_local_start_msg.session_id, icm_tail[i].offset_us);
+					} else {
+						++g_local_icm_append_fail;
+					}
+				}
+				if (last_tail_count < tail_capacity) {
+					break;
+				}
+			}
+			if (last_tail_count == tail_capacity) {
+				EXO_LOG("[RECORD][MASTER] WARN ICM FIFO tail drain reached safety bound session=%lu\r\n",
+						static_cast<unsigned long>(g_local_start_msg.session_id));
 			}
 		}
 		hub_sensor_test_app.end_record_capture();

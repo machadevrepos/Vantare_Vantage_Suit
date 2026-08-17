@@ -1,0 +1,94 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+@@ -26,7 +26,7 @@
+ 			static constexpr uint32_t kDataRateLogPeriodMs = 10000U;
+ 			static constexpr uint32_t kIcmPeriodUs = 5000U;
+ 			/* Recorded fusion target. The BNO wrapper queues one composite sample
+-			 * per 100 Hz game-rotation-vector report; ICM remains hardware-FIFO 200 Hz. */
++			 * per 100 Hz game-rotation-vector report; Node ICM remains direct-register 200 Hz. */
+ 			static constexpr uint16_t kBnoTargetRateHz = 100U;
+ 			static constexpr uint16_t kIcmTargetRateHz = 200U;
+ 			static constexpr uint8_t kMaxBnoDrainPerTick = 8U;
+@@ -245,4 +245,6 @@
+ 						bno85_.set_capture_queue_enabled(true);
+-						record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
++						/* Nodes intentionally use the deterministic 5 ms direct-register
++						 * ICM path. Hardware FIFO capture is reserved for Master. */
++						record_icm_fifo_active_ = false;
+ 						reset_capture_schedule();
+ 						record_finalize_pending_ = false;
+@@ -570,4 +570,6 @@
+ 				bno85_.set_capture_queue_enabled(true);
+-				record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
++				/* Nodes intentionally use the deterministic 5 ms direct-register
++				 * ICM path. Hardware FIFO capture is reserved for Master. */
++				record_icm_fifo_active_ = false;
+ 				reset_capture_schedule();
+ 				record_finalize_pending_ = false;
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -154,4 +154,5 @@
+ 	constexpr uint16_t kRecordChunkPayloadBytes = 180U;
+ 	constexpr uint32_t kLocalRecordChunkGapMs = 1U;
+ 	constexpr uint8_t kLocalRecordBurstLimit = 4U;
++	constexpr uint8_t kLocalRecordFinalizeIcmDrainPasses = 16U;
+ 	constexpr uint8_t kRecordTransferTuningCmd = 0xB5U;
+@@ -1135,3 +1135,40 @@
++		/* Stop defines the duration boundary, but pre-stop frames may still
++		 * be resident in the ICM hardware FIFO. Drain that tail before
++		 * end_record_capture() switches the FIFO to BYPASS. The bounded loop
++		 * prevents a damaged/non-empty FIFO from making Stop unbounded. */
++		if (hub_sensor_test_app.record_icm_fifo_active()) {
++			static exo::Icm45686Sample icm_tail[32];
++			const uint8_t tail_capacity =
++					static_cast<uint8_t>(sizeof(icm_tail) / sizeof(icm_tail[0]));
++			uint8_t last_tail_count = 0U;
++			for (uint8_t pass = 0U;
++					pass < kLocalRecordFinalizeIcmDrainPasses;
++					++pass) {
++				last_tail_count = hub_sensor_test_app.drain_record_icm_samples(
++						icm_tail, tail_capacity);
++				for (uint8_t i = 0U; i < last_tail_count; ++i) {
++#if EXO_ACQ_DIAG_SUPPRESS_SD
++					const bool tail_stored = true;
++#else
++					const bool tail_stored =
++							g_local_session_recorder.append_icm45686(icm_tail[i]);
++#endif
++					if (tail_stored) {
++						(void)master_training_csv_coordinator.note_master_icm_time(
++								g_local_start_msg.session_id, icm_tail[i].offset_us);
++					} else {
++						++g_local_icm_append_fail;
++					}
++				}
++				if (last_tail_count < tail_capacity) {
++					break;
++				}
++			}
++			if (last_tail_count == tail_capacity) {
++				EXO_LOG("[RECORD][MASTER] WARN ICM FIFO tail drain reached safety bound session=%lu\r\n",
++						static_cast<unsigned long>(g_local_start_msg.session_id));
++			}
++		}
+ 		hub_sensor_test_app.end_record_capture();
+ 		hub_sensor_test_app.clear_record_bno_samples();
+ #if EXO_ACQ_DIAG_ENABLE
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -50,6 +50,9 @@
+     ("freeze_record_bno_capture" in master and "drain_record_bno_samples" in master,
+      "Master stop must freeze then drain the final BNO queue tail"),
+-    ("begin_fifo_capture_200hz" in node and "read_fifo_samples(icm_drain_buf_" in node and
+-     "record_icm_fifo_active_" in node,
+-     "Node recording must use the real 200 Hz ICM FIFO instead of synthetic catch-up reads"),
++    ("begin_fifo_capture_200hz" not in node and
++     "kIcmPeriodUs = 5000U" in node and "icm45686_.read_sample" in node,
++     "Node recording must remain on the established 5 ms direct-register ICM path"),
++    ("kLocalRecordFinalizeIcmDrainPasses" in master and
++     "WARN ICM FIFO tail drain reached safety bound" in master,
++     "Master stop must drain the ICM FIFO tail before ending capture"),
+     (node_main.index("node_blepipe_process_recording_upload();") <
