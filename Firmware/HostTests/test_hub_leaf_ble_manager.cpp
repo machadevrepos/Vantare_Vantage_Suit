@@ -72,8 +72,10 @@ int main()
         assert(manager.pop_next_record_done(selected));
         assert(selected.node_id == expected);
         assert(manager.active_source_id() == expected);
-        manager.on_ble_reliable_verify_ok(77U, expected,
-            done[expected - 1U].payload_crc32);
+        assert(manager.on_ble_reliable_verify_ok(
+            77U, expected, done[expected - 1U].payload_crc32));
+        assert(manager.on_ble_session_complete(
+            77U, expected, done[expected - 1U].payload_crc32));
     }
     assert(!manager.pop_next_record_done(selected));
 

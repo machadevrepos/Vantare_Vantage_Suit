@@ -93,7 +93,7 @@ public:
   bool peek_next_live_sample(LiveSample &out) const {
     const int8_t selected = select_next_live_index_();
     if (selected < 0) return false;
-    out = live_slots_[static_cast<uint8_t>(selected)].sample;
+    out = live_slots_[static_cast<uint8_t>(selected)].front();
     return true;
   }
 

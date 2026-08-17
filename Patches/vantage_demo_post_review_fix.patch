@@ -1,0 +1,28 @@
+diff --git a/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h b/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+--- a/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
++++ b/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+@@ -93,7 +93,7 @@
+   bool peek_next_live_sample(LiveSample &out) const {
+     const int8_t selected = select_next_live_index_();
+     if (selected < 0) return false;
+-    out = live_slots_[static_cast<uint8_t>(selected)].sample;
++    out = live_slots_[static_cast<uint8_t>(selected)].front();
+     return true;
+   }
+
+diff --git a/Firmware/HostTests/test_hub_leaf_ble_manager.cpp b/Firmware/HostTests/test_hub_leaf_ble_manager.cpp
+--- a/Firmware/HostTests/test_hub_leaf_ble_manager.cpp
++++ b/Firmware/HostTests/test_hub_leaf_ble_manager.cpp
+@@ -71,8 +71,10 @@
+         assert(manager.pop_next_record_done(selected));
+         assert(selected.node_id == expected);
+         assert(manager.active_source_id() == expected);
+-        manager.on_ble_reliable_verify_ok(77U, expected,
+-            done[expected - 1U].payload_crc32);
++        assert(manager.on_ble_reliable_verify_ok(
++            77U, expected, done[expected - 1U].payload_crc32));
++        assert(manager.on_ble_session_complete(
++            77U, expected, done[expected - 1U].payload_crc32));
+     }
+     assert(!manager.pop_next_record_done(selected));
+
