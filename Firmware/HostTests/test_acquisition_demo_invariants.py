@@ -39,7 +39,7 @@ checks = [
     ("hub_sensor_test_app.begin_record_capture()" in master and
      "hub_sensor_test_app.end_record_capture()" in master,
      "Master must bracket recording with ICM FIFO capture lifecycle"),
-    ("fifo_samples[16]" in master and
+    ("fifo_samples[32]" in master and
      "append_icm45686(fifo_samples[i])" in master,
      "Master must append all drained FIFO samples, not synthetic repeated register reads"),
     ("expected_bno" in recorder and "expected_icm" in recorder and

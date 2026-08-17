@@ -2509,8 +2509,13 @@ namespace {
 		const uint32_t sample_offset_us = sample_elapsed_ms * 1000U;
 		if (hub_snapshot.has_bno85) {
 			exo::Bno85Sample bno_sample = hub_snapshot.bno85;
-			// Force record-local timeline so MASTER overlaps NODE timelines in UI.
-			bno_sample.offset_us = sample_offset_us;
+			/* Force record-local timeline so MASTER overlaps NODE timelines in UI.
+			 * Queue-captured samples already carry the uniform report-grid
+			 * offset from the driver and must keep it: mixing it with the
+			 * ms-quantized loop clock would break timestamp monotonicity. */
+			if (!hub_sensor_test_app.record_bno_queue_active()) {
+				bno_sample.offset_us = sample_offset_us;
+			}
 #if EXO_ACQ_DIAG_SUPPRESS_SD
 			/* Experiment B: acquisition keeps running, storage does not. */
 			(void)bno_sample;
@@ -2560,8 +2565,34 @@ namespace {
 			}
 #endif
 		}
+		if (hub_sensor_test_app.record_bno_queue_active()) {
+			exo::Bno85Sample bno_queued_samples[16]{};
+			const uint8_t bno_queued_count = hub_sensor_test_app.drain_record_bno_samples(
+					bno_queued_samples, static_cast<uint8_t>(sizeof(bno_queued_samples) / sizeof(bno_queued_samples[0])));
+			for (uint8_t i = 0U; i < bno_queued_count; ++i) {
+#if EXO_ACQ_DIAG_SUPPRESS_SD
+				/* Experiment B: acquisition keeps running, storage does not. */
+				(void)bno_queued_samples[i];
+				const bool bno_queued_stored = true;
+#else
+				const bool bno_queued_stored = g_local_session_recorder.append_bno85(bno_queued_samples[i]);
+#endif
+				if (!bno_queued_stored) {
+					++g_local_bno_append_fail;
+				}
+#if EXO_ACQ_DIAG_ENABLE
+				if (bno_queued_stored) {
+					++g_acq_diag.sd_bno_append_ok;
+				} else {
+					++g_acq_diag.sd_bno_append_fail;
+				}
+#endif
+			}
+		}
 		if (hub_sensor_test_app.record_icm_fifo_active()) {
-			exo::Icm45686Sample fifo_samples[16]{};
+			/* Static: 32 frames cover a ~160 ms superloop stall at 200 Hz
+			 * without touching the main stack. */
+			static exo::Icm45686Sample fifo_samples[32];
 			const uint8_t fifo_count = hub_sensor_test_app.drain_record_icm_samples(
 					fifo_samples, static_cast<uint8_t>(sizeof(fifo_samples) / sizeof(fifo_samples[0])));
 			for (uint8_t i = 0U; i < fifo_count; ++i) {
@@ -3385,16 +3416,23 @@ int main(void)
 #else
 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false);
 #endif
-		if (g_ble_stream_enabled_now &&
+		/* One BLE notification can be in flight at a time: sending BNO and
+		 * ICM back-to-back made the second send fail every iteration, so the
+		 * BNO frame (sent first) permanently starved the ICM graph. Capture
+		 * gated samples into pending slots and send at most one frame per
+		 * loop iteration, alternating, retrying after a failed send. */
+		static bool ble_bno_send_pending = false;
+		static bool ble_icm_send_pending = false;
+		static bool ble_prefer_icm_next = false;
+		static exo::Bno85Sample ble_pending_bno_sample { };
+		static exo::Icm45686Sample ble_pending_icm_sample { };
+		if (g_ble_stream_enabled_now && !ble_bno_send_pending &&
 				bno_stream_gate.accept(hub_snapshot.has_bno85,
 						ble_stream_now_ms, g_ble_stream_interval_ms)) {
-			const exo::Bno85Sample &bno_payload = hub_snapshot.bno85;
-			if (!send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Bno85),
-					reinterpret_cast<const uint8_t*>(&bno_payload), static_cast<uint8_t>(sizeof(bno_payload)))) {
-				++g_ble_tx_drop_count;
-			}
+			ble_pending_bno_sample = hub_snapshot.bno85;
+			ble_bno_send_pending = true;
 		}
-		if (g_ble_stream_enabled_now &&
+		if (g_ble_stream_enabled_now && !ble_icm_send_pending &&
 				icm_stream_gate.accept(hub_snapshot.has_icm45686,
 						ble_stream_now_ms, g_ble_stream_interval_ms)) {
 			exo::Icm45686Sample icm_payload { };
@@ -3417,10 +3455,36 @@ int main(void)
 			icm_payload.reserved0 = 0U;
 			icm_payload.sample_timestamp_us = hub_snapshot.icm45686.sample_timestamp_us;
 #endif
-			if (!send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Icm45686),
-					reinterpret_cast<const uint8_t*>(&icm_payload), static_cast<uint8_t>(sizeof(icm_payload)))) {
-				++g_ble_tx_drop_count;
+			ble_pending_icm_sample = icm_payload;
+			ble_icm_send_pending = true;
+		}
+		/* Exactly one notification attempt per loop iteration: a failed send
+		 * leaves the sample pending and keeps the preference so it is retried
+		 * first on the next iteration. */
+		if (g_ble_stream_enabled_now) {
+			const bool try_icm = ble_prefer_icm_next;
+			if (try_icm && ble_icm_send_pending) {
+				if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Icm45686),
+						reinterpret_cast<const uint8_t*>(&ble_pending_icm_sample),
+						static_cast<uint8_t>(sizeof(ble_pending_icm_sample)))) {
+					ble_icm_send_pending = false;
+					ble_prefer_icm_next = false;
+				} else {
+					++g_ble_tx_drop_count;
+				}
+			} else if (!try_icm && ble_bno_send_pending) {
+				if (send_ble_v2_sample(0U, static_cast<uint8_t>(exo::BleSensorId::Bno85),
+						reinterpret_cast<const uint8_t*>(&ble_pending_bno_sample),
+						static_cast<uint8_t>(sizeof(ble_pending_bno_sample)))) {
+					ble_bno_send_pending = false;
+					ble_prefer_icm_next = true;
+				} else {
+					++g_ble_tx_drop_count;
+				}
 			}
+		} else {
+			ble_bno_send_pending = false;
+			ble_icm_send_pending = false;
 		}
 
 		const GPIO_PinState touch_pin_state = HAL_GPIO_ReadPin(TOUCH_MCU_GPIO_Port, TOUCH_MCU_Pin);

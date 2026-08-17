@@ -60,7 +60,7 @@ public:
         header_.session_id = session_id;
         header_.start_timestamp_us = start_timestamp_us;
         header_.requested_duration_ms = duration_ms;
-        header_.bno85_target_rate_hz = 100U;
+        header_.bno85_target_rate_hz = 400U;
         header_.icm45686_target_rate_hz = 200U;
 
         UINT written = 0U;
@@ -420,7 +420,7 @@ public:
     FRESULT last_error() const { return last_error_; }
 
 private:
-    static constexpr uint32_t kMaxBnoSamples = 360000U;  /* 60 min at 100 Hz */
+    static constexpr uint32_t kMaxBnoSamples = 360000U;  /* 15 min at 400 Hz */
     static constexpr uint32_t kMaxIcmSamples = 720000U;  /* 60 min at 200 Hz */
     static constexpr uint32_t kBnoBufferSamples = 8U;
     static constexpr uint32_t kIcmBufferSamples = 32U;

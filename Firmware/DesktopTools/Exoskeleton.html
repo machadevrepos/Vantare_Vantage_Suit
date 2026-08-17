@@ -6,15 +6,19 @@
   <title>Vantare Vantage | Session Console</title>
   <style>
 :root {
-  --bg: #f6f8fa;
-  --panel: #ffffff;
-  --ink: #15212e;
-  --muted: #5f6f7f;
-  --accent: #005ea8;
-  --border: #d4dce5;
-  --ok: #207a3a;
-  --bad: #b42318;
-  --shadow: 0 1px 2px rgba(21, 33, 46, 0.08);
+  --bg: #0e131a;
+  --panel: #151c25;
+  --panel-head: #1a2330;
+  --group-head: #19212c;
+  --ink: #d8e1ec;
+  --muted: #8a99ac;
+  --accent: #4da3ff;
+  --border: #2a3542;
+  --ok: #3fbf6b;
+  --bad: #ff6b5e;
+  --warn: #f5b04d;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -22,7 +26,7 @@ body {
   margin: 0;
   font-family: "Segoe UI", Tahoma, sans-serif;
   color: var(--ink);
-  background: linear-gradient(180deg, #eef3f8 0%, var(--bg) 250px);
+  background: linear-gradient(180deg, #131a24 0%, var(--bg) 250px);
 }
 
 .topbar {
@@ -34,7 +38,7 @@ body {
   align-items: center;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
-  background: #fff;
+  background: #10161f;
 }
 
 h1, h2 { margin: 0; }
@@ -76,7 +80,7 @@ h2 { font-size: 16px; }
   min-height: 42px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
-  background: #f8fafc;
+  background: var(--panel-head);
   cursor: pointer;
   user-select: none;
 }
@@ -112,7 +116,7 @@ h2 { font-size: 16px; }
   border: 1px solid var(--border);
   border-radius: 8px;
   margin-bottom: 10px;
-  background: #ffffff;
+  background: var(--panel);
   overflow: hidden;
 }
 .control-group > summary {
@@ -121,7 +125,7 @@ h2 { font-size: 16px; }
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
-  background: #f3f7fb;
+  background: var(--group-head);
   cursor: pointer;
   user-select: none;
 }
@@ -175,20 +179,24 @@ button, input {
   padding: 6px 10px;
   font-size: 13px;
 }
-button { background: #fff; cursor: pointer; }
-button:disabled { opacity: 0.6; cursor: not-allowed; }
+button { background: #1e2836; color: var(--ink); cursor: pointer; }
+button:hover:not(:disabled) { background: #26334a; border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+input { background: #0f151d; color: var(--ink); }
+select { background: #1e2836; color: var(--ink); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+input[type="range"] { accent-color: var(--accent); padding: 0; }
 .danger-test {
-  border-color: #dc2626;
-  color: #b91c1c;
+  border-color: #b03a3a;
+  color: #ff8a80;
 }
 .danger-test.armed {
-  background: #dc2626;
-  border-color: #991b1b;
+  background: #c0392b;
+  border-color: #e74c3c;
   color: #ffffff;
 }
 .touch-test.active {
-  background: #16a34a;
-  border-color: #15803d;
+  background: #1e6f3e;
+  border-color: #2fa465;
   color: #ffffff;
 }
 
@@ -212,9 +220,9 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 2px solid #8d9aaa;
-  background: #c3cad3;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  border: 2px solid #55647a;
+  background: #3a465a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .record-status.recording {
   color: var(--ok);
@@ -222,7 +230,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .record-status.recording .record-dot {
   border-color: var(--ok);
   background: #2fb344;
-  box-shadow: 0 0 0 5px rgba(47, 179, 68, 0.18);
+  box-shadow: 0 0 0 5px rgba(47, 179, 68, 0.22);
 }
 .mono { font-family: Consolas, monospace; font-size: 12px; }
 .note, .hint { color: var(--muted); font-size: 12px; }
@@ -282,7 +290,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   height: 500px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: #10161f;
 }
 .motion-dashboard {
   display: grid;
@@ -305,19 +313,19 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   white-space: nowrap;
 }
 .mode-badge-live {
-  background: #fff4e6;
-  color: #9a5b00;
-  border-color: #ffd8a8;
+  background: #3a2c10;
+  color: #ffc46b;
+  border-color: #6b5220;
 }
 .mode-badge-verified {
-  background: #ebfbee;
-  color: #1f7a37;
-  border-color: #b2f2bb;
+  background: #10301c;
+  color: #5fd68f;
+  border-color: #1f6b41;
 }
 .mode-badge-failed {
-  background: #fff5f5;
-  color: #b02020;
-  border-color: #ffc9c9;
+  background: #38181a;
+  color: #ff8a80;
+  border-color: #7a2c30;
 }
 /* Source sections stack vertically; their chart cards flow into a responsive
    grid so a wide screen shows several cards per row and a phone stacks them. */
@@ -333,14 +341,14 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   border: 1px dashed var(--border);
   border-radius: 8px;
   color: var(--muted);
-  background: #fbfcfd;
+  background: #10161f;
   text-align: center;
 }
 .source-section {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px;
-  background: #fbfcfd;
+  background: #121924;
 }
 .source-section-header {
   display: flex;
@@ -364,7 +372,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   flex-wrap: wrap;
 }
 .source-quality-warn {
-  color: #b02020;
+  color: var(--warn);
   font-weight: 600;
 }
 .source-charts {
@@ -408,7 +416,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #ffffff;
+  background: #131b26;
 }
 .motion-chart-header {
   display: flex;
@@ -455,7 +463,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   height: 190px;
   border: 0;
   border-radius: 6px;
-  background: #fff;
+  background: #10161f;
 }
 .raw-diagnostics {
   margin-top: 12px;
@@ -463,7 +471,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .raw-diagnostics > summary {
   padding: 12px 2px 4px;
-  color: #30465d;
+  color: #a8b8cb;
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
@@ -490,7 +498,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .trace-list summary::-webkit-details-marker { display: none; }
 .trace-list summary::before {
   content: "\25B8";
-  color: #4d6278;
+  color: #8a99ac;
   font-size: 11px;
   width: 10px;
 }
@@ -506,13 +514,13 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   width: 12px;
   height: 12px;
   border-radius: 2px;
-  border: 1px solid #888;
+  border: 1px solid #55647a;
 }
 
 .table-wrap { overflow: auto; max-height: 300px; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { border: 1px solid var(--border); padding: 4px 6px; text-align: left; }
-th { background: #f2f6fa; }
+th { background: #1a2330; }
 
 #log {
   flex: 1 1 auto;
@@ -520,12 +528,58 @@ th { background: #f2f6fa; }
   height: auto;
   margin: 0;
   overflow: auto;
-  background: #fbfcfd;
+  background: #0c1117;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
   font-size: 12px;
+  white-space: pre-wrap;
 }
+.log-line-debug { color: #6f7f93; }
+.log-line-warn { color: var(--warn); }
+.log-line-error { color: var(--bad); font-weight: 600; }
+.log-line-info { color: var(--ink); }
+
+.device-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr);
+  gap: 8px;
+}
+.device-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 4px 10px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #121924;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.device-name { font-weight: 700; }
+.device-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #55647a;
+}
+.device-dot.ok { background: var(--ok); }
+.device-dot.bad { background: var(--bad); }
+.device-dot.warn { background: var(--warn); }
+.device-meta { color: var(--muted); font-size: 12px; }
+.device-state {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #1a2330;
+  white-space: nowrap;
+}
+.device-state.ok { color: var(--ok); border-color: #1f6b41; }
+.device-state.bad { color: var(--bad); border-color: #7a2c30; }
+.device-state.warn { color: var(--warn); border-color: #6b5220; }
 
 @media (max-width: 1000px) {
   .layout {
@@ -742,6 +796,11 @@ input[type="checkbox"] {
       </div>
       </details>
 
+      <details class="control-group" open>
+      <summary><h2>Devices</h2></summary>
+      <div id="deviceGrid" class="device-grid"></div>
+      </details>
+
       <details class="control-group">
       <summary><h2>Commissioning</h2></summary>
       <div class="row">
@@ -893,7 +952,16 @@ input[type="checkbox"] {
       <summary><h2>Log</h2></summary>
       <div class="panel-body">
       <div class="row">
+        <label for="logLevelSelect">Level</label>
+        <select id="logLevelSelect">
+          <option value="debug" selected>Debug</option>
+          <option value="info">Info</option>
+          <option value="warn">Warnings</option>
+          <option value="error">Errors</option>
+        </select>
         <button id="copyLogBtn">Copy Log</button>
+        <button id="downloadLogBtn">Download Log</button>
+        <button id="clearLogBtn">Clear Log</button>
       </div>
       <pre id="log"></pre>
       </div>
@@ -981,6 +1049,14 @@ input[type="checkbox"] {
     SHUTDOWN_ARMED: 2,
     TURNING_OFF: 3
   };
+  // Mirrors RecorderState in Firmware/LIBRARY/CUSTOM/RECORDING_TYPES.h
+  const RECORDER_STATES = [
+    "idle", "armed", "recording", "finalizing",
+    "ready-for-upload", "uploading", "awaiting-ack", "erase-after-ack"
+  ];
+  function recorderStateLabel(stateValue) {
+    return RECORDER_STATES[stateValue] ?? `state${stateValue}`;
+  }
   const RECORD_START_PHASE = {
     0x01: "wait_app_ready",
     0x02: "reset_cooldown",
@@ -1008,7 +1084,7 @@ input[type="checkbox"] {
 
   // ==== SESSION GRAPH CONSTANTS START ====
   // Initialize these before UI/BLE callbacks can activate graph rendering.
-  const GRAPH_AXIS_COLORS = ["#dc2626", "#16a34a", "#2563eb"];
+  const GRAPH_AXIS_COLORS = ["#f87171", "#4ade80", "#60a5fa"];
   const GRAPH_POINTS_PER_PIXEL = 4;
   const GRAPH_DEFAULT_LIVE_WINDOW_MS = 10000;
   const GRAPH_ICM_ACCEL_SCALE = 4 / 32768;
@@ -1156,6 +1232,8 @@ input[type="checkbox"] {
 
   const ui = {
     bleStatus: el("bleStatus"), deviceName: el("deviceName"), log: el("log"), copyLogBtn: el("copyLogBtn"),
+    logLevelSelect: el("logLevelSelect"), downloadLogBtn: el("downloadLogBtn"), clearLogBtn: el("clearLogBtn"),
+    deviceGrid: el("deviceGrid"),
     recordStatus: el("recordStatus"),
     connectBtn: el("connectBtn"), disconnectBtn: el("disconnectBtn"),
     startBtn: el("startBtn"), stopBtn: el("stopBtn"), setIntervalBtn: el("setIntervalBtn"),
@@ -1273,6 +1351,11 @@ input[type="checkbox"] {
   };
   state.recordTransferTuning = createRecordTransferTuning("balanced");
 
+  const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+  const LOG_MAX_LINES = 3000;
+  const logLines = [];
+  let logLevelValue = LOG_LEVELS.info;
+
   const palette = ["#0b7285", "#c92a2a", "#2b8a3e", "#5f3dc4", "#e67700", "#9c36b5", "#1c7ed6", "#495057", "#087f5b", "#d6336c"];
 
   const decoders = new Map([
@@ -1371,6 +1454,28 @@ input[type="checkbox"] {
     requestRender();
   });
   ui.copyLogBtn.addEventListener("click", copyLogToClipboard);
+  ui.logLevelSelect.addEventListener("change", () => {
+    logLevelValue = LOG_LEVELS[ui.logLevelSelect.value] ?? LOG_LEVELS.info;
+    rebuildLogDom();
+  });
+  ui.downloadLogBtn.addEventListener("click", () => {
+    const text = logTextForExport();
+    if (!text) {
+      log("Log download skipped: log is empty.");
+      return;
+    }
+    const blob = new Blob([text], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `vantage_console_${new Date().toISOString().replace(/[:.]/g, "-")}.log`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  ui.clearLogBtn.addEventListener("click", () => {
+    logLines.length = 0;
+    logDedupe.clear();
+    ui.log.innerHTML = "";
+  });
 
   installCanvasInteractions();
   installPanelInteractions();
@@ -1380,7 +1485,8 @@ input[type="checkbox"] {
   syncTestSliderValues();
   setRecordingUi(false);
   setConnectedUi(false);
-  log("Vantage Session Console: binary-first SD mode v5");
+  renderDevices();
+  log("Vantage Session Console: binary-first SD mode v5 (dark)");
 
   function el(id) { return document.getElementById(id); }
 
@@ -1394,10 +1500,48 @@ input[type="checkbox"] {
     }
   }
 
-  function log(msg) {
+  function log(msg, level = "info") {
+    const lvl = LOG_LEVELS[level] ?? LOG_LEVELS.info;
+    if (lvl < logLevelValue) return;
     const ts = new Date().toISOString().split("T")[1].replace("Z", "");
     const elapsedMs = Math.round(performance.now() - state.logStartMs);
-    ui.log.textContent += `[${ts} +${elapsedMs}ms] ${msg}\n`;
+    const prefix = lvl === LOG_LEVELS.debug ? "DBG " : lvl === LOG_LEVELS.warn ? "WRN " : lvl === LOG_LEVELS.error ? "ERR " : "";
+    const text = `[${ts} +${elapsedMs}ms] ${prefix}${msg}`;
+    logLines.push({ text, level });
+    if (logLines.length > LOG_MAX_LINES) logLines.splice(0, logLines.length - LOG_MAX_LINES);
+    const line = document.createElement("span");
+    line.className = `log-line-${level}`;
+    line.textContent = text + "\n";
+    ui.log.appendChild(line);
+    while (ui.log.childNodes.length > LOG_MAX_LINES) {
+      ui.log.removeChild(ui.log.firstChild);
+    }
+    ui.log.scrollTop = ui.log.scrollHeight;
+  }
+
+  function logDebug(msg) { log(msg, "debug"); }
+  function logWarn(msg) { log(msg, "warn"); }
+  function logError(msg) { log(msg, "error"); }
+
+  // Logs repeated status lines (e.g. 1 Hz node readiness) only when they change.
+  const logDedupe = new Map();
+  function logOnChange(key, msg, level = "info") {
+    if (logDedupe.get(key) === msg) return;
+    logDedupe.set(key, msg);
+    log(msg, level);
+  }
+
+  function rebuildLogDom() {
+    ui.log.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const entry of logLines) {
+      if ((LOG_LEVELS[entry.level] ?? LOG_LEVELS.info) < logLevelValue) continue;
+      const line = document.createElement("span");
+      line.className = `log-line-${entry.level}`;
+      line.textContent = entry.text + "\n";
+      frag.appendChild(line);
+    }
+    ui.log.appendChild(frag);
     ui.log.scrollTop = ui.log.scrollHeight;
   }
 
@@ -1573,8 +1717,15 @@ input[type="checkbox"] {
     syncTransferTuningUi(createRecordTransferTuning(profile));
   }
 
+  function logTextForExport() {
+    return logLines
+      .filter((entry) => (LOG_LEVELS[entry.level] ?? LOG_LEVELS.info) >= logLevelValue)
+      .map((entry) => entry.text)
+      .join("\n");
+  }
+
   async function copyLogToClipboard() {
-    const text = ui.log.textContent || "";
+    const text = logTextForExport();
     if (!text) {
       log("Log copy skipped: log is empty.");
       return;
@@ -1897,6 +2048,7 @@ input[type="checkbox"] {
     ui.listNodesBtn.textContent = leafConnected ? "Disconnect Node" : "Connect Node/Leaf";
     setTestingUi(connected);
     updateStartStreamAvailability();
+    renderDevices();
   }
 
   function setTestingUi(enabled) {
@@ -2099,6 +2251,7 @@ input[type="checkbox"] {
       }
     }
     refreshStartRecordAvailability();
+    renderDevices();
   }
 
   async function sendStartSessionCmd() {
@@ -2402,7 +2555,7 @@ input[type="checkbox"] {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         await enqueueBleWrite(char, out, true, false);
-        log(`${label} sent(len=${out.length}): ${hexBytes(out)}`);
+        logDebug(`${label} sent(len=${out.length}): ${hexBytes(out)}`);
         return true;
       } catch (err) {
         const msg = err && err.message ? String(err.message) : String(err);
@@ -2671,17 +2824,17 @@ input[type="checkbox"] {
           const missing = firstMissingRange(transfer,
             transfer.awaitingChunk !== null && transfer.awaitingChunk !== undefined);
           const next = ackWindowChunk(transfer);
-          log(`RECORD control tick: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} rx=${transfer.receivedBytes}/${transfer.totalSize} next=${next} missing=${missing ? `${missing.first}:${missing.count}` : "none"} awaiting=${transfer.awaitingChunk ?? "none"} pending=${state.pendingAckBySession.size}`);
+          logDebug(`RECORD control tick: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} rx=${transfer.receivedBytes}/${transfer.totalSize} next=${next} missing=${missing ? `${missing.first}:${missing.count}` : "none"} awaiting=${transfer.awaitingChunk ?? "none"} pending=${state.pendingAckBySession.size}`);
           transfer.lastControlTraceMs = now;
         }
         if ((now - (transfer.lastControlTxMs || 0)) >= currentReliableTuning().controlHeartbeatMs && transfer.receivedBytes < transfer.totalSize) {
-          log(`RECORD control heartbeat: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} bypass=1`);
+          logDebug(`RECORD control heartbeat: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} bypass=1`);
           queueReliableNackOrAck(transfer, false, true);
         }
         if ((now - transfer.lastRxMs) >= RECORD_RELIABLE.WATCHDOG_MS && transfer.receivedBytes < transfer.totalSize) {
           transfer.recovering = true;
           transfer.recoveryCycles = (transfer.recoveryCycles || 0) + 1;
-          log(`RECORD control watchdog: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} no_rx_ms=${Math.round(now - transfer.lastRxMs)} bypass=1`);
+          logWarn(`RECORD control watchdog: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} no_rx_ms=${Math.round(now - transfer.lastRxMs)} bypass=1`);
           queueReliableNackOrAck(transfer, true, true);
           flushPendingChunkAck(true);
           if (state.activeTransferSessionId === transfer.sessionId) {
@@ -2761,7 +2914,7 @@ input[type="checkbox"] {
     if (transfer &&
         transfer.lastControlQueuedSignature === rawSig &&
         (now - (transfer.lastControlQueuedMs || 0)) < RECORD_RELIABLE.ACK_GUARD_MS) {
-      log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${frameType} reason=dup_guard`);
+      logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${frameType} reason=dup_guard`);
       return;
     }
     if (transfer) {
@@ -2879,11 +3032,11 @@ input[type="checkbox"] {
     if (masterOwnsNodeTransfer(transfer)) {
       if ((performance.now() - (transfer.lastObserverLogMs || 0)) >= 5000) {
         transfer.lastObserverLogMs = performance.now();
-        log(`RECORD control observer: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} rx=${transfer.receivedBytes}/${transfer.totalSize} (Master owns this upload)`);
+        logDebug(`RECORD control observer: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} rx=${transfer.receivedBytes}/${transfer.totalSize} (Master owns this upload)`);
       }
       return;
     }
-    log(`RECORD control decide: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} force=${forceRecovery ? 1 : 0} bypass=${bypassSuppression ? 1 : 0}`);
+    logDebug(`RECORD control decide: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} force=${forceRecovery ? 1 : 0} bypass=${bypassSuppression ? 1 : 0}`);
     if (forceRecovery) {
       transfer.recovering = true;
     }
@@ -2916,7 +3069,7 @@ input[type="checkbox"] {
           transfer.awaitingChunk !== missing.first) {
         const activeAgeMs = now - (transfer.lastRecoveryProgressMs || 0);
         if (activeAgeMs < (RECORD_RELIABLE.AWAITING_RETRY_MS * 2)) {
-          log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.NACK_RANGE} reason=active_range_lock awaiting=${transfer.awaitingChunk} next_missing=${missing.first}`);
+          logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.NACK_RANGE} reason=active_range_lock awaiting=${transfer.awaitingChunk} next_missing=${missing.first}`);
           return;
         }
       }
@@ -2926,16 +3079,16 @@ input[type="checkbox"] {
         : 0;
       const retryGuardMs = bypassSuppression ? RECORD_RELIABLE.NACK_RETRY_BYPASS_MS : RECORD_RELIABLE.NACK_RETRY_MS;
       if (!watchdogRecoveryRetry && (now - lastRangeNackMs) < retryGuardMs) {
-        log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.NACK_RANGE} reason=nack_retry_guard first=${missing.first} count=${missing.count}`);
+        logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.NACK_RANGE} reason=nack_retry_guard first=${missing.first} count=${missing.count}`);
         return;
       }
       if (!watchdogRecoveryRetry && transfer.awaitingChunk === missing.first && transfer.lastNackQueuedMs > 0 && (now - transfer.lastNackQueuedMs) < retryGuardMs) {
-        log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.NACK_RANGE} reason=awaiting_retry_guard first=${missing.first}`);
+        logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.NACK_RANGE} reason=awaiting_retry_guard first=${missing.first}`);
         return;
       }
       if (watchdogRecoveryRetry) {
         transfer.awaitingTimeouts = (transfer.awaitingTimeouts || 0) + 1;
-        log(`RECORD control recovery retry: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} first=${missing.first} count=${missing.count} awaiting_ms=${Math.round(awaitingAgeMs)}`);
+        logDebug(`RECORD control recovery retry: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} first=${missing.first} count=${missing.count} awaiting_ms=${Math.round(awaitingAgeMs)}`);
       }
       const payload = new Uint8Array(12);
       const dv = new DataView(payload.buffer);
@@ -2964,23 +3117,23 @@ input[type="checkbox"] {
       return;
     }
     if (transfer.awaitingChunk !== null && transfer.awaitingChunk !== undefined) {
-      log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=awaiting_nack_only awaiting=${transfer.awaitingChunk}`);
+      logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=awaiting_nack_only awaiting=${transfer.awaitingChunk}`);
       return;
     }
     const lastAdvertised = transfer.lastAdvertisedWindowChunk || 0;
     if (missing && next > missing.first) {
       transfer.staleAckSuppressed = (transfer.staleAckSuppressed || 0) + 1;
-      log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=hole_pending next=${next} missing=${missing.first}`);
+      logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=hole_pending next=${next} missing=${missing.first}`);
       return;
     }
     if (next < lastAdvertised) {
-      log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=backward_window next=${next} last=${lastAdvertised}`);
+      logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=backward_window next=${next} last=${lastAdvertised}`);
       return;
     }
     if (next === lastAdvertised &&
         !bypassSuppression &&
         (now - (transfer.lastAckQueuedMs || 0)) < currentReliableTuning().ackEveryMs) {
-      log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=ack_rate_guard next=${next}`);
+      logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=ack_rate_guard next=${next}`);
       return;
     }
     const payload = new Uint8Array(14);
@@ -3041,19 +3194,19 @@ input[type="checkbox"] {
     const ackChar = getRecordAckWriteChar();
     if (!ackChar) {
       state.pendingAckBySession.clear();
-      log("RECORD flush recovery: no_ack_char pending_cleared");
+      logDebug("RECORD flush recovery: no_ack_char pending_cleared");
       return;
     }
     if (state.pendingAckBySession.size === 0) {
-      log("RECORD flush gate: pending_empty");
+      logDebug("RECORD flush gate: pending_empty");
       return;
     }
     if (state.cmdWriteBusy && !forceBypassBusy) {
       const stuckMs = state.cmdWriteBusySinceMs > 0 ? Math.round(performance.now() - state.cmdWriteBusySinceMs) : 0;
       if (stuckMs < RECORD_RELIABLE.CMD_BUSY_STUCK_MS) {
-        log(`RECORD flush gate: cmdWriteBusy stuck_ms=${stuckMs}`);
+        logDebug(`RECORD flush gate: cmdWriteBusy stuck_ms=${stuckMs}`);
       } else {
-        log(`RECORD flush gate: write still pending stuck_ms=${stuckMs}`);
+        logDebug(`RECORD flush gate: write still pending stuck_ms=${stuckMs}`);
       }
       return;
     }
@@ -3065,7 +3218,7 @@ input[type="checkbox"] {
     const first = [...state.pendingAckBySession.entries()]
       .sort((a, b) => pendingAckPriority(a[1]) - pendingAckPriority(b[1]))[0];
     if (!first) {
-      log(`RECORD flush gate: no_eligible_after_filter pending=${state.pendingAckBySession.size}`);
+      logDebug(`RECORD flush gate: no_eligible_after_filter pending=${state.pendingAckBySession.size}`);
       return;
     }
     const [key, raw] = first;
@@ -3079,7 +3232,7 @@ input[type="checkbox"] {
       const ackChunk = dv.getUint32(11, true);
       if (ackChunk < (transfer.lastAdvertisedWindowChunk || 0)) {
         transfer.staleAckSuppressed = (transfer.staleAckSuppressed || 0) + 1;
-        log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=flush_stale_chunk ack=${ackChunk} last=${transfer.lastAdvertisedWindowChunk || 0}`);
+        logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${RECORD_REL.ACK_WINDOW} reason=flush_stale_chunk ack=${ackChunk} last=${transfer.lastAdvertisedWindowChunk || 0}`);
         return;
       }
     }
@@ -3088,7 +3241,7 @@ input[type="checkbox"] {
     if (transfer &&
         transfer.lastAckSentSignature === rawSig &&
         (now - (transfer.lastAckSentMs || 0)) < RECORD_RELIABLE.ACK_TX_GUARD_MS) {
-      log(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${raw[4] || 0} reason=tx_guard`);
+      logDebug(`RECORD control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${raw[4] || 0} reason=tx_guard`);
       return;
     }
     if (raw.length > BLE_CFG.maxPayloadLen) {
@@ -3098,7 +3251,7 @@ input[type="checkbox"] {
     const out = raw;
     try {
       const ackCharName = ackChar === state.cmdChar ? "CMD" : (ackChar === state.recordChar ? "RECORD" : "OTHER");
-      log(`RECORD ack tx(len=${out.length}) char=${ackCharName} key=${key}`);
+      logDebug(`RECORD ack tx(len=${out.length}) char=${ackCharName} key=${key}`);
       await enqueueBleWrite(ackChar, out, false, true);
       if (transfer) {
         transfer.ackTx = (transfer.ackTx || 0) + 1;
@@ -3136,7 +3289,7 @@ input[type="checkbox"] {
   function onCmdAckNotify(evt) {
     const view = evt.target.value;
     const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-    log(`CMD_ACK recv: ${hexBytes(data)}`);
+    logDebug(`CMD_ACK recv: ${hexBytes(data)}`);
     const pipe = blepipeDecode(data);
     if (pipe.ok) {
       const payload = pipe.payload;
@@ -3225,6 +3378,7 @@ input[type="checkbox"] {
           setSessionState("Collecting");
         }
         resetTransferUi(`Master SD Collection: ${sdState} \u00b7 ${srcMask(completed)} complete`);
+        renderDevices();
         if (failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
         if (failureNode) line += ` node=NODE${failureNode}`;
         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
@@ -3335,8 +3489,7 @@ input[type="checkbox"] {
         const readyInfo = state.nodeRecorderReady.get(id);
         let statusText = ` NODE${id}`;
         if (readyInfo) {
-          const stateLabels = ["idle", "preparing", "recording", "stopping", "done"];
-          const stateLabel = readyInfo.recorderState < stateLabels.length ? stateLabels[readyInfo.recorderState] : `state${readyInfo.recorderState}`;
+          const stateLabel = recorderStateLabel(readyInfo.recorderState);
           statusText += ` (${readyInfo.ready ? "●" : "○"} ${stateLabel}`;
           if (readyInfo.capacityMs > 0) statusText += `, ${Math.round(readyInfo.capacityMs / 1000)}s`;
           statusText += ")";
@@ -3348,6 +3501,81 @@ input[type="checkbox"] {
       }
     }
     updateStartStreamAvailability();
+    renderDevices();
+  }
+
+  // Master + Node status dashboard. Read-only; selection stays in the
+  // Session Nodes checkboxes so start gating logic is unchanged.
+  function renderDevices() {
+    if (!ui.deviceGrid) return;
+    const frag = document.createDocumentFragment();
+    const connected = !!state.cmdChar;
+    const sdState = MASTER_SD_COLLECTION_STATES[state.trainingCsv.state] ?? "Idle";
+
+    const masterCard = document.createElement("div");
+    masterCard.className = "device-card";
+    const mDot = document.createElement("span");
+    mDot.className = `device-dot ${connected ? "ok" : "bad"}`;
+    const mName = document.createElement("span");
+    mName.className = "device-name";
+    mName.textContent = `MASTER${state.device?.name ? ` (${state.device.name})` : ""}`;
+    const mState = document.createElement("span");
+    const sessionActive = ["Streaming", "Collecting", "Transferring"].includes(state.sessionState);
+    mState.className = `device-state ${connected ? (sessionActive ? "warn" : "ok") : "bad"}`;
+    mState.textContent = connected ? state.sessionState : "Offline";
+    const mMeta = document.createElement("span");
+    mMeta.className = "device-meta";
+    mMeta.textContent = connected
+      ? `SD: ${sdState} · session ${state.activeRecordSessionId || "-"}`
+      : "Connect to Master";
+    masterCard.appendChild(mDot);
+    masterCard.appendChild(mName);
+    masterCard.appendChild(mState);
+    const metaRow = document.createElement("span");
+    metaRow.className = "device-meta";
+    metaRow.style.gridColumn = "1 / -1";
+    metaRow.textContent = mMeta.textContent;
+    masterCard.appendChild(metaRow);
+    frag.appendChild(masterCard);
+
+    const nodeIds = (state.discoveredNodes || []).filter((id) => id >= 1 && id <= 4);
+    if (nodeIds.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "device-meta";
+      empty.textContent = "No Nodes discovered. Use Rediscover / Refresh Nodes.";
+      frag.appendChild(empty);
+    }
+    for (const id of nodeIds) {
+      const readyInfo = state.nodeRecorderReady.get(id);
+      const card = document.createElement("div");
+      card.className = "device-card";
+      const dot = document.createElement("span");
+      const ready = !!readyInfo?.ready;
+      dot.className = `device-dot ${ready ? "ok" : (readyInfo ? "warn" : "bad")}`;
+      const name = document.createElement("span");
+      name.className = "device-name";
+      name.textContent = `NODE${id}${state.selectedNodes.has(id) ? " · selected" : ""}`;
+      const stateEl = document.createElement("span");
+      const recorderState = readyInfo ? recorderStateLabel(readyInfo.recorderState) : "unknown";
+      const busy = readyInfo && readyInfo.recorderState !== 0;
+      stateEl.className = `device-state ${busy ? "warn" : (ready ? "ok" : "bad")}`;
+      stateEl.textContent = recorderState;
+      const meta = document.createElement("span");
+      meta.className = "device-meta";
+      meta.style.gridColumn = "1 / -1";
+      const capacityText = readyInfo && readyInfo.capacityMs > 0
+        ? ` · ${Math.round(readyInfo.capacityMs / 1000)}s capacity` : "";
+      const sessionText = readyInfo && readyInfo.sessionId
+        ? ` · session ${readyInfo.sessionId}` : "";
+      meta.textContent = `${ready ? "record ready" : (readyInfo ? "not ready" : "no status")}${capacityText}${sessionText}`;
+      card.appendChild(dot);
+      card.appendChild(name);
+      card.appendChild(stateEl);
+      card.appendChild(meta);
+      frag.appendChild(card);
+    }
+    ui.deviceGrid.innerHTML = "";
+    ui.deviceGrid.appendChild(frag);
   }
 
   function renderTestTargets() {
@@ -3521,10 +3749,10 @@ input[type="checkbox"] {
       if (handleRecoveryPipeFrame(pipe)) {
         return;
       }
-      log(`STATUS recv: type=0x${pipe.msgType.toString(16).padStart(2, "0")} payload=${hexBytes(pipe.payload)}`);
+      logDebug(`STATUS recv: type=0x${pipe.msgType.toString(16).padStart(2, "0")} payload=${hexBytes(pipe.payload)}`);
       return;
     }
-    log(`RECOVERY notify: ${hexBytes(data)}`);
+    logDebug(`RECOVERY notify: ${hexBytes(data)}`);
   }
 
   function handleRecoveryPipeFrame(pipe) {
@@ -3573,7 +3801,7 @@ input[type="checkbox"] {
     const status = payload[2];
     const targetIds = testTargetIds();
     const selected = ui.testTargetSelect.value === "all" || targetIds.includes(nodeId);
-    log(`TOUCH status: source=${sourceLabel(nodeId)} state=${touchStatusLabel(status)}`);
+    logDebug(`TOUCH status: source=${sourceLabel(nodeId)} state=${touchStatusLabel(status)}`);
     if (!selected) {
       return true;
     }
@@ -3614,7 +3842,8 @@ input[type="checkbox"] {
     const recorderState = dv.getUint8(3);
     const sessionId = dv.getUint32(4, true) >>> 0;
     const maximumDurationMs = payload.length >= 12 ? dv.getUint32(8, true) >>> 0 : 0;
-    log(`RECORD node ready: source=${sourceLabel(nodeId)} ready=${ready ? 1 : 0} state=${recorderState} session=${sessionId} capacity_ms=${maximumDurationMs}`);
+    logOnChange(`node-ready-${nodeId}`,
+      `RECORD node ready: source=${sourceLabel(nodeId)} ready=${ready ? 1 : 0} state=${recorderState} session=${sessionId} capacity_ms=${maximumDurationMs}`);
     // Track node recorder readiness for Start Stream gating
     state.nodeRecorderReady.set(nodeId, {
       ready,
@@ -3625,6 +3854,7 @@ input[type="checkbox"] {
     });
     updateStartStreamAvailability();
     renderDiscoveredNodes(); // Update UI with readiness indicators
+    renderDevices();
     return true;
   }
 
@@ -3639,7 +3869,7 @@ input[type="checkbox"] {
     const sessionId = dv.getUint32(6, true) >>> 0;
     const extendMs = clamp(dv.getUint32(10, true) >>> 0, 1000, 60000);
     const phaseName = RECORD_START_PHASE[phase] || `0x${phase.toString(16).padStart(2, "0")}`;
-    log(`RECORD start heartbeat: source=${sourceLabel(sourceId)} session=${sessionId} phase=${phaseName} extend_ms=${extendMs}`);
+    logDebug(`RECORD start heartbeat: source=${sourceLabel(sourceId)} session=${sessionId} phase=${phaseName} extend_ms=${extendMs}`);
     if (sessionId === state.activeRecordSessionId) {
       setRecordingUi(inProgress && (phase === 0x06 || phase === 0x22));
     }
@@ -5954,7 +6184,7 @@ input[type="checkbox"] {
     const h = canvas.height;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = "#10161f";
     ctx.fillRect(0, 0, w, h);
     ctx.scale(ratio, ratio);
 
@@ -5997,7 +6227,7 @@ input[type="checkbox"] {
 
     const hasSamples = series.some((item) => item.points.length > 0);
     if (!hasSamples) {
-      ctx.fillStyle = "#7a8998";
+      ctx.fillStyle = "#8a99ac";
       ctx.font = "13px Segoe UI";
       ctx.textAlign = "center";
       ctx.fillText(`No ${sensorShortName(chart.sensor)} samples for ${sourceLabel(sourceId)}`,
@@ -6052,7 +6282,7 @@ input[type="checkbox"] {
     if (Number.isFinite(state.plotCursorMs) &&
         state.plotCursorMs >= viewport.minMs && state.plotCursorMs <= viewport.maxMs) {
       const cx = mapX(state.plotCursorMs, viewport.minMs, viewport.maxMs, area);
-      ctx.strokeStyle = "rgba(33, 37, 41, 0.45)";
+      ctx.strokeStyle = "rgba(216, 225, 236, 0.35)";
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(cx, area.y);
@@ -6262,12 +6492,12 @@ input[type="checkbox"] {
       const ratio = i / horizontalLines;
       const y = area.y + (ratio * area.h);
       const value = maxY - (ratio * (maxY - minY));
-      ctx.strokeStyle = i === horizontalLines ? "#c7d1dc" : "#e8edf2";
+      ctx.strokeStyle = i === horizontalLines ? "#31404f" : "#212c39";
       ctx.beginPath();
       ctx.moveTo(area.x, y);
       ctx.lineTo(area.x + area.w, y);
       ctx.stroke();
-      ctx.fillStyle = "#657688";
+      ctx.fillStyle = "#8a99ac";
       ctx.textAlign = "right";
       ctx.fillText(formatNum(value), area.x - 8, y);
     }
@@ -6276,14 +6506,14 @@ input[type="checkbox"] {
     for (let i = 0; i <= verticalLines; i += 1) {
       const ratio = i / verticalLines;
       const x = area.x + (ratio * area.w);
-      ctx.strokeStyle = "#eef2f6";
+      ctx.strokeStyle = "#1c2632";
       ctx.beginPath();
       ctx.moveTo(x, area.y);
       ctx.lineTo(x, area.y + area.h);
       ctx.stroke();
     }
 
-    ctx.fillStyle = "#657688";
+    ctx.fillStyle = "#8a99ac";
     ctx.textBaseline = "alphabetic";
     ctx.textAlign = "left";
     ctx.fillText(`${(minX / 1000).toFixed(1)} s`, area.x, area.y + area.h + 22);
@@ -6318,7 +6548,7 @@ input[type="checkbox"] {
 
     if (visible.length === 0) {
       drawAxes(ctx, area, 0, 1, -1, 1);
-      ctx.fillStyle = "#7a8998";
+      ctx.fillStyle = "#8a99ac";
       ctx.font = "14px Segoe UI";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -6384,7 +6614,7 @@ input[type="checkbox"] {
     }
 
     for (const p of selectedPx) {
-      ctx.fillStyle = "#111";
+      ctx.fillStyle = "#ffd166";
       ctx.beginPath();
       ctx.arc(p.px, p.py, 4, 0, Math.PI * 2);
       ctx.fill();
@@ -6392,7 +6622,7 @@ input[type="checkbox"] {
 
     if (state.hoverSelectionRect) {
       const r = normRect(state.hoverSelectionRect);
-      ctx.strokeStyle = "#1c7ed6";
+      ctx.strokeStyle = "#4da3ff";
       ctx.setLineDash([4, 4]);
       ctx.strokeRect(r.x, r.y, r.w, r.h);
       ctx.setLineDash([]);
@@ -6402,11 +6632,11 @@ input[type="checkbox"] {
   }
 
   function drawAxes(ctx, area, minX, maxX, minY, maxY, perTraceAutoY = false) {
-    ctx.strokeStyle = "#b9c4d0";
+    ctx.strokeStyle = "#31404f";
     ctx.lineWidth = 1;
     ctx.strokeRect(area.x, area.y, area.w, area.h);
 
-    ctx.fillStyle = "#57687a";
+    ctx.fillStyle = "#8a99ac";
     ctx.font = "12px Segoe UI";
     ctx.fillText(`${Math.round(minX)} ms`, area.x, area.y + area.h + 15);
     ctx.fillText(`${Math.round(maxX)} ms`, area.x + area.w - 50, area.y + area.h + 15);

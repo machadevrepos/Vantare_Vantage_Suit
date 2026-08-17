@@ -24,6 +24,52 @@ namespace exo {
 #define EXO_BNO85_REPORT_INTERVAL_US 10000U
 #endif
 
+/* The BNO08x caps every fused report (game rotation vector, linear
+ * acceleration, gravity, calibrated gyro) at 400 Hz = 2500 us. The game
+ * rotation vector anchors one recorded sample per report, so it runs at the
+ * fusion maximum. The auxiliary reports run slower: every report costs the
+ * superloop ~0.7 ms of blocking I2C, so 400 + 3x100 reports/s saturated the
+ * Node loop (measured: GRV delivered at ~125 Hz, ICM sagged to ~125 Hz).
+ * 400 + 3x50 = 550 reports/s leaves the loop headroom for flash flushes,
+ * the ICM schedule and BLE. */
+#ifndef EXO_BNO85_RV_REPORT_INTERVAL_US
+#define EXO_BNO85_RV_REPORT_INTERVAL_US 2500U
+#endif
+
+#ifndef EXO_BNO85_AUX_REPORT_INTERVAL_US
+#define EXO_BNO85_AUX_REPORT_INTERVAL_US 5000U
+#endif
+
+/* SHTP packets drained per service() call while recording. At 400 Hz +
+ * 3x50 Hz the bus produces ~0.55 packets/ms, so the budget must cover the
+ * backlog left by a worst-case superloop iteration (BLE + storage bursts). */
+#ifndef EXO_BNO85_SERVICE_BUDGET
+#define EXO_BNO85_SERVICE_BUDGET 16U
+#endif
+
+/* Packets drained per service() call while NOT recording. The sensor keeps
+ * producing reports at the configured rate forever; draining them at the
+ * full budget made idle loops (live preview, and especially the flash
+ * upload phase after a recording) spend half their time in I2C, which
+ * starved BLE and contributed to node upload stalls. Preview needs ~25 Hz,
+ * which a small budget delivers while keeping the loop responsive. */
+#ifndef EXO_BNO85_IDLE_SERVICE_BUDGET
+#define EXO_BNO85_IDLE_SERVICE_BUDGET 4U
+#endif
+
+/* Capture queue depth (power of two). While enabled, every game rotation
+ * vector report is queued instead of only latching the latest value, so a
+ * slow superloop iteration stalls the recorder instead of discarding
+ * reports. At 400 Hz the queue spans depth * 2.5 ms of stall. */
+#ifndef EXO_BNO85_SAMPLE_QUEUE_DEPTH
+#define EXO_BNO85_SAMPLE_QUEUE_DEPTH 64U
+#endif
+static_assert(((EXO_BNO85_SAMPLE_QUEUE_DEPTH != 0U) &&
+               ((EXO_BNO85_SAMPLE_QUEUE_DEPTH & (EXO_BNO85_SAMPLE_QUEUE_DEPTH - 1U)) == 0U)),
+              "EXO_BNO85_SAMPLE_QUEUE_DEPTH must be a power of two");
+static_assert(EXO_BNO85_SAMPLE_QUEUE_DEPTH <= 255U,
+              "EXO_BNO85_SAMPLE_QUEUE_DEPTH must fit the queue counters");
+
 class Bno85Stm32 {
 public:
     Bno85Stm32(I2C_HandleTypeDef &bus, uint8_t address_7bit)
@@ -46,8 +92,10 @@ public:
         begin_callback_status_ = SH2_ERR;
         begin_config_status_ = SH2_ERR;
         next_read_len_ = kShtpHeaderLen;
-        sh2_SensorConfig_t config = {};
-        config.reportInterval_us = EXO_BNO85_REPORT_INTERVAL_US;
+        sh2_SensorConfig_t rv_config = {};
+        rv_config.reportInterval_us = EXO_BNO85_RV_REPORT_INTERVAL_US;
+        sh2_SensorConfig_t aux_config = {};
+        aux_config.reportInterval_us = EXO_BNO85_AUX_REPORT_INTERVAL_US;
         int open_status = SH2_ERR_IO;
         for (uint8_t attempt = 0U; attempt < 5U; ++attempt) {
             open_status = sh2_open(&hal_, &Bno85Stm32::async_event_callback, nullptr);
@@ -73,7 +121,7 @@ public:
         while ((HAL_GetTick() - wait_start) < 50U) {
             sh2_service();
         }
-        const int grv_status = sh2_setSensorConfig(SH2_GAME_ROTATION_VECTOR, &config);
+        const int grv_status = sh2_setSensorConfig(SH2_GAME_ROTATION_VECTOR, &rv_config);
 #if EXO_ACQ_DIAG_BNO_RV_ONLY
         /* Experiment D2: leave the auxiliary reports disabled so the rotation
          * vector owns the SHTP bandwidth. Reported as SH2_OK so begin() still
@@ -82,9 +130,9 @@ public:
         const int grav_status = SH2_OK;
         const int gyro_status = SH2_OK;
 #else
-        const int la_status = sh2_setSensorConfig(SH2_LINEAR_ACCELERATION, &config);
-        const int grav_status = sh2_setSensorConfig(SH2_GRAVITY, &config);
-        const int gyro_status = sh2_setSensorConfig(SH2_GYROSCOPE_CALIBRATED, &config);
+        const int la_status = sh2_setSensorConfig(SH2_LINEAR_ACCELERATION, &aux_config);
+        const int grav_status = sh2_setSensorConfig(SH2_GRAVITY, &aux_config);
+        const int gyro_status = sh2_setSensorConfig(SH2_GYROSCOPE_CALIBRATED, &aux_config);
 #endif
         const int config_status =
             (grv_status == SH2_OK || la_status == SH2_OK || grav_status == SH2_OK || gyro_status == SH2_OK)
@@ -96,7 +144,9 @@ public:
     }
 
     void service() {
-        service_pending(8U);
+        service_pending(capture_queue_enabled_
+                ? EXO_BNO85_SERVICE_BUDGET
+                : EXO_BNO85_IDLE_SERVICE_BUDGET);
     }
 
     /* BNO08x INT is level-low while SHTP data is pending. Polling the level in
@@ -158,6 +208,64 @@ public:
         return true;
     }
 
+    /* ---- Lossless capture queue (recording path) ----
+     *
+     * take_latest() coalesces reports into one snapshot, so the recorded BNO
+     * rate could never exceed the superloop rate. While the capture queue is
+     * enabled, every game rotation vector report instead pushes one merged
+     * sample here; the recorder drains them in bulk exactly like the
+     * ICM45686 hardware FIFO. */
+    void set_capture_queue_enabled(bool enabled) {
+        capture_queue_enabled_ = enabled;
+        q_head_ = 0U;
+        q_count_ = 0U;
+        pop_offset_valid_ = false;
+        pop_offset_us_ = 0U;
+        if (enabled) {
+            /* Counters start clean per session; on disable they survive so
+             * the finalizer can still report the session's queue drops. */
+            queue_drops_ = 0U;
+        }
+    }
+
+    bool capture_queue_enabled() const { return capture_queue_enabled_; }
+
+    uint8_t queued_sample_count() const { return q_count_; }
+
+    uint32_t queue_drops() const { return queue_drops_; }
+
+    uint8_t pop_samples(Bno85Sample *out, uint8_t capacity) {
+        if (out == nullptr || capacity == 0U || q_count_ == 0U) {
+            return 0U;
+        }
+        const uint8_t n = (q_count_ < capacity) ? q_count_ : capacity;
+        /* The sensor samples on a uniform 1/rate grid; arrival times only
+         * reflect when the superloop drained the bus. Rebuild that grid:
+         * continue from the last assigned offset, or re-anchor to now when
+         * the grid fell far behind (the device dropped reports during a
+         * stall) so the timeline jumps forward instead of compressing. */
+        uint32_t newest = pop_offset_valid_
+                ? pop_offset_us_ + (static_cast<uint32_t>(n) * EXO_BNO85_RV_REPORT_INTERVAL_US)
+                : micros32();
+        if ((static_cast<int32_t>(micros32() - newest)) >
+                static_cast<int32_t>(2U * EXO_BNO85_RV_REPORT_INTERVAL_US)) {
+            newest = micros32();
+        }
+        for (uint8_t i = 0U; i < n; ++i) {
+            out[i] = queue_[(q_head_ + i) & kQueueMask];
+            out[i].offset_us = newest - (static_cast<uint32_t>(n - 1U - i) * EXO_BNO85_RV_REPORT_INTERVAL_US);
+        }
+        q_head_ = static_cast<uint8_t>((q_head_ + n) & kQueueMask);
+        q_count_ = static_cast<uint8_t>(q_count_ - n);
+        pop_offset_us_ = newest;
+        pop_offset_valid_ = true;
+        return n;
+    }
+
+    bool pop_sample(Bno85Sample &out) {
+        return pop_samples(&out, 1U) == 1U;
+    }
+
     int last_begin_status() const { return last_begin_status_; }
     int begin_open_status() const { return begin_open_status_; }
     int begin_callback_status() const { return begin_callback_status_; }
@@ -188,6 +296,38 @@ private:
     static constexpr uint16_t kMaxI2cReadLen = 128U;
     static constexpr float kPi = 3.14159265f;
     static constexpr float kHalfPi = 1.57079633f;
+    static constexpr uint8_t kQueueMask =
+            static_cast<uint8_t>(EXO_BNO85_SAMPLE_QUEUE_DEPTH - 1U);
+
+    /* Microsecond clock for report timestamping. HAL_GetTick() is 1 ms
+     * quantized and cannot order 2.5 ms reports, so the DWT cycle counter
+     * is accumulated into microseconds instead (deltas are wrap-safe). */
+    static uint32_t micros32() {
+        static bool started = false;
+        static uint32_t last_cycles = 0U;
+        static uint32_t carry_cycles = 0U;
+        static uint32_t accumulated_us = 0U;
+        if (!started) {
+            CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+            DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+            last_cycles = DWT->CYCCNT;
+            started = true;
+        }
+        const uint32_t cycles_per_us = SystemCoreClock / 1000000U;
+        if (cycles_per_us == 0U) {
+            return accumulated_us;
+        }
+        const uint32_t now_cycles = DWT->CYCCNT;
+        const uint32_t delta_cycles = now_cycles - last_cycles;
+        last_cycles = now_cycles;
+        accumulated_us += delta_cycles / cycles_per_us;
+        carry_cycles += delta_cycles % cycles_per_us;
+        if (carry_cycles >= cycles_per_us) {
+            accumulated_us += carry_cycles / cycles_per_us;
+            carry_cycles %= cycles_per_us;
+        }
+        return accumulated_us;
+    }
 
     static float fast_abs(float v) {
         return (v < 0.0f) ? -v : v;
@@ -387,7 +527,7 @@ private:
     }
 
     static uint32_t get_time_us(sh2_Hal_t *) {
-        return HAL_GetTick() * 1000U;
+        return micros32();
     }
 
     static void async_event_callback(void *, sh2_AsyncEvent_t *) {}
@@ -443,7 +583,49 @@ private:
             active_->latest_sensor_timestamp_us_ = static_cast<uint32_t>(active_->latest_.timestamp);
             active_->latest_delay_us_ = active_->latest_.delay;
             active_->has_new_data_ = true;
+            /* The anchor report seals one queued sample from the merged
+             * latest values; auxiliary reports only refresh the merge. */
+            if (id == SH2_GAME_ROTATION_VECTOR && active_->capture_queue_enabled_) {
+                active_->push_capture_sample_();
+            }
         }
+    }
+
+    void push_capture_sample_() {
+        if (q_count_ >= EXO_BNO85_SAMPLE_QUEUE_DEPTH) {
+            ++queue_drops_;
+            return;
+        }
+        Bno85Sample sample { };
+        /* offset_us is assigned on pop from the uniform report grid. */
+        sample.quat_i = latest_quat_i_;
+        sample.quat_j = latest_quat_j_;
+        sample.quat_k = latest_quat_k_;
+        sample.quat_real = latest_quat_real_;
+        sample.linear_accel_x = latest_linear_accel_x_;
+        sample.linear_accel_y = latest_linear_accel_y_;
+        sample.linear_accel_z = latest_linear_accel_z_;
+        sample.gravity_x = latest_gravity_x_;
+        sample.gravity_y = latest_gravity_y_;
+        sample.gravity_z = latest_gravity_z_;
+        sample.gyro_x = latest_gyro_x_;
+        sample.gyro_y = latest_gyro_y_;
+        sample.gyro_z = latest_gyro_z_;
+#if EXO_SAMPLE_FORMAT_VERSION == 2U
+        sample.roll_rad = 0.0f;
+        sample.pitch_rad = 0.0f;
+        sample.yaw_rad = 0.0f;
+        sample.accuracy = latest_status_;
+        sample.status = latest_sensor_id_;
+        sample.report_id = last_report_id_;
+        sample.sequence = latest_sequence_;
+        sample.available_mask = latest_available_mask_;
+        sample.reserved0 = 0U;
+        sample.sensor_timestamp_us = latest_sensor_timestamp_us_;
+        sample.delay_us = latest_delay_us_;
+#endif
+        queue_[(q_head_ + q_count_) & kQueueMask] = sample;
+        ++q_count_;
     }
 
     I2C_HandleTypeDef &bus_;
@@ -489,6 +671,13 @@ private:
     uint16_t next_read_len_ = kShtpHeaderLen;
     GPIO_TypeDef *interrupt_port_ = nullptr;
     uint16_t interrupt_pin_ = 0U;
+    Bno85Sample queue_[EXO_BNO85_SAMPLE_QUEUE_DEPTH] { };
+    uint8_t q_head_ = 0U;
+    uint8_t q_count_ = 0U;
+    uint32_t queue_drops_ = 0U;
+    bool capture_queue_enabled_ = false;
+    bool pop_offset_valid_ = false;
+    uint32_t pop_offset_us_ = 0U;
     inline static Bno85Stm32 *active_ = nullptr;
 };
 

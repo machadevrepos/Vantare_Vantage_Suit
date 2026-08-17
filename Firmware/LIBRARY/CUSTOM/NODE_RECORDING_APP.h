@@ -26,10 +26,12 @@ namespace exo {
 			static constexpr uint32_t kDefaultDurationMs = 10000U;
 			static constexpr uint32_t kDefaultLeadTimeUs = 300000U;
 			static constexpr uint32_t kDataRateLogPeriodMs = 10000U;
-			static constexpr uint32_t kBnoPeriodUs = 10000U;
 			static constexpr uint32_t kIcmPeriodUs = 5000U;
-			static constexpr uint16_t kBnoTargetRateHz = 100U;
+			/* BNO08x fusion maximum: the driver queues one sample per game
+			 * rotation vector report at this rate (EXO_BNO85_RV_REPORT_INTERVAL_US). */
+			static constexpr uint16_t kBnoTargetRateHz = 400U;
 			static constexpr uint16_t kIcmTargetRateHz = 200U;
+			static constexpr uint8_t kMaxBnoDrainPerTick = 8U;
 			static constexpr uint8_t kBnoLiveSensorId = 1U;
 			static constexpr uint8_t kIcmLiveSensorId = 2U;
 			static constexpr uint8_t kMaxLivePayload =
@@ -238,6 +240,7 @@ namespace exo {
 									static_cast<unsigned>(recorder_.state()));
 							return;
 						}
+						bno85_.set_capture_queue_enabled(true);
 						reset_capture_schedule();
 						record_finalize_pending_ = false;
 						reset_data_rate_log();
@@ -329,6 +332,7 @@ namespace exo {
 				if (!ok) {
 					return false;
 				}
+				bno85_.set_capture_queue_enabled(false);
 				armed_ = false;
 				prepared_ = false;
 				armed_tick_ms_ = 0U;
@@ -462,6 +466,7 @@ namespace exo {
 							static_cast<unsigned>(recorder_.state()));
 					return false;
 				}
+				bno85_.set_capture_queue_enabled(true);
 				reset_capture_schedule();
 				record_finalize_pending_ = false;
 				reset_data_rate_log();
@@ -566,31 +571,25 @@ namespace exo {
 			void process_recording_ticks() {
 				const uint32_t elapsed_us = (HAL_GetTick() - recording_started_ms_) * 1000U;
 				const uint32_t duration_us = pending_start_.requested_duration_ms * 1000U;
-				if (record_finalize_pending_) {
-					return;
+			if (record_finalize_pending_) {
+				return;
+			}
+			/* BNO samples are produced by the sensor-driven capture queue at
+			 * the report rate, not by this loop's polling cadence, so a slow
+			 * iteration only delays the drain instead of losing reports. */
+			const uint8_t bno_pop = bno85_.pop_samples(bno_drain_buf_, kMaxBnoDrainPerTick);
+			for (uint8_t i = 0U; i < bno_pop; ++i) {
+				++bno_captured_count_;
+				++data_rate_bno_count_;
+				if (!bno_record_buf_.enqueue(bno_drain_buf_[i])) {
+					loss_flags_ |= kSessionLossBnoBuffer;
 				}
-				uint8_t catchup = 0U;
-				while (record_next_bno_us_ < duration_us &&
-						static_cast<int32_t>(elapsed_us - record_next_bno_us_) >= 0 && catchup < 2U) {
-					++bno_attempted_count_;
-					Bno85Sample sample { };
-					if (bno85_.take_latest(record_next_bno_us_, sample)) {
-						++bno_captured_count_;
-						++data_rate_bno_count_;
-						if (!bno_record_buf_.enqueue(sample)) {
-							loss_flags_ |= kSessionLossBnoBuffer;
-						}
-						(void)live_queue_.offer(kBnoLiveSensorId, &sample,
-								static_cast<uint8_t>(sizeof(sample)),
-								recording_started_ms_ + (record_next_bno_us_ / 1000U));
-					} else {
-						loss_flags_ |= kSessionLossBnoRead;
-					}
-					record_next_bno_us_ += kBnoPeriodUs;
-					++catchup;
-				}
+				(void)live_queue_.offer(kBnoLiveSensorId, &bno_drain_buf_[i],
+						static_cast<uint8_t>(sizeof(bno_drain_buf_[i])),
+						recording_started_ms_ + (bno_drain_buf_[i].offset_us / 1000U));
+			}
 
-				catchup = 0U;
+			uint8_t catchup = 0U;
 				while (record_next_icm_us_ < duration_us &&
 						static_cast<int32_t>(elapsed_us - record_next_icm_us_) >= 0 && catchup < 4U) {
 					++icm_attempted_count_;
@@ -612,9 +611,8 @@ namespace exo {
 					++catchup;
 				}
 
-				if (elapsed_us >= duration_us &&
-						record_next_bno_us_ >= duration_us &&
-						record_next_icm_us_ >= duration_us) {
+			if (elapsed_us >= duration_us &&
+					record_next_icm_us_ >= duration_us) {
 					finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
 					record_finalize_pending_ = true;
 					set_live_stream_enabled(false);
@@ -662,19 +660,25 @@ namespace exo {
 			}
 
 			void process_writer_budget() {
-				bool wrote = false;
-				if (prefer_bno_flush_) {
-					wrote = flush_one_bno_pending();
-					if (!wrote) {
-						wrote = flush_one_icm_pending();
-					}
-				} else {
-					wrote = flush_one_icm_pending();
-					if (!wrote) {
+				/* The loop exits as soon as no batch is pending, so the cap only
+				 * bounds the catch-up burst after a stall; at 400 Hz the double
+				 * buffer holds ~40 ms of samples and one flush moves 8. */
+				for (uint8_t flushes = 0U; flushes < kFlushBatchesPerTick; ++flushes) {
+					bool wrote = false;
+					if (prefer_bno_flush_) {
 						wrote = flush_one_bno_pending();
+						if (!wrote) {
+							wrote = flush_one_icm_pending();
+						}
+					} else {
+						wrote = flush_one_icm_pending();
+						if (!wrote) {
+							wrote = flush_one_bno_pending();
+						}
 					}
-				}
-				if (wrote) {
+					if (!wrote) {
+						break;
+					}
 					prefer_bno_flush_ = !prefer_bno_flush_;
 				}
 			}
@@ -683,18 +687,42 @@ namespace exo {
 				if (!record_finalize_pending_ || recorder_.state() != RecorderState::Recording) {
 					return;
 				}
+				bno85_.set_capture_queue_enabled(false);
 				bno_record_buf_.mark_partial_pending();
-				icm_record_buf_.mark_partial_pending();
-				process_writer_budget();
-				if (bno_record_buf_.has_pending() || icm_record_buf_.has_pending()) {
-					return;
-				}
-				recorder_.set_capture_metadata(kBnoTargetRateHz, kIcmTargetRateHz,
-						bno_attempted_count_, icm_attempted_count_,
-						bno_captured_count_, icm_captured_count_,
-						bno_record_buf_.drops + bno_append_fail_count_,
-						icm_record_buf_.drops + icm_append_fail_count_,
-						loss_flags_);
+			icm_record_buf_.mark_partial_pending();
+			process_writer_budget();
+			if (bno_record_buf_.has_pending() || icm_record_buf_.has_pending()) {
+				return;
+			}
+			/* The converter validates captured_count == sample_count, so the
+			 * header must describe what is durably stored, never what was
+			 * merely popped from the driver queue. Attempted is the target
+			 * rate over the achieved duration (or the stored count when the
+			 * sensor over-delivered); anything missing shows up as dropped. */
+			const uint32_t stored_bno = recorder_.header().bno85_sample_count;
+			const uint32_t stored_icm = recorder_.header().icm45686_sample_count;
+			const uint32_t expected_bno =
+					((finalize_duration_ms_ * kBnoTargetRateHz) + 999U) / 1000U;
+			const uint32_t expected_icm =
+					((finalize_duration_ms_ * kIcmTargetRateHz) + 999U) / 1000U;
+			bno_attempted_count_ = (expected_bno > stored_bno) ? expected_bno : stored_bno;
+			icm_attempted_count_ = (expected_icm > stored_icm) ? expected_icm : stored_icm;
+			const uint32_t bno_local_loss =
+					bno_record_buf_.drops + bno_append_fail_count_;
+			const uint32_t icm_local_loss =
+					icm_record_buf_.drops + icm_append_fail_count_;
+			if ((bno_attempted_count_ - stored_bno) > bno_local_loss) {
+				loss_flags_ |= kSessionLossBnoRead;
+			}
+			if ((icm_attempted_count_ - stored_icm) > icm_local_loss) {
+				loss_flags_ |= kSessionLossIcmRead;
+			}
+			recorder_.set_capture_metadata(kBnoTargetRateHz, kIcmTargetRateHz,
+					bno_attempted_count_, icm_attempted_count_,
+					stored_bno, stored_icm,
+					bno_attempted_count_ - stored_bno,
+					icm_attempted_count_ - stored_icm,
+					loss_flags_);
 				if (recorder_.finalize(finalize_duration_ms_)) {
 					EXO_LOG("NODE%u record finalized: duration_ms=%lu bno=%lu icm=%lu size=%lu bno_fail=%lu icm_fail=%lu bno_drop=%lu icm_drop=%lu\r\n",
 							static_cast<unsigned>(config_.node_id),
@@ -732,7 +760,6 @@ namespace exo {
 			}
 
 			void reset_capture_schedule() {
-				record_next_bno_us_ = 0U;
 				record_next_icm_us_ = 0U;
 				bno_attempted_count_ = 0U;
 				icm_attempted_count_ = 0U;
@@ -743,8 +770,9 @@ namespace exo {
 				record_finalize_pending_ = false;
 			}
 
-			static constexpr uint32_t kBnoBatchSamples = 4U;
+			static constexpr uint32_t kBnoBatchSamples = 8U;
 			static constexpr uint32_t kIcmBatchSamples = 8U;
+			static constexpr uint8_t kFlushBatchesPerTick = 4U;
 
 			NodeRecordingConfig config_;
 			Bno85Stm32 bno85_;
@@ -760,10 +788,10 @@ namespace exo {
 			uint32_t data_rate_icm_count_ = 0U;
 			DoubleBatchBuffer<Bno85Sample, kBnoBatchSamples> bno_record_buf_ { };
 			DoubleBatchBuffer<Icm45686Sample, kIcmBatchSamples> icm_record_buf_ { };
+			Bno85Sample bno_drain_buf_[kMaxBnoDrainPerTick] { };
 			uint8_t bno_flush_rr_ = 0U;
 			uint8_t icm_flush_rr_ = 0U;
 			bool prefer_bno_flush_ = true;
-			uint32_t record_next_bno_us_ = 0U;
 			uint32_t record_next_icm_us_ = 0U;
 			uint32_t bno_attempted_count_ = 0U;
 			uint32_t icm_attempted_count_ = 0U;

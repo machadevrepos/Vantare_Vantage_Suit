@@ -34,12 +34,14 @@ Require-Match $types 'icm45686_dropped_count' `
 Require-Match $types 'struct Icm45686SampleV4[\s\S]*offset_us[\s\S]*sequence' `
     'ICM v4 samples must carry capture time and sequence.'
 
-Require-Match $app 'kBnoPeriodUs\s*=\s*10000U' `
-    'Node capture must schedule BNO at 100 Hz.'
+Require-Match $app 'kBnoTargetRateHz\s*=\s*400U' `
+    'Node capture must record BNO at the sensor-native 400 Hz queue rate.'
 Require-Match $app 'kIcmPeriodUs\s*=\s*5000U' `
     'Node capture must schedule ICM at 200 Hz.'
-Require-Match $app 'record_next_bno_us_' `
-    'Node capture must maintain an independent BNO deadline.'
+Require-Match $app 'bno85_\.pop_samples\(' `
+    'Node capture must drain BNO samples from the sensor-driven capture queue.'
+Require-Match $app 'set_capture_queue_enabled\(true\)' `
+    'Node capture must enable the BNO capture queue at session start.'
 Require-Match $app 'record_next_icm_us_' `
     'Node capture must maintain an independent ICM deadline.'
 Require-NoMatch $app 'kRecordTickMs\s*=\s*10U' `

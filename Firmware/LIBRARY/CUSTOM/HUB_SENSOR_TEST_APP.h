@@ -58,7 +58,14 @@ public:
             const uint64_t bno_start_us = (d != nullptr) ? EXO_ACQ_DIAG_NOW_US() : 0ULL;
 #endif
             bno85_.service();
-            snapshot.has_bno85 = bno85_.take_latest(now_us, snapshot.bno85);
+            /* While recording, the snapshot consumes the oldest queued
+             * sample so it is still recorded via the snapshot append path;
+             * remaining queued samples are drained by
+             * drain_record_bno_samples() from the capture loop. Outside a
+             * recording the live preview keeps the latest-value snapshot. */
+            snapshot.has_bno85 = record_bno_queue_active_
+                    ? bno85_.pop_sample(snapshot.bno85)
+                    : bno85_.take_latest(now_us, snapshot.bno85);
 #if EXO_ACQ_DIAG_ENABLE
             if (d != nullptr) {
                 const uint64_t bno_end_us = EXO_ACQ_DIAG_NOW_US();
@@ -120,6 +127,11 @@ public:
     }
 
     bool begin_record_capture() {
+        /* The BNO capture queue is enabled for every recording regardless of
+         * ICM FIFO availability so the orientation stream is lossless even
+         * when the register-polling fallback runs. */
+        bno85_.set_capture_queue_enabled(true);
+        record_bno_queue_active_ = true;
         if (!icm_ready_) return false;
         record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
         return record_icm_fifo_active_;
@@ -130,7 +142,14 @@ public:
         return icm45686_.read_fifo_samples(samples, capacity);
     }
 
+    uint8_t drain_record_bno_samples(Bno85Sample *samples, uint8_t capacity) {
+        if (!record_bno_queue_active_) return 0U;
+        return bno85_.pop_samples(samples, capacity);
+    }
+
     void end_record_capture() {
+        bno85_.set_capture_queue_enabled(false);
+        record_bno_queue_active_ = false;
         if (!record_icm_fifo_active_) return;
         (void)icm45686_.end_fifo_capture();
         record_icm_fifo_active_ = false;
@@ -138,6 +157,10 @@ public:
 
     bool record_icm_fifo_active() const {
         return record_icm_fifo_active_;
+    }
+
+    bool record_bno_queue_active() const {
+        return record_bno_queue_active_;
     }
 
     bool bno_ready() const { return bno_ready_; }
@@ -414,6 +437,7 @@ private:
     bool icm_ready_ = false;
     bool sd_ready_ = false;
     bool record_icm_fifo_active_ = false;
+    bool record_bno_queue_active_ = false;
 #if EXO_HAS_FATFS
     FIL log_file_{};
     uint8_t log_buffer_[kBufferBytes]{};

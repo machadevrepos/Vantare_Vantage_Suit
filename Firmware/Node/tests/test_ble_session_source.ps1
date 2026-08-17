@@ -21,7 +21,7 @@ Require-Match $recording 'pending_start_\.session_id\s*!=\s*message\.session_id'
 Require-Match $recording 'recorder_\.finalize\(finalize_duration_ms_\)' `
     'Node finalization must use measured elapsed time.'
 
-$bnoRecord = $recording.IndexOf('bno_record_buf_.enqueue(sample)')
+$bnoRecord = $recording.IndexOf('bno_record_buf_.enqueue(bno_drain_buf_[i])')
 $bnoLive = $recording.IndexOf('live_queue_.offer(kBnoLiveSensorId')
 $icmRecord = $recording.IndexOf('icm_record_buf_.enqueue(sample)')
 $icmLive = $recording.IndexOf('live_queue_.offer(kIcmLiveSensorId')
