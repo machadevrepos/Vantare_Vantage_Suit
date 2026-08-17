@@ -17,6 +17,8 @@ struct NodeLiveSample {
 template<uint8_t MaxPayload, uint8_t Capacity>
 class NodeLiveSampleQueue {
 public:
+    static_assert(Capacity > 0U, "NodeLiveSampleQueue Capacity must be non-zero");
+
     static constexpr uint32_t kMinimumPreviewIntervalMs = 40U;
     static constexpr uint32_t kCongestedPreviewIntervalMs = 80U;
     static constexpr uint8_t kCongestionCoalesceThreshold = 4U;
@@ -35,7 +37,7 @@ public:
                uint32_t acquisition_time_ms)
     {
         if (!enabled_ || payload == nullptr || payload_len == 0U ||
-            payload_len > MaxPayload || Capacity < 2U) {
+            payload_len > MaxPayload) {
             return false;
         }
         const int8_t slot = sensor_slot(sensor_id);
@@ -53,45 +55,38 @@ public:
         gate_valid_[index] = true;
         gate_time_ms_[index] = acquisition_time_ms;
 
-        if (valid_[index]) {
-            ++coalesced_;
+        if (count_ >= Capacity) {
+            ++dropped_;
             note_congestion(acquisition_time_ms);
-        } else {
-            valid_[index] = true;
-            ++count_;
+            congested_ = true;
+            effective_interval_ms_ = kCongestedPreviewIntervalMs;
+            return false;
         }
 
-        NodeLiveSample<MaxPayload> &entry = entries_[index];
+        const uint8_t write_index =
+            static_cast<uint8_t>((tail_ + count_) % Capacity);
+        NodeLiveSample<MaxPayload> &entry = entries_[write_index];
         entry.sensor_id = sensor_id;
         entry.payload_len = payload_len;
         entry.acquisition_time_ms = acquisition_time_ms;
         memcpy(entry.payload, payload, payload_len);
+        ++count_;
         return true;
     }
 
     bool peek(NodeLiveSample<MaxPayload> &out) const
     {
-        const int8_t slot = next_ready_slot();
-        if (slot < 0) {
-            return false;
-        }
-        out = entries_[static_cast<uint8_t>(slot)];
+        if (count_ == 0U) return false;
+        out = entries_[tail_];
         return true;
     }
 
     bool discard_front()
     {
-        const int8_t slot = next_ready_slot();
-        if (slot < 0) {
-            return false;
-        }
-        const uint8_t index = static_cast<uint8_t>(slot);
-        entries_[index] = NodeLiveSample<MaxPayload>{};
-        valid_[index] = false;
-        if (count_ > 0U) {
-            --count_;
-        }
-        next_sensor_ = static_cast<uint8_t>(index ^ 1U);
+        if (count_ == 0U) return false;
+        entries_[tail_] = NodeLiveSample<MaxPayload>{};
+        tail_ = static_cast<uint8_t>((tail_ + 1U) % Capacity);
+        --count_;
         return true;
     }
 
@@ -103,8 +98,8 @@ public:
         return discard_front();
     }
 
-    uint32_t dropped() const { return coalesced_; }
-    uint32_t coalesced() const { return coalesced_; }
+    uint32_t dropped() const { return dropped_; }
+    uint32_t coalesced() const { return 0U; }
     uint32_t decimated() const { return decimated_; }
     bool congested() const { return congested_; }
     uint32_t effective_interval_ms() const { return effective_interval_ms_; }
@@ -113,17 +108,16 @@ public:
 
     void clear()
     {
-        entries_[0] = NodeLiveSample<MaxPayload>{};
-        entries_[1] = NodeLiveSample<MaxPayload>{};
-        valid_[0] = false;
-        valid_[1] = false;
+        for (uint8_t i = 0U; i < Capacity; ++i) {
+            entries_[i] = NodeLiveSample<MaxPayload>{};
+        }
         gate_valid_[0] = false;
         gate_valid_[1] = false;
         gate_time_ms_[0] = 0U;
         gate_time_ms_[1] = 0U;
-        next_sensor_ = 0U;
+        tail_ = 0U;
         count_ = 0U;
-        coalesced_ = 0U;
+        dropped_ = 0U;
         decimated_ = 0U;
         congested_ = false;
         congestion_window_start_ms_ = 0U;
@@ -149,18 +143,6 @@ private:
         if (sensor_id == 1U) return 0;
         if (sensor_id == 2U) return 1;
         return -1;
-    }
-
-    int8_t next_ready_slot() const
-    {
-        if (count_ == 0U) {
-            return -1;
-        }
-        if (valid_[next_sensor_]) {
-            return static_cast<int8_t>(next_sensor_);
-        }
-        const uint8_t other = static_cast<uint8_t>(next_sensor_ ^ 1U);
-        return valid_[other] ? static_cast<int8_t>(other) : -1;
     }
 
     void note_congestion(uint32_t now_ms)
@@ -194,15 +176,14 @@ private:
         }
     }
 
-    NodeLiveSample<MaxPayload> entries_[2] {};
-    bool valid_[2] { false, false };
+    NodeLiveSample<MaxPayload> entries_[Capacity] {};
     bool gate_valid_[2] { false, false };
     uint32_t gate_time_ms_[2] { 0U, 0U };
-    uint8_t next_sensor_ = 0U;
+    uint8_t tail_ = 0U;
     uint8_t count_ = 0U;
     uint32_t normal_interval_ms_ = kMinimumPreviewIntervalMs;
     uint32_t effective_interval_ms_ = kMinimumPreviewIntervalMs;
-    uint32_t coalesced_ = 0U;
+    uint32_t dropped_ = 0U;
     uint32_t decimated_ = 0U;
     uint32_t congestion_window_start_ms_ = 0U;
     uint32_t last_congestion_ms_ = 0U;

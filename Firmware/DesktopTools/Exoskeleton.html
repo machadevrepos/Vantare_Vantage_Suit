@@ -889,7 +889,7 @@ input[type="checkbox"] {
         <input id="liveWindowInput" type="number" min="1" max="120" value="10">
         <button id="resetViewBtn" type="button">Reset to full session</button>
         <button id="followLiveBtn" type="button">Resume following live</button>
-        <label title="Display only: connects recorded samples across missing intervals. Raw data and exports are unchanged.">
+        <label title="Display only: uses rounded line joins between received samples. Real missing-data intervals remain broken and shaded.">
           <input id="presentationSmoothChk" type="checkbox" checked>
           Presentation smoothing (visual only)
         </label>
@@ -5455,10 +5455,12 @@ input[type="checkbox"] {
     return segment.length === 1 ? "point" : "line";
   }
 
-  // Presentation mode changes only how verified/live samples are connected on
-  // screen. It never inserts samples or mutates the CRC-verified/export data.
+  // Presentation mode must never conceal transport/acquisition loss. Missing
+  // intervals remain broken and shaded in both modes; smoothing is restricted
+  // to line-cap/join styling between real received samples.
   function graphDisplayBands(bands, presentationSmoothing) {
-    return presentationSmoothing ? [] : bands;
+    void presentationSmoothing;
+    return bands;
   }
 
   // ---- shared viewport --------------------------------------------------
@@ -6288,8 +6290,8 @@ input[type="checkbox"] {
     for (const item of series) {
       ctx.strokeStyle = item.color;
       ctx.lineWidth = 1.6;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
+      ctx.lineJoin = state.presentationSmoothing ? "round" : "miter";
+      ctx.lineCap = state.presentationSmoothing ? "round" : "butt";
       // Short gaps stay inside a segment and are drawn through; long gaps split
       // the polyline so nothing is falsely interpolated across missing data.
       for (const segment of splitSegmentsAtGaps(item.points, bands)) {

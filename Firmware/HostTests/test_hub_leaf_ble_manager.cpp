@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -19,21 +20,27 @@ int main()
         }
     }
 
-    for (uint8_t value = 30U; value < 60U; ++value) {
+    // Each node/sensor lane now preserves a short FIFO instead of replacing its
+    // pending sample. Node1/BNO already contains its initial value (11), so
+    // seven additional values fill the depth-eight lane.
+    for (uint8_t value = 30U; value < 37U; ++value) {
         assert(manager.push_leaf_sample(1U, 1U, &value, 1U));
     }
-    assert(manager.pending_live_sample_count() == 8U);
-    assert(manager.live_coalesced(1U, 1U) == 30U);
+    uint8_t overflow = 99U;
+    assert(!manager.push_leaf_sample(1U, 1U, &overflow, 1U));
+    assert(manager.pending_live_sample_count() == 15U);
+    assert(manager.live_coalesced(1U, 1U) == 0U);
+    assert(manager.live_dropped(1U, 1U) == 1U);
 
     std::set<std::pair<int, int>> pairs;
     std::vector<int> source_order;
+    std::vector<int> node1_bno_values;
     exo::ble_hub::HubLeafBleManager::LiveSample sample{};
-    int latest_node1_sensor1 = -1;
     while (manager.pop_next_live_sample(sample)) {
         pairs.insert({sample.node_id, sample.sensor_id});
         source_order.push_back(sample.node_id);
         if (sample.node_id == 1U && sample.sensor_id == 1U) {
-            latest_node1_sensor1 = sample.payload[0];
+            node1_bno_values.push_back(sample.payload[0]);
         }
     }
 
@@ -42,9 +49,12 @@ int main()
         assert(pairs.count({node, 1}) == 1U);
         assert(pairs.count({node, 2}) == 1U);
     }
-    const std::vector<int> expected_sources{1, 2, 3, 4, 1, 2, 3, 4};
-    assert(source_order == expected_sources);
-    assert(latest_node1_sensor1 == 59);
+    const std::vector<int> expected_prefix{1, 2, 3, 4, 1, 2, 3, 4};
+    assert(source_order.size() == 15U);
+    assert(std::equal(expected_prefix.begin(), expected_prefix.end(), source_order.begin()));
+    const std::vector<int> expected_node1_bno{11, 30, 31, 32, 33, 34, 35, 36};
+    assert(node1_bno_values == expected_node1_bno);
+    assert(manager.pending_live_sample_count() == 0U);
 
     std::array<exo::RecordDoneMessage, 4> done{};
     for (uint8_t node = 1U; node <= 4U; ++node) {

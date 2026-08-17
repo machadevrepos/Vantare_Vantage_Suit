@@ -1,0 +1,450 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_LIVE_SAMPLE_QUEUE.h b/Firmware/LIBRARY/CUSTOM/NODE_LIVE_SAMPLE_QUEUE.h
+--- a/Firmware/LIBRARY/CUSTOM/NODE_LIVE_SAMPLE_QUEUE.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_LIVE_SAMPLE_QUEUE.h
+@@ -18,6 +18,8 @@ struct NodeLiveSample {
+ template<uint8_t MaxPayload, uint8_t Capacity>
+ class NodeLiveSampleQueue {
+ public:
++    static_assert(Capacity > 0U, "NodeLiveSampleQueue Capacity must be non-zero");
++
+     static constexpr uint32_t kMinimumPreviewIntervalMs = 40U;
+     static constexpr uint32_t kCongestedPreviewIntervalMs = 80U;
+     static constexpr uint8_t kCongestionCoalesceThreshold = 4U;
+@@ -36,8 +38,8 @@ public:
+     bool offer(uint8_t sensor_id, const void *payload, uint8_t payload_len,
+                uint32_t acquisition_time_ms)
+     {
+         if (!enabled_ || payload == nullptr || payload_len == 0U ||
+-            payload_len > MaxPayload || Capacity < 2U) {
++            payload_len > MaxPayload) {
+             return false;
+         }
+         const int8_t slot = sensor_slot(sensor_id);
+@@ -54,45 +56,38 @@ public:
+         gate_valid_[index] = true;
+         gate_time_ms_[index] = acquisition_time_ms;
+ 
+-        if (valid_[index]) {
+-            ++coalesced_;
++        if (count_ >= Capacity) {
++            ++dropped_;
+             note_congestion(acquisition_time_ms);
+-        } else {
+-            valid_[index] = true;
+-            ++count_;
++            congested_ = true;
++            effective_interval_ms_ = kCongestedPreviewIntervalMs;
++            return false;
+         }
+ 
+-        NodeLiveSample<MaxPayload> &entry = entries_[index];
++        const uint8_t write_index =
++            static_cast<uint8_t>((tail_ + count_) % Capacity);
++        NodeLiveSample<MaxPayload> &entry = entries_[write_index];
+         entry.sensor_id = sensor_id;
+         entry.payload_len = payload_len;
+         entry.acquisition_time_ms = acquisition_time_ms;
+         memcpy(entry.payload, payload, payload_len);
++        ++count_;
+         return true;
+     }
+ 
+     bool peek(NodeLiveSample<MaxPayload> &out) const
+     {
+-        const int8_t slot = next_ready_slot();
+-        if (slot < 0) {
+-            return false;
+-        }
+-        out = entries_[static_cast<uint8_t>(slot)];
++        if (count_ == 0U) return false;
++        out = entries_[tail_];
+         return true;
+     }
+ 
+     bool discard_front()
+     {
+-        const int8_t slot = next_ready_slot();
+-        if (slot < 0) {
+-            return false;
+-        }
+-        const uint8_t index = static_cast<uint8_t>(slot);
+-        entries_[index] = NodeLiveSample<MaxPayload>{};
+-        valid_[index] = false;
+-        if (count_ > 0U) {
+-            --count_;
+-        }
+-        next_sensor_ = static_cast<uint8_t>(index ^ 1U);
++        if (count_ == 0U) return false;
++        entries_[tail_] = NodeLiveSample<MaxPayload>{};
++        tail_ = static_cast<uint8_t>((tail_ + 1U) % Capacity);
++        --count_;
+         return true;
+     }
+ 
+@@ -89,8 +87,8 @@ public:
+         return discard_front();
+     }
+ 
+-    uint32_t dropped() const { return coalesced_; }
+-    uint32_t coalesced() const { return coalesced_; }
++    uint32_t dropped() const { return dropped_; }
++    uint32_t coalesced() const { return 0U; }
+     uint32_t decimated() const { return decimated_; }
+     bool congested() const { return congested_; }
+     uint32_t effective_interval_ms() const { return effective_interval_ms_; }
+@@ -99,17 +97,16 @@ public:
+ 
+     void clear()
+     {
+-        entries_[0] = NodeLiveSample<MaxPayload>{};
+-        entries_[1] = NodeLiveSample<MaxPayload>{};
+-        valid_[0] = false;
+-        valid_[1] = false;
++        for (uint8_t i = 0U; i < Capacity; ++i) {
++            entries_[i] = NodeLiveSample<MaxPayload>{};
++        }
+         gate_valid_[0] = false;
+         gate_valid_[1] = false;
+         gate_time_ms_[0] = 0U;
+         gate_time_ms_[1] = 0U;
+-        next_sensor_ = 0U;
++        tail_ = 0U;
+         count_ = 0U;
+-        coalesced_ = 0U;
++        dropped_ = 0U;
+         decimated_ = 0U;
+         congested_ = false;
+         congestion_window_start_ms_ = 0U;
+@@ -139,18 +135,6 @@ private:
+         return -1;
+     }
+ 
+-    int8_t next_ready_slot() const
+-    {
+-        if (count_ == 0U) {
+-            return -1;
+-        }
+-        if (valid_[next_sensor_]) {
+-            return static_cast<int8_t>(next_sensor_);
+-        }
+-        const uint8_t other = static_cast<uint8_t>(next_sensor_ ^ 1U);
+-        return valid_[other] ? static_cast<int8_t>(other) : -1;
+-    }
+-
+     void note_congestion(uint32_t now_ms)
+     {
+         last_congestion_ms_ = now_ms;
+@@ -187,15 +166,14 @@ private:
+         }
+     }
+ 
+-    NodeLiveSample<MaxPayload> entries_[2] {};
+-    bool valid_[2] { false, false };
++    NodeLiveSample<MaxPayload> entries_[Capacity] {};
+     bool gate_valid_[2] { false, false };
+     uint32_t gate_time_ms_[2] { 0U, 0U };
+-    uint8_t next_sensor_ = 0U;
++    uint8_t tail_ = 0U;
+     uint8_t count_ = 0U;
+     uint32_t normal_interval_ms_ = kMinimumPreviewIntervalMs;
+     uint32_t effective_interval_ms_ = kMinimumPreviewIntervalMs;
+-    uint32_t coalesced_ = 0U;
++    uint32_t dropped_ = 0U;
+     uint32_t decimated_ = 0U;
+     uint32_t congestion_window_start_ms_ = 0U;
+     uint32_t last_congestion_ms_ = 0U;
+diff --git a/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h b/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+--- a/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
++++ b/Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h
+@@ -66,17 +66,16 @@ public:
+     }
+     touch_node(node_id);
+     const uint8_t index = live_slot_index_(node_id, sensor_id);
+     LiveSlot &slot = live_slots_[index];
+-    if (slot.valid) {
+-      ++slot.coalesced;
+-    } else {
+-      slot.valid = true;
+-      ++pending_live_count_;
+-    }
+-    slot.sample.node_id = node_id;
+-    slot.sample.sensor_id = sensor_id;
+-    slot.sample.payload_len = payload_len;
+-    memcpy(slot.sample.payload, payload, payload_len);
++    LiveSample sample{};
++    sample.node_id = node_id;
++    sample.sensor_id = sensor_id;
++    sample.payload_len = payload_len;
++    memcpy(sample.payload, payload, payload_len);
++    if (!slot.push(sample)) {
++      return false;
++    }
++    ++pending_live_count_;
+     selected_live_index_ = kNoLiveSelection;
+     start_or_record_active_ = true;
+     return true;
+@@ -112,6 +112,6 @@ public:
+     const int8_t selected = select_next_live_index_();
+     if (selected >= 0) {
+-      const uint8_t source = live_slots_[static_cast<uint8_t>(selected)].sample.node_id;
++      const uint8_t source = live_slots_[static_cast<uint8_t>(selected)].front().node_id;
+       if (source >= 1U && source <= kMaxLeaves) {
+         next_preview_source_ = source == kMaxLeaves ? 1U : static_cast<uint8_t>(source + 1U);
+       }
+@@ -130,9 +130,9 @@ public:
+     const int8_t selected = select_next_live_index_();
+     if (selected < 0) return false;
+     const uint8_t index = static_cast<uint8_t>(selected);
+-    const uint8_t source = live_slots_[index].sample.node_id;
+-    live_slots_[index].sample = LiveSample{};
+-    live_slots_[index].valid = false;
++    LiveSlot &slot = live_slots_[index];
++    const uint8_t source = slot.front().node_id;
++    slot.pop();
+     if (pending_live_count_ > 0U) --pending_live_count_;
+     if (source >= 1U && source <= kMaxLeaves) {
+       sensor_preference_[source - 1U] =
+@@ -151,11 +151,18 @@ public:
+     return peek_next_live_sample(out) && discard_next_live_sample();
+   }
+ 
++  uint32_t live_dropped(uint8_t node_id, uint8_t sensor_id) const {
++    if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U) {
++      return 0U;
++    }
++    return live_slots_[live_slot_index_(node_id, sensor_id)].dropped;
++  }
++
+   uint32_t live_coalesced(uint8_t node_id, uint8_t sensor_id) const {
+     if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U) {
+       return 0U;
+     }
+-    return live_slots_[live_slot_index_(node_id, sensor_id)].coalesced;
++    return 0U;
+   }
+ 
+   uint8_t pending_live_sample_count() const { return pending_live_count_; }
+@@ -353,15 +360,43 @@ public:
+ private:
++  static constexpr uint8_t kMaxLeaves = 4U;
++  static constexpr uint8_t kSensorsPerLeaf = 2U;
++  static constexpr uint8_t kLiveSlotCount = kMaxLeaves * kSensorsPerLeaf;
++  static constexpr uint8_t kLiveDepthPerSlot = 8U;
++  static constexpr int8_t kNoLiveSelection = -1;
++
+   struct NodeSlot { uint8_t node_id = 0U; bool discovered = false; bool connected = false; };
+   struct LiveSlot {
+-    LiveSample sample{};
+-    uint32_t coalesced = 0U;
+-    bool valid = false;
++    LiveSample samples[kLiveDepthPerSlot]{};
++    uint8_t head = 0U;
++    uint8_t count = 0U;
++    uint32_t dropped = 0U;
++
++    bool push(const LiveSample &sample) {
++      if (count >= kLiveDepthPerSlot) {
++        ++dropped;
++        return false;
++      }
++      const uint8_t write = static_cast<uint8_t>(
++          (head + count) % kLiveDepthPerSlot);
++      samples[write] = sample;
++      ++count;
++      return true;
++    }
++
++    const LiveSample &front() const {
++      return samples[head];
++    }
++
++    void pop() {
++      if (count == 0U) return;
++      samples[head] = LiveSample{};
++      head = static_cast<uint8_t>((head + 1U) % kLiveDepthPerSlot);
++      --count;
++    }
++
++    bool valid() const { return count != 0U; }
+   };
+ 
+-  static constexpr uint8_t kMaxLeaves = 4U;
+-  static constexpr uint8_t kSensorsPerLeaf = 2U;
+-  static constexpr uint8_t kLiveSlotCount = kMaxLeaves * kSensorsPerLeaf;
+-  static constexpr int8_t kNoLiveSelection = -1;
+   // Aggregate round-robin cadence. With four ready Nodes this yields
+   // 40 ms per source normally and 80 ms per source under backpressure.
+   static constexpr uint32_t kNormalPreviewIntervalMs = 10U;
+@@ -377,7 +414,7 @@ private:
+       return -1;
+     }
+     if (selected_live_index_ >= 0 &&
+-        live_slots_[static_cast<uint8_t>(selected_live_index_)].valid) {
++        live_slots_[static_cast<uint8_t>(selected_live_index_)].valid()) {
+       return selected_live_index_;
+     }
+     for (uint8_t offset = 0U; offset < kMaxLeaves; ++offset) {
+@@ -388,10 +425,10 @@ private:
+       const uint8_t second = live_slot_index_(source,
+           static_cast<uint8_t>((preferred ^ 1U) + 1U));
+-      if (live_slots_[first].valid) {
++      if (live_slots_[first].valid()) {
+         selected_live_index_ = static_cast<int8_t>(first);
+         return selected_live_index_;
+       }
+-      if (live_slots_[second].valid) {
++      if (live_slots_[second].valid()) {
+         selected_live_index_ = static_cast<int8_t>(second);
+         return selected_live_index_;
+       }
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -923,7 +923,7 @@
+         <input id="liveWindowInput" type="number" min="1" max="120" value="10">
+         <button id="resetViewBtn" type="button">Reset to full session</button>
+         <button id="followLiveBtn" type="button">Resume following live</button>
+-        <label title="Display only: connects recorded samples across missing intervals. Raw data and exports are unchanged.">
++        <label title="Display only: uses rounded line joins between received samples. Real missing-data intervals remain broken and shaded.">
+           <input id="presentationSmoothChk" type="checkbox" checked>
+           Presentation smoothing (visual only)
+         </label>
+@@ -5514,5 +5514,7 @@
+-  // Presentation mode changes only how verified/live samples are connected on
+-  // screen. It never inserts samples or mutates the CRC-verified/export data.
++  // Presentation mode must never conceal transport/acquisition loss. Missing
++  // intervals remain broken and shaded in both modes; smoothing is restricted
++  // to line-cap/join styling between real received samples.
+   function graphDisplayBands(bands, presentationSmoothing) {
+-    return presentationSmoothing ? [] : bands;
++    void presentationSmoothing;
++    return bands;
+   }
+@@ -6270,8 +6272,8 @@
+     for (const item of series) {
+       ctx.strokeStyle = item.color;
+       ctx.lineWidth = 1.6;
+-      ctx.lineJoin = "round";
+-      ctx.lineCap = "round";
++      ctx.lineJoin = state.presentationSmoothing ? "round" : "miter";
++      ctx.lineCap = state.presentationSmoothing ? "round" : "butt";
+       // Short gaps stay inside a segment and are drawn through; long gaps split
+       // the polyline so nothing is falsely interpolated across missing data.
+       for (const segment of splitSegmentsAtGaps(item.points, bands)) {
+diff --git a/Firmware/HostTests/test_node_live_sample_queue.cpp b/Firmware/HostTests/test_node_live_sample_queue.cpp
+--- a/Firmware/HostTests/test_node_live_sample_queue.cpp
++++ b/Firmware/HostTests/test_node_live_sample_queue.cpp
+@@ -21,29 +21,46 @@ int main()
+     assert(sample.sensor_id == 2U);
+     assert(queue.discard_front());
+ 
++    // Preview interval gating is still deliberate, but every sample accepted by
++    // that gate is now queued in acquisition order instead of overwriting the
++    // previous pending sample for the same sensor.
+     value = 3U;
+     assert(!queue.offer(1U, &value, 1U, 20U));
+     assert(queue.decimated() == 1U);
+     assert(queue.offer(1U, &value, 1U, 40U));
+ 
+-    for (uint32_t t = 80U; t <= 200U; t += 40U) {
++    const uint8_t first_queued_value = value;
++    for (uint32_t t = 80U; t <= 320U; t += 40U) {
+         ++value;
+         assert(queue.offer(1U, &value, 1U, t));
+     }
+-    assert(queue.coalesced() >= 4U);
++    assert(queue.count() == 8U);
++    assert(queue.coalesced() == 0U);
++    assert(queue.dropped() == 0U);
++    assert(queue.peek(sample));
++    assert(sample.payload[0] == first_queued_value);
++
++    // A full queue reports explicit loss rather than silently replacing an
++    // already accepted point. Overflow also engages the existing preview
++    // backpressure interval.
++    ++value;
++    assert(!queue.offer(1U, &value, 1U, 360U));
++    assert(queue.dropped() == 1U);
+     assert(queue.congested());
+     assert(queue.effective_interval_ms() == 80U);
+ 
+-    assert(queue.peek(sample));
+-    assert(sample.sensor_id == 1U);
+-    assert(sample.payload[0] == value);
+-    assert(queue.discard_front());
++    uint8_t expected = first_queued_value;
++    while (queue.pop(sample)) {
++        assert(sample.sensor_id == 1U);
++        assert(sample.payload[0] == expected++);
++    }
++    assert(queue.count() == 0U);
+ 
+     value = 99U;
+-    assert(queue.offer(2U, &value, 1U, 5300U));
++    assert(queue.offer(2U, &value, 1U, 5400U));
+     assert(!queue.congested());
+     assert(queue.effective_interval_ms() == 40U);
+-    assert(!queue.offer(3U, &value, 1U, 5400U));
++    assert(!queue.offer(3U, &value, 1U, 5500U));
+ 
+     std::cout << "node live sample queue tests passed\n";
+     return 0;
+diff --git a/Firmware/HostTests/test_hub_leaf_ble_manager.cpp b/Firmware/HostTests/test_hub_leaf_ble_manager.cpp
+--- a/Firmware/HostTests/test_hub_leaf_ble_manager.cpp
++++ b/Firmware/HostTests/test_hub_leaf_ble_manager.cpp
+@@ -1,4 +1,5 @@
++#include <algorithm>
+ #include <array>
+ #include <cassert>
+ #include <cstdint>
+ #include <iostream>
+@@ -18,32 +18,41 @@ int main()
+         }
+     }
+ 
+-    for (uint8_t value = 30U; value < 60U; ++value) {
++    // Each node/sensor lane now preserves a short FIFO instead of replacing its
++    // pending sample. Node1/BNO already contains its initial value (11), so
++    // seven additional values fill the depth-eight lane.
++    for (uint8_t value = 30U; value < 37U; ++value) {
+         assert(manager.push_leaf_sample(1U, 1U, &value, 1U));
+     }
+-    assert(manager.pending_live_sample_count() == 8U);
+-    assert(manager.live_coalesced(1U, 1U) == 30U);
++    uint8_t overflow = 99U;
++    assert(!manager.push_leaf_sample(1U, 1U, &overflow, 1U));
++    assert(manager.pending_live_sample_count() == 15U);
++    assert(manager.live_coalesced(1U, 1U) == 0U);
++    assert(manager.live_dropped(1U, 1U) == 1U);
+ 
+     std::set<std::pair<int, int>> pairs;
+     std::vector<int> source_order;
++    std::vector<int> node1_bno_values;
+     exo::ble_hub::HubLeafBleManager::LiveSample sample{};
+-    int latest_node1_sensor1 = -1;
+     while (manager.pop_next_live_sample(sample)) {
+         pairs.insert({sample.node_id, sample.sensor_id});
+         source_order.push_back(sample.node_id);
+         if (sample.node_id == 1U && sample.sensor_id == 1U) {
+-            latest_node1_sensor1 = sample.payload[0];
++            node1_bno_values.push_back(sample.payload[0]);
+         }
+     }
+ 
+     assert(pairs.size() == 8U);
+     for (int node = 1; node <= 4; ++node) {
+         assert(pairs.count({node, 1}) == 1U);
+         assert(pairs.count({node, 2}) == 1U);
+     }
+-    const std::vector<int> expected_sources{1, 2, 3, 4, 1, 2, 3, 4};
+-    assert(source_order == expected_sources);
+-    assert(latest_node1_sensor1 == 59);
++    const std::vector<int> expected_prefix{1, 2, 3, 4, 1, 2, 3, 4};
++    assert(source_order.size() == 15U);
++    assert(std::equal(expected_prefix.begin(), expected_prefix.end(), source_order.begin()));
++    const std::vector<int> expected_node1_bno{11, 30, 31, 32, 33, 34, 35, 36};
++    assert(node1_bno_values == expected_node1_bno);
++    assert(manager.pending_live_sample_count() == 0U);
+ 
+     std::array<exo::RecordDoneMessage, 4> done{};
+     for (uint8_t node = 1U; node <= 4U; ++node) {

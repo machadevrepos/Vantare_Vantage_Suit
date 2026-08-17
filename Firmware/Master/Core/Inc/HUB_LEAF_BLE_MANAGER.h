@@ -76,16 +76,15 @@ public:
     touch_node(node_id);
     const uint8_t index = live_slot_index_(node_id, sensor_id);
     LiveSlot &slot = live_slots_[index];
-    if (slot.valid) {
-      ++slot.coalesced;
-    } else {
-      slot.valid = true;
-      ++pending_live_count_;
+    LiveSample sample{};
+    sample.node_id = node_id;
+    sample.sensor_id = sensor_id;
+    sample.payload_len = payload_len;
+    memcpy(sample.payload, payload, payload_len);
+    if (!slot.push(sample)) {
+      return false;
     }
-    slot.sample.node_id = node_id;
-    slot.sample.sensor_id = sensor_id;
-    slot.sample.payload_len = payload_len;
-    memcpy(slot.sample.payload, payload, payload_len);
+    ++pending_live_count_;
     selected_live_index_ = kNoLiveSelection;
     start_or_record_active_ = true;
     return true;
@@ -115,7 +114,7 @@ public:
     }
     const int8_t selected = select_next_live_index_();
     if (selected >= 0) {
-      const uint8_t source = live_slots_[static_cast<uint8_t>(selected)].sample.node_id;
+      const uint8_t source = live_slots_[static_cast<uint8_t>(selected)].front().node_id;
       if (source >= 1U && source <= kMaxLeaves) {
         next_preview_source_ = source == kMaxLeaves ? 1U : static_cast<uint8_t>(source + 1U);
       }
@@ -132,9 +131,9 @@ public:
     const int8_t selected = select_next_live_index_();
     if (selected < 0) return false;
     const uint8_t index = static_cast<uint8_t>(selected);
-    const uint8_t source = live_slots_[index].sample.node_id;
-    live_slots_[index].sample = LiveSample{};
-    live_slots_[index].valid = false;
+    LiveSlot &slot = live_slots_[index];
+    const uint8_t source = slot.front().node_id;
+    slot.pop();
     if (pending_live_count_ > 0U) --pending_live_count_;
     if (source >= 1U && source <= kMaxLeaves) {
       sensor_preference_[source - 1U] =
@@ -153,11 +152,18 @@ public:
     return peek_next_live_sample(out) && discard_next_live_sample();
   }
 
+  uint32_t live_dropped(uint8_t node_id, uint8_t sensor_id) const {
+    if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U) {
+      return 0U;
+    }
+    return live_slots_[live_slot_index_(node_id, sensor_id)].dropped;
+  }
+
   uint32_t live_coalesced(uint8_t node_id, uint8_t sensor_id) const {
     if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U) {
       return 0U;
     }
-    return live_slots_[live_slot_index_(node_id, sensor_id)].coalesced;
+    return 0U;
   }
 
   uint8_t pending_live_sample_count() const { return pending_live_count_; }
@@ -352,17 +358,45 @@ public:
   bool paused() const { return paused_; }
 
 private:
-  struct NodeSlot { uint8_t node_id = 0U; bool discovered = false; bool connected = false; };
-  struct LiveSlot {
-    LiveSample sample{};
-    uint32_t coalesced = 0U;
-    bool valid = false;
-  };
-
   static constexpr uint8_t kMaxLeaves = 4U;
   static constexpr uint8_t kSensorsPerLeaf = 2U;
   static constexpr uint8_t kLiveSlotCount = kMaxLeaves * kSensorsPerLeaf;
+  static constexpr uint8_t kLiveDepthPerSlot = 8U;
   static constexpr int8_t kNoLiveSelection = -1;
+
+  struct NodeSlot { uint8_t node_id = 0U; bool discovered = false; bool connected = false; };
+  struct LiveSlot {
+    LiveSample samples[kLiveDepthPerSlot]{};
+    uint8_t head = 0U;
+    uint8_t count = 0U;
+    uint32_t dropped = 0U;
+
+    bool push(const LiveSample &sample) {
+      if (count >= kLiveDepthPerSlot) {
+        ++dropped;
+        return false;
+      }
+      const uint8_t write = static_cast<uint8_t>(
+          (head + count) % kLiveDepthPerSlot);
+      samples[write] = sample;
+      ++count;
+      return true;
+    }
+
+    const LiveSample &front() const {
+      return samples[head];
+    }
+
+    void pop() {
+      if (count == 0U) return;
+      samples[head] = LiveSample{};
+      head = static_cast<uint8_t>((head + 1U) % kLiveDepthPerSlot);
+      --count;
+    }
+
+    bool valid() const { return count != 0U; }
+  };
+
   // Aggregate round-robin cadence. With four ready Nodes this yields
   // 40 ms per source normally and 80 ms per source under backpressure.
   static constexpr uint32_t kNormalPreviewIntervalMs = 10U;
@@ -379,7 +413,7 @@ private:
       return -1;
     }
     if (selected_live_index_ >= 0 &&
-        live_slots_[static_cast<uint8_t>(selected_live_index_)].valid) {
+        live_slots_[static_cast<uint8_t>(selected_live_index_)].valid()) {
       return selected_live_index_;
     }
     for (uint8_t offset = 0U; offset < kMaxLeaves; ++offset) {
@@ -389,11 +423,11 @@ private:
       const uint8_t first = live_slot_index_(source, static_cast<uint8_t>(preferred + 1U));
       const uint8_t second = live_slot_index_(source,
           static_cast<uint8_t>((preferred ^ 1U) + 1U));
-      if (live_slots_[first].valid) {
+      if (live_slots_[first].valid()) {
         selected_live_index_ = static_cast<int8_t>(first);
         return selected_live_index_;
       }
-      if (live_slots_[second].valid) {
+      if (live_slots_[second].valid()) {
         selected_live_index_ = static_cast<int8_t>(second);
         return selected_live_index_;
       }
