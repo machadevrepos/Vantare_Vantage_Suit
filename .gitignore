@@ -2,44 +2,30 @@
 # Compiled and build artifacts
 *.o
 *.obj
-*.bin
-*.hex
-*.elf
 *.out
+*.hex
+*.bin
+*.elf
 
 # Dependencies
 lib/
-Libraries/
-CMSIS/
-Drivers/
+LIBRARY/
 
 # Logs and temp files
 *.log
 *.tmp
-*.bak
-*.~
 *.swp
 
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # Build outputs
 build/
 output/
-Debug/
-Release/
-*.map
-*.lst
-
-# OS generated files
-.DS_Store
-Thumbs.db
 ```
