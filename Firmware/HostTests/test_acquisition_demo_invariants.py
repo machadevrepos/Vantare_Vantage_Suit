@@ -82,6 +82,14 @@ checks = [
      "Node reliable upload/control must run before sensor housekeeping"),
     ("Preferred source has no frame" in master,
      "Master live BLE sender must fall back when the preferred sensor has no frame"),
+    ("void service_bno()" in hub and "bno85_.service();" in hub,
+     "Hub app must expose a bounded BNO drain for extra superloop service points"),
+    (master.count("hub_sensor_test_app.service_bno();") >= 2 and
+     master.index("hub_sensor_test_app.service_bno();") > master.index("MX_APPE_Process();") and
+     "local_record_collect(hub_snapshot);\n\t\t/* SD appends/flushes above can block" in master,
+     "Master superloop must service the BNO after BLE dispatch and after SD collect, not once per iteration"),
+    ("!hub_sensor_test_app.record_bno_queue_active();" in master,
+     "Master must hold SWO telemetry and the live plot stream while a recorded capture owns the sensors"),
 ]
 
 failures = [message for ok, message in checks if not ok]

@@ -126,6 +126,15 @@ public:
         return snapshot;
     }
 
+    /* Bounded BNO drain for extra superloop service points placed between
+     * long-blocking regions (BLE dispatch, SD collect). Applies the same
+     * capture/idle packet-budget policy as process(); INT-gated, so it is
+     * cheap when no report is pending. */
+    void service_bno() {
+        if (!bno_ready_) return;
+        bno85_.service();
+    }
+
     bool begin_record_capture() {
         /* The BNO capture queue is enabled for every recording regardless of
          * ICM FIFO availability so the orientation stream is lossless even

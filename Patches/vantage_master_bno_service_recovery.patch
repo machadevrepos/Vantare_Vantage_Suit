@@ -1,0 +1,94 @@
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index a597283..7087281 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -82,6 +82,14 @@ checks = [
+      "Node reliable upload/control must run before sensor housekeeping"),
+     ("Preferred source has no frame" in master,
+      "Master live BLE sender must fall back when the preferred sensor has no frame"),
++    ("void service_bno()" in hub and "bno85_.service();" in hub,
++     "Hub app must expose a bounded BNO drain for extra superloop service points"),
++    (master.count("hub_sensor_test_app.service_bno();") >= 2 and
++     master.index("hub_sensor_test_app.service_bno();") > master.index("MX_APPE_Process();") and
++     "local_record_collect(hub_snapshot);\n\t\t/* SD appends/flushes above can block" in master,
++     "Master superloop must service the BNO after BLE dispatch and after SD collect, not once per iteration"),
++    ("!hub_sensor_test_app.record_bno_queue_active();" in master,
++     "Master must hold SWO telemetry and the live plot stream while a recorded capture owns the sensors"),
+ ]
+ 
+ failures = [message for ok, message in checks if not ok]
+diff --git a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+index cc54138..27ac5dc 100644
+--- a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+@@ -126,6 +126,15 @@ public:
+         return snapshot;
+     }
+ 
++    /* Bounded BNO drain for extra superloop service points placed between
++     * long-blocking regions (BLE dispatch, SD collect). Applies the same
++     * capture/idle packet-budget policy as process(); INT-gated, so it is
++     * cheap when no report is pending. */
++    void service_bno() {
++        if (!bno_ready_) return;
++        bno85_.service();
++    }
++
+     bool begin_record_capture() {
+         /* The BNO capture queue is enabled for every recording regardless of
+          * ICM FIFO availability so the orientation stream is lossless even
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+index 7dfcfdf..e73dbd3 100644
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -2993,6 +2993,11 @@ int main(void)
+ #else
+ 		MX_APPE_Process();
+ #endif
++		/* BLE event dispatch can stall the iteration for tens of milliseconds
++		 * while node chunks are staged to SD inline; drain any BNO reports
++		 * that accumulated during that window before continuing, so the
++		 * sensor-internal SHTP buffer cannot overflow across the gap. */
++		hub_sensor_test_app.service_bno();
+ 
+ 		/* USER CODE BEGIN 3 */
+ 		static uint32_t last_hub_sensor_print_ms = 0U;
+@@ -3045,6 +3050,11 @@ int main(void)
+ 		}
+ #endif
+ 		local_record_collect(hub_snapshot);
++		/* SD appends/flushes above can block for tens of milliseconds; give
++		 * the BNO a second bounded drain here so the worst-case gap between
++		 * services is the longest single blocking region, not the whole
++		 * superloop period. */
++		hub_sensor_test_app.service_bno();
+ 		master_training_csv_replay_pending_node_done();
+ 		/* Scanning/new central connections are commissioning work, not session
+ 		 * work. Protect the radio scheduler while capture or reliable collection
+@@ -3438,7 +3448,11 @@ int main(void)
+ 		 * held off while capturing. Record-control traffic is untouched. */
+ 		const bool hub_sensor_print_allowed = !g_acq_diag.capturing;
+ #else
+-		const bool hub_sensor_print_allowed = true;
++		/* Per-sample SWO telemetry is held off while a recorded capture owns
++		 * the sensors; the console writes compete with the BNO service budget
++		 * for the same superloop time. */
++		const bool hub_sensor_print_allowed =
++				!hub_sensor_test_app.record_bno_queue_active();
+ #endif
+ 		if (hub_sensor_print_allowed &&
+ 				(hub_sensor_print_now_ms - last_hub_sensor_print_ms) >= EXO_MASTER_IMU_SWO_INTERVAL_MS &&
+@@ -3496,7 +3510,12 @@ int main(void)
+ 		 * capture; the stored session is the deliverable. */
+ 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) && !g_acq_diag.capturing;
+ #else
+-		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false);
++		/* The live plot stream is paused while a recorded capture owns the
++		 * sensors: notify packing competes with the BNO service budget for
++		 * the same superloop time, and the stored session is the deliverable.
++		 * Streaming resumes automatically when the capture queue is frozen. */
++		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) &&
++				!hub_sensor_test_app.record_bno_queue_active();
+ #endif
+ 		/* One BLE notification can be in flight at a time: sending BNO and
+ 		 * ICM back-to-back made the second send fail every iteration, so the
