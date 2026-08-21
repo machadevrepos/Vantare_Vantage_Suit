@@ -1,8 +1,8 @@
 # Vantage Suit Firmware — Issues & Fixes
 
-**Branch:** `suit_testing`
+**Branch:** `fix/Firmware_Fixes` (session-1 analysis originally captured on `suit_testing`; all fixes and the full review below verified on `fix/Firmware_Fixes` @ `999cba4`)
 **Date:** 2026-08-21
-**Scope:** BLE bring-up regression, first 4-node data-collection session (session_id = 1), acquisition data-quality analysis, and the node ICM FIFO fix.
+**Scope:** BLE bring-up regression, first 4-node data-collection session (session_id = 1), acquisition data-quality analysis, the node ICM FIFO fix, and a full-codebase adversarial review (Master, Node, protocol, tests) — see [Open issue register (#6+)](#full-codebase-review--open-issue-register-6).
 
 ---
 
@@ -17,6 +17,8 @@
 | 5 | Node→Master transfer throughput ~1.8 KB/s | High (blocks 10-min sessions) | **Fixed in firmware** (`9a808c7`) — awaiting hardware verification |
 
 Issues #3/#4/#5 were fixed in code on 2026-08-21; the sections below retain the original session-1 analysis. The only issue fixed in code before that date was **#2 (node ICM FIFO)**.
+
+A full-codebase review on 2026-08-21 (branch `fix/Firmware_Fixes`) re-verified all four fixes in code (see [Verified-fix audit](#verified-fix-audit)) and opened a new register: **#6–#13 (P1)**, #14–#29 (P2), plus minor items — see the [last section](#full-codebase-review--open-issue-register-6) for evidence (`file:line`), impact, and the staged fix roadmap. **Three of the new P1s gate the 10-minute-session goal** (#6 node erase time, #7 Master archive block, #13 pacing ceiling).
 
 ---
 
@@ -118,7 +120,7 @@ Node ICM streams should match the Master's clean output: real per-frame `offset_
 
 ---
 
-## Issue 3 — Master BNO: ~78 % sample loss (OPEN)
+## Issue 3 — Master BNO: ~78 % sample loss (FIXED in firmware — awaiting hardware verification)
 
 ### Evidence
 Master session-1 header: BNO `captured = 1323`, `attempted = 6007`, `dropped = 4684` → **~22 Hz effective vs 100 Hz target**, `loss_flags` bit `bno_read` set. The `offset_us` gap distribution is bimodal (median ~48 µs bursts, 258 gaps > 15 ms), i.e. long BNO-silent stretches.
@@ -133,7 +135,7 @@ The Master is the busiest device (BLE peripheral + 4 central links + live stream
 
 ---
 
-## Issue 4 — Node1 upload failed; abandoned after 30 s stall (OPEN)
+## Issue 4 — Node1 upload failed; abandoned after 30 s stall (FIXED in firmware — awaiting hardware verification)
 
 ### Evidence
 - Console: `Master SD Collection: … completed=MASTER failed=NODE1 node=NODE1`, ~30 s after all four nodes reported `state=4` (ReadyForUpload).
@@ -146,10 +148,11 @@ Node1 was the first source pulled (lowest id). Its central link appears to have 
 ### Notes
 - **Node1's data is preserved** on its flash — the abandon path (`stager_.shutdown()`) leaves `discarded_` clear, so the session can be re-pulled later.
 - Recommended direction: allow controlled link recovery for the active source during collection (without tearing down healthy links), and/or a re-pull command for a `failed_source_mask` node.
+- **Follow-up (2026-08-21 review):** the link-recovery half is fixed in code (`5f5d2e4`); the **re-pull command for an already-abandoned source remains open** (roadmap step 3). The review also found that an abandoned upload leaves a truncated `R####N#.BIN` on the Master SD that permanently consumes the run index — tracked as issue **#9**.
 
 ---
 
-## Issue 5 — Node→Master transfer throughput ~1.8 KB/s (OPEN)
+## Issue 5 — Node→Master transfer throughput ~1.8 KB/s (FIXED in firmware — awaiting hardware verification)
 
 ### Evidence
 Collecting one node's ~495 KB took **~4.6 min** (e.g. Node2: `ReceivingNode` at +189301 ms → `ValidatingNode` at +467286 ms) ≈ **~1.8 KB/s (~10 chunks/s)** — roughly an order of magnitude below expected BLE throughput.
@@ -159,6 +162,9 @@ Capacity is fine (32 MB node flash ≈ 55 min max; `capacity_ms = 3 494 390` obs
 
 ### Root cause (hypothesis)
 The Master superloop continues full BNO/ICM sampling + live preview + servicing all central links *during* collection, starving reliable-chunk processing (~100 ms per chunk round-trip). Recommended direction: profile the collection loop, reduce non-transfer work while a node upload is active, and revisit credit/ack cadence (`credit`, `ack_chunks`, burst limits).
+
+### Review caveat (2026-08-21): hard pacing ceiling just above the target
+The node sender paces one 180 B chunk per 8 ms with burst limit 1 (`kNodeRecordChunkGapMs = 8`, `kNodeRecordBurstLimit = 1` — `Firmware/Node/Core/Src/main.c:304-305`, enforced at `:696-703`). That caps the link at **~22 KB/s theoretical regardless of every other fix**; the ≥10× verification target (≥18 KB/s) sits only ~20 % under this ceiling. The `9a808c7` fix did not touch these constants. Hardware throughput measurement must confirm the achieved rate; if it lands short of target, raising burst limit / shortening the gap (plus credit) is the next lever — tracked as issue **#13**.
 
 ---
 
@@ -208,3 +214,116 @@ Note: the CSV schema omits derived roll/pitch/yaw (the v4 sample format dropped 
 ### Verification
 - Host suite: all Python invariant tests pass (extended with checks for each fix). C++ host tests (incl. new stager buffered-write scenarios) must be compiled in the STM32CubeIDE environment — no host toolchain on the dev box.
 - Hardware: build Master + Nodes, then confirm (a) Master BNO `captured/attempted` ≈ 100 Hz, (b) collection throughput ≥10× the ~1.8 KB/s baseline, (c) pulling a node's link mid-collection recovers within seconds without disturbing other nodes.
+
+---
+
+# Full-codebase review — open issue register (#6+)
+
+**Reviewed:** 2026-08-21, branch `fix/Firmware_Fixes` @ `999cba4`. Scope: Master superloop, BLE central client, SD recorder/stager and collection coordinator; Node superloop, recording app, W25Q flash and upload sender; record protocol, ESOX v4 format, browser BLE contract; host tests. Every P1 below was confirmed by direct source read, not just search; `file:line` references are to this commit.
+
+## Verified-fix audit
+
+All four in-code fixes claimed above are present and correctly wired:
+
+| Fix | Verified at |
+|---|---|
+| ICM FIFO armed at both node record-start sites, register-poll fallback | `NODE_RECORDING_APP.h:260` (delayed), `:499` (prepared/immediate); fallback `ICM45686_STM32.h:152-159` |
+| `service_bno()` bounded drain + two extra superloop call points | `HUB_SENSOR_TEST_APP.h:133-138`; call sites `Master main.c:3000` (after `MX_APPE_Process`) and `:3061` (after `local_record_collect`); budget 8-packets-capturing / 2-idle, INT-gated |
+| ACK serviced in the same iteration it was queued | `service_reliable_control` at `Master main.c:3004`, honors the post-manifest defer counter (`MASTER_TRAINING_CSV_COORDINATOR.h:272-279`) |
+| Stager 4 KB RAM write buffer | `MASTER_NODE_SESSION_STAGER.h:548-550`; flush on full `:148-151`, validation open `:173`, shutdown/abandon `:327` |
+| Targeted reconnect during discovery hold | `exo_hub_central_client.c:2090-2102` (request), `:1273-1311` (hold-branch execution), cap 3 + 250 ms settle `:74-75`, budget reset on connect `:1578-1579` / hold release `:2147-2148` |
+
+All 9 Python invariant tests pass on this branch (re-run 2026-08-21).
+
+## P1 issues
+
+### #6 — Node flash erase runs inside the BLE command context and blocks the whole node *(gates 10-min goal)*
+The Master drives nodes via Prepare→Commit (`Master main.c:1783-1784, 1860-1861`); the node's `prepare_recording()` erases the whole session region sector-by-sector synchronously inside the GATT-write dispatch (`NODE_RECORDER.h:68-79`, erase at `:73`; 4 KB sectors via `W25Q256_FLASH.h:125-136`). Erase time scales with session length: a 60 s session (~141 sectors) blocks ≈ 6 s typical (45 ms typ / 400 ms max per sector); a **10-min session (~1400 sectors) blocks ~60 s+**. While blocked the node runs nothing — no `MX_APPE_Process()`, no logging, no start heartbeats (1 Hz with a 5 s extend window, `Node main.c:846-857`). The legacy delayed-start path additionally latches `recording_started_ms_` *before* the erase and arms BNO/ICM capture only after it (`NODE_RECORDING_APP.h:243-263`), so those sessions also lose the first seconds of the window.
+**Direction:** chunked background erase in the node superloop (N sectors per `process()` tick, heartbeats between chunks), or a pre-erased region pool. Verify against the Master's start-heartbeat budget.
+
+### #7 — Master finalize/archive is a multi-pass full-file inline block
+`local_record_collect` → `MasterSdSessionRecorder::finalize()` CRC-reads the whole payload (`MASTER_SD_SESSION_RECORDER.h:556-572`), then `archive_to_index()` copies the full file 256 B at a time (`:287-303`), validates (`:312`), renames (`:329`), re-opens and re-validates (`:337-350`) — all inline in the superloop with no yield points. At 10-min-session size (~5.8 MB) that is ≥3 full-file passes (~17 MB of I/O) with **zero BLE event dispatch**: incoming node chunks queue on the coprocessor and can overflow, ACKs stall, browser GATT operations time out. The fix pattern already exists — validation already runs chunked at 256 B per `service()` call (`MASTER_NODE_SESSION_STAGER.h:233-262`).
+**Direction:** convert archive copy + validation to chunked state-machine steps like `step_validation`.
+
+### #8 — Reliable-control frames can be silently dropped; callers ignore the failure
+`queue_frame()` rejects a lower-priority frame while one is pending (NackRange=3 vs ManifestAck=4 / VerifyOk=5, `MASTER_NODE_RELIABLE_CONTROL.h:230-247`); every caller discards the result (`(void)` at `MASTER_TRAINING_CSV_COORDINATOR.h:242-250, 262`); the 300 ms window re-arm itself refuses while a frame is still pending (`:142-152`); a same-priority NACK silently overwrites a queued NACK. A corrupt/gap chunk arriving in the same BLE batch as the ManifestAck produces no recovery request; recovery then waits on the 300 ms re-arm or degrades to the 30 s stall abandon — the same failure shape as session-1 issue #4.
+**Direction:** propagate queue failures (set a retry flag), or coalesce (let a NACK replace a pending ACK), and make `rearm_ack_window` robust to a busy queue.
+
+### #9 — Abandoned/failed node stage files are never unlinked and poison run indexes
+`NodeSessionStageOperation::Unlink` and `unlink_fn` exist in the stager vtable (`MASTER_NODE_SESSION_STAGER.h:63-67`) but no path ever calls them. `abandon_active_node` → `stager_.shutdown()` closes but keeps the truncated file (`:322-345`), and `index_occupied` treats any existing `R####N#.BIN` as a consumed index (`MASTER_BINARY_SESSION_INDEX.h:79-100`). Session 1 left exactly this artifact (0-byte `R0001N1.BIN`): every abandoned source permanently skips a run index and leaves a truncated file that looks like a final archive until fully parsed.
+**Direction:** unlink the stage file on abandon/failure (the node's flash copy is untouched — no data is lost), or stage under a `.TMP` name and rename on success like the Master's own recorder does.
+
+### #10 — SD-full / rename-failure latches and blocks all new Master sessions
+`start()` refuses while `archive_required_` is set (`MASTER_SD_SESSION_RECORDER.h:24-30`); `reset()` cannot clear the flag if `service_archive_cleanup()` fails (`:396-404`); the 3 inline archive retries (`Master main.c:2740-2752`) leave it set on exhaustion, and later cleanup retries only the last recorded path. One SD-full event therefore refuses every subsequent StartRecord until a cleanup happens to succeed.
+**Direction:** background cleanup retry with backoff + a cleanup/free-space status surfaced to the browser; distinguish "SD full — space needed" from transient I/O errors.
+
+### #11 — No node crash recovery; finalize header rewrite has a corruption window
+Power loss mid-record leaves `completion_flag = 0` and the header is never examined on boot (`NODE_RECORDING_APP.h:53-75`); the reserved `kRecoverySectorSize` (`:430-431`) is referenced nowhere in the tree. At finalize the header is rewritten in place (`NODE_RECORDER.h:138`), which the W25Q driver implements as read-sector → erase-sector → rewrite (`driver_w25qxx.c:8441-8468`) — and sector 0 also holds the first ~4 KB of BNO payload. Power loss inside that window corrupts both the header and already-stored payload; there is no boot-time salvage.
+**Direction (needs a design spike):** finalize into a spare sector copy and swap pointers, or boot-scan for `completion_flag==0` with valid payload CRCs to offer salvage; at minimum make the header rewrite atomic (page-aligned header region).
+
+### #12 — Node flash write failure at finalize is a permanent dead-end
+`try_finalize_recording()` returns without clearing `record_finalize_pending_` while batches remain pending (`NODE_RECORDING_APP.h:775-777`); `flush_one_*` retries the same batch forever on write failure (`:668-706`); there is no retry cap or give-up path, BNO service is skipped while stuck (`:236`), and only Cancel (which also needs the flash) or a reboot clears the state.
+**Direction:** bounded retries with escalation — log, fail the session cleanly, preserve what was captured for salvage.
+
+### #13 — Transfer pacing ceiling ~22 KB/s sits just above the ≥18 KB/s target *(gates 10-min goal)*
+`kNodeRecordChunkGapMs = 8` and `kNodeRecordBurstLimit = 1` (`Node main.c:304-305`, enforced `:696-703`) cap the link at 180 B / 8 ms ≈ **22.5 KB/s absolute**, before credit-round-trip effects (Master re-advertises credit-8 windows after each accepted chunk, `MASTER_TRAINING_CSV_COORDINATOR.h:262`). Even a perfect ACK path cannot exceed the ceiling; at 10-min-session size (~5.8 MB/node) that is ≥4.4 min/node at best. See also the caveat under Issue 5.
+**Direction:** measure the `9a808c7` fix on hardware first; if short of target, tune burst limit (≥4) / gap (2-4 ms) / credit (16-24), then re-verify chunk-loss behavior at the new pacing.
+
+## P2 issues
+
+| # | Component | Issue | Evidence |
+|---|---|---|---|
+| #14 | Node upload | NackRange / VerifyFail / legacy ChunkAck chunk indices are unvalidated — an out-of-range cursor silently ends the upload (node goes mute, RecordDone not re-sent) | `Node main.c:1282, 1346, 635`; sender termination `:705-710` |
+| #15 | Node ICM | 16-bit TMST wraps every 1.049 s; a stall ≥1.05 s yields a wrong (compressed) `offset_us` with no detection (sequence gaps still visible) | `ICM45686_STM32.h:204-221` |
+| #16 | Node ICM | `read_fifo_samples()` returns 0 for both "FIFO empty" and "I²C error"; the finalize tail-drain treats a transient error as "caught the tail" and silently drops the ICM tail | `ICM45686_STM32.h:174-178`, `NODE_RECORDING_APP.h:762-771` |
+| #17 | Node | A new StartRecord erases a retained ReadyForUpload session with no guard — next session started before pulling destroys the previous data | `NODE_RECORDING_APP.h:342-345`, `NODE_RECORDER.h:56-60` |
+| #18 | Node flash | Driver re-reads the full 4 KB sector before every write (~8 ms at 4 MHz SPI per batch flush; ≤4 flushes/tick ≈ 35 ms/tick) although the region is pre-erased — direct page-program would skip it; SPI clock 4 MHz is far below the W25Q256 rating | `driver_w25qxx.c:8415-8489`, `Node main.c:1590-1603` |
+| #19 | Node DIAG | Boot flash self-test erases a sector inside the session region (default profile unaffected) | `Node main.c:1490`, `W25Q256_FLASH.h:190` |
+| #20 | Master | Dead stale-ACK escape: the guard at `:4324-4332` returns on exactly the condition the escape at `:4338-4350` requires — unreachable code | `Master main.c:4324-4350` |
+| #21 | Master | `ErrorStoredCanResume` is a dead-end phase — nothing retries or exits it except full reset; it also pins `g_ble_record_transfer_mode` and blocks node uploads | `Master main.c:3357-3362, 1160-1166, 3406-3415` |
+| #22 | Master | Live-stream master switch not restored after a session — comment claims automatic resume, but only the gate clears; the 0xA0 switch stays off until the browser re-sends it | `Master main.c:2026, 2129, 3406-3415, 3519-3523` |
+| #23 | Master | `ValidateNode` has no stall coverage in `service_finalize` (safe today — local and always progresses; future-proofing) | `MASTER_TRAINING_CSV_COORDINATOR.h:380-405` |
+| #24 | Master | Run index allocated at prepare but `R####M.BIN` claimed only at archive — crash window strands/skips indexes; `allocate()` is O(index×5) `f_stat` inside the BLE write handler | `MASTER_BINARY_SESSION_INDEX.h:17-39, 79-100`, `Master main.c:1737-1743` |
+| #25 | Protocol/browser | Browser NACK payload packs 12 B vs the 14 B C struct (`flags` field missing) and the node never reads the `CrcMismatch` flag the Master sets | `Exoskeleton.html:3106-3112`, `Node main.c:1268-1278`, `MASTER_TRAINING_CSV_COORDINATOR.h:249-250` |
+| #26 | Protocol | Credit defaults disagree: protocol header 16, Master grants 8, browser presets 16/24, node re-arm 16 — functional (sanitized) but misleading for tuning | `BLE_RECORD_PROTOCOL.h:29`, `MASTER_TRAINING_CSV_COORDINATOR.h:66`, `Exoskeleton.html:1181-1228` |
+| #27 | Master | SD I/O inside BLE event dispatch: stager 4 KB flush every ~22 chunks + duplicate read-back in notification context; run-index scan, `stager_.shutdown()` flush and `recorder_.reset()` in the phone-write handler — any SD latency stalls dispatch for all 5 links (mitigated, not removed, by the `9a808c7` buffer) | `MASTER_NODE_SESSION_STAGER.h:141-163, 405-478`, `Master main.c:1737-1743, 1370-1392` |
+| #28 | Master | After a source resolves, a browser-relayed ManifestAck can re-grant chunk-0 credit to that node, restarting chunks into a coordinator that now ignores every frame | `Master main.c:4300-4306, 4367-4378`, `MASTER_TRAINING_CSV_COORDINATOR.h:230` |
+| #29 | Master | End-to-end CRC32 mismatch after a full upload discards the entire staged file (StageError) with no selective re-pull — pairs with the Issue-#4 re-pull follow-up | `MASTER_NODE_SESSION_STAGER.h:264-281, 507-524` |
+
+## Minor issues (P3)
+
+- `start_timestamp_us` in StartSession/StartRecord is a relative lead time, not a timestamp, and is truncated to `uint32` ms on the node — rename or widen (`NODE_RECORDING_APP.h:240`, `Exoskeleton.html:2216`).
+- Node-id set command decodes `payload[length-1]` on the blepipe lane but `payload[1]` on the legacy lane (`Node main.c:1152` vs `:2092`).
+- BNO/ICM/TOUCH pins are configured `GPIO_MODE_IT_RISING` with no EXTI handler or NVIC enable — harmless while polled, a hang hazard if the IRQ is ever enabled (`Node gpio.c:62-66`).
+- Legacy ChunkAck replenishes credit without clearing the retransmit cursor (`Node main.c:634-637`).
+- Dead opcodes: ListSessions / FetchSession / EraseSession defined but unreferenced anywhere (`BLE_RECORD_PROTOCOL.h:11-16`).
+- `MasterNodeTransferWindow::chunk_size_` is stored but never enforced; a zero-length chunk is silently `Ignore`d (`MASTER_NODE_TRANSFER_WINDOW.h:38, 53-91`).
+
+## Verified non-defects (explicitly checked, sound)
+
+- **32-bit tick wraparound:** all inspected deltas use unsigned subtraction or explicit casts (`MASTER_TRAINING_CSV_COORDINATOR.h:387-401`, node upload timers, central-client backoff timers).
+- **Ingest buffer bounds:** blepipe decode verifies version/length/CRC; reliable-frame ingest checks exact `payload_len`; node upload reads are bounds-checked twice (`SESSION_TRANSFER.h:24-68`).
+- **Stop delivery:** Master retry/ack-mask sync + idempotent node stop handler + duration-gate self-heal — a lost Stop cannot wedge a node.
+- **ESOX v4 consistency:** 88/56/20-byte layouts agree exactly across C static_asserts, the Python converter, and the browser decoder; both `blepipe_proto.c` copies are byte-identical; all little-endian.
+- **Concurrency model:** Master and Node are single-context (no RTOS) — sensor/flash/BLE all run in the main loop; no ISR races found (with the EXTI-config caveat above).
+- **Window math:** `MasterNodeTransferWindow::inspect()` sequential decisions are off-by-one-free; Master-side credit accounting is absolute (no drift).
+
+## Test-infrastructure gap
+
+- The C++ host tests (transfer window, reliable control, stager, live queue, formatters) cannot execute on the dev box — `run_host_syntax_suite.ps1` is syntax-only and requires the ARM toolchain; behavioral regressions in window/credit logic are only catchable in CubeIDE on Windows.
+- No runner/CI wiring even for the Python suite (all 9 files pass, re-run by hand 2026-08-21).
+- `blepipe_proto.c` is compiled everywhere but never unit-tested (CRC, lane allow-list, trim path).
+- **Recommendation:** a host-runnable g++ target (the FatFs/BLE stubs already exist under `HostTests/FatFsStub`) plus one `run_all` script — near-zero firmware risk and immediate regression coverage for the upcoming #8/#9/#13 fixes.
+
+## Staged fix roadmap (smallest-first; one commit + patch per issue; hardware checkpoint after each stage)
+
+1. **#8** — reliable-control queue-failure propagation (small; removes a known silent-loss path).
+2. **#9** — unlink abandoned node stage files (small; restores run-index hygiene).
+3. **Issue-#4 follow-up** — re-pull command for `failed_source_mask` nodes (medium).
+4. **#10** — SD-full latch recovery (medium).
+5. **#12** — node finalize bounded retry (small-medium).
+6. **#13** — pacing tune, *after* hardware throughput measurement of the `9a808c7` fix (config + verification).
+7. **#6** — node background/chunked erase (largest node change; **gates 10-min sessions**).
+8. **#7** — Master chunked archive (largest Master change).
+9. **#11** — node crash recovery / atomic finalize header (design spike first).
+10. **P2 batch (#14-#29)** after the P1s, cheapest first (#14, #20, #22, #26 are near-trivial).
