@@ -109,6 +109,12 @@ checks = [
     ("#define EXO_HUB_VERBOSE_PIPE_LOGS 0" in central and
      central.count("#if EXO_HUB_VERBOSE_PIPE_LOGS") >= 2,
      "Per-chunk pipe logs must stay behind a default-off verbose switch"),
+    ("void exo_hub_central_client_request_targeted_reconnect(uint8_t node_id);" in central_h and
+     "g_targeted_reconnect_node_id" in central,
+     "Central client must expose targeted direct-address recovery for a dropped session source"),
+    ("exo_hub_central_client_request_targeted_reconnect(exo_leaf_slot_node_id(slot));" in central and
+     "targeted reconnect arm slot=" in central,
+     "A Node drop during discovery hold must arm direct-address recovery instead of waiting"),
 ]
 
 failures = [message for ok, message in checks if not ok]

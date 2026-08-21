@@ -68,6 +68,11 @@ extern void exo_hub_leaf_control_ingest(uint8_t node_id,
 #define EXO_HUB_BACKOFF_MS               1500U
 #define EXO_HUB_BLE_READY_SCAN_DELAY_MS  750U
 #define EXO_HUB_SCAN_RETRY_MS            500U
+/* Direct-address recovery of one dropped Node during a session hold: settle
+ * delay before the connect attempt, and a cap on consecutive failed attempts
+ * so a dead Node cannot churn the radio scheduler for the whole session. */
+#define EXO_HUB_TARGETED_RECONNECT_DELAY_MS  250U
+#define EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS 3U
 #define EXO_HUB_SCAN_RESUME_MS           500U
 #define EXO_HUB_SCAN_BUSY_RETRY_MS       3000U
 #define EXO_HUB_CONNECT_AFTER_SCAN_MS    120U
@@ -150,6 +155,9 @@ static uint8_t g_scan_timeout_stop = 0U;
 static uint8_t g_scan_proc_code = EXO_HUB_PROC_GENERAL_DISCOVERY;
 static uint8_t g_last_logged_all_ready_mask = 0U;
 static uint8_t g_discovery_hold = 0U;
+static uint8_t g_targeted_reconnect_node_id = 0U;
+static uint32_t g_targeted_reconnect_after_ms = 0U;
+static uint8_t g_targeted_reconnect_attempts = 0U;
 
 static const uint8_t k_blepipe_service_uuid[16] = { 0x3f, 0x88, 0x10, 0x00, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
 static const uint8_t k_blepipe_data_uuid[16]    = { 0x3f, 0x88, 0x10, 0x01, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
@@ -819,6 +827,14 @@ static void exo_start_pending_connection(void)
     slot->retry_after_ms = HAL_GetTick() + retry_ms;
     g_scan_requested = 1U;
     g_next_scan_after_ms = HAL_GetTick() + retry_ms;
+    if (g_discovery_hold != 0U &&
+        g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
+    {
+      /* The targeted attempt failed at the radio; retry after the status
+       * backoff while the session hold is still active. */
+      g_targeted_reconnect_node_id = exo_leaf_slot_node_id(slot);
+      g_targeted_reconnect_after_ms = HAL_GetTick() + retry_ms;
+    }
     APP_BLE_LeafClientConnectIdle();
     APP_BLE_LeafClientScanIdle();
   }
@@ -1258,7 +1274,34 @@ void exo_hub_central_client_process(void)
   {
     /* Do not let scan/connect scheduler work compete with an established
      * recording or reliable Node->Master artifact transfer. Existing GATT
-     * links and their notifications continue normally. */
+     * links and their notifications continue normally.
+     * Exception: one dropped Node may be direct-connected by its stored
+     * address so a session source can self-heal without general discovery. */
+    if (g_targeted_reconnect_node_id != 0U &&
+        (int32_t)(now - g_targeted_reconnect_after_ms) >= 0)
+    {
+      exo_leaf_slot_t *const slot = exo_find_slot_by_node(g_targeted_reconnect_node_id);
+      g_targeted_reconnect_node_id = 0U;
+      if (slot != 0 &&
+          (slot->state == EXO_LEAF_SLOT_BACKOFF ||
+           slot->state == EXO_LEAF_SLOT_DISCOVERED) &&
+          g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS &&
+          g_connect_busy == 0U &&
+          g_discovery_active == 0U &&
+          g_scan_active == 0U)
+      {
+        ++g_targeted_reconnect_attempts;
+        slot->retry_after_ms = now;
+        slot->state = EXO_LEAF_SLOT_DISCOVERED;
+        g_connect_after_scan_slot = (uint8_t)(slot - &g_leaf_slots[0]);
+        g_connect_after_scan_ms = now;
+        EXO_LOG("[BLE][HUB][DISC] targeted reconnect arm slot=%u node=%u attempt=%u\r\n",
+                (unsigned)(slot - &g_leaf_slots[0]),
+                (unsigned)exo_leaf_slot_node_id(slot),
+                (unsigned)g_targeted_reconnect_attempts);
+        exo_start_pending_connection();
+      }
+    }
     return;
   }
   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
@@ -1509,6 +1552,10 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
     memcpy(slot->addr, peer_address, 6U);
   }
   slot->connection_handle = connection_handle;
+  /* A recovered link restores the source; give future drops a fresh attempt
+   * budget and drop any stale armed timer. */
+  g_targeted_reconnect_attempts = 0U;
+  g_targeted_reconnect_node_id = 0U;
   exo_begin_mtu_exchange(slot);
 }
 
@@ -1523,6 +1570,12 @@ void exo_hub_central_client_on_disconnection_complete(uint16_t connection_handle
   }
   exo_leaf_slot_mark_backoff(slot);
   g_scan_requested = 1U;
+  if (g_discovery_hold != 0U)
+  {
+    /* Mid-session drop: general discovery is held, so arm direct-address
+     * recovery for this source instead of waiting for the hold to lift. */
+    exo_hub_central_client_request_targeted_reconnect(exo_leaf_slot_node_id(slot));
+  }
 }
 
 void hci_le_advertising_report_event(uint8_t Num_Reports,
@@ -2013,6 +2066,20 @@ void aci_gatt_proc_complete_event(uint16_t Connection_Handle,
   }
 }
 
+void exo_hub_central_client_request_targeted_reconnect(uint8_t node_id)
+{
+  if (node_id < 1U || node_id > 4U || g_discovery_hold == 0U)
+  {
+    return;
+  }
+  g_targeted_reconnect_node_id = node_id;
+  g_targeted_reconnect_after_ms = HAL_GetTick() + EXO_HUB_TARGETED_RECONNECT_DELAY_MS;
+  EXO_LOG("[BLE][HUB][DISC] targeted reconnect requested node=%u delay=%ums attempts=%u\r\n",
+          (unsigned)node_id,
+          (unsigned)EXO_HUB_TARGETED_RECONNECT_DELAY_MS,
+          (unsigned)g_targeted_reconnect_attempts);
+}
+
 void exo_hub_central_client_set_discovery_hold(uint8_t hold)
 {
   const uint8_t requested = (uint8_t)(hold != 0U ? 1U : 0U);
@@ -2056,5 +2123,7 @@ void exo_hub_central_client_set_discovery_hold(uint8_t hold)
   {
     g_scan_requested = 1U;
     g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RETRY_MS;
+    g_targeted_reconnect_node_id = 0U;
+    g_targeted_reconnect_attempts = 0U;
   }
 }
