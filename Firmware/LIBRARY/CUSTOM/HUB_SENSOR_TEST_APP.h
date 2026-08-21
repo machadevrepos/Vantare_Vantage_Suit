@@ -131,8 +131,10 @@ public:
      * capture/idle packet-budget policy as process(); INT-gated, so it is
      * cheap when no report is pending. */
     void service_bno() {
+#if !EXO_ACQ_DIAG_ICM_ONLY
         if (!bno_ready_) return;
         bno85_.service();
+#endif
     }
 
     bool begin_record_capture() {

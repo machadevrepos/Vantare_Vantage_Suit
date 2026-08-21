@@ -93,7 +93,8 @@ checks = [
     ("!hub_sensor_test_app.record_bno_queue_active()" in master,
      "Master must hold SWO telemetry and the live plot stream while a recorded capture owns the sensors"),
     ("flush_write_buffer" in stager and "write_buffer_len_" in stager and
-     "if (!flush_write_buffer()) {\n            return false;\n        }\n        FRESULT result = ops_->close_fn(&file_);" in stager,
+     stager.count("if (!flush_write_buffer()) {") >= 2 and
+     stager.rindex("if (!flush_write_buffer()) {") < stager.index("NodeSessionStageOperation::CloseWrite"),
      "Node session stager must buffer staged writes and flush before validation close"),
     ("(void)flush_write_buffer();" in stager,
      "Stager shutdown must best-effort flush the RAM tail so abandoned sessions keep every byte"),

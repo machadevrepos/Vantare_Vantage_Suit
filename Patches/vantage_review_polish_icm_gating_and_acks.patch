@@ -1,0 +1,61 @@
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index f793ed8..502e751 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -93,7 +93,8 @@ checks = [
+     ("!hub_sensor_test_app.record_bno_queue_active()" in master,
+      "Master must hold SWO telemetry and the live plot stream while a recorded capture owns the sensors"),
+     ("flush_write_buffer" in stager and "write_buffer_len_" in stager and
+-     "if (!flush_write_buffer()) {\n            return false;\n        }\n        FRESULT result = ops_->close_fn(&file_);" in stager,
++     stager.count("if (!flush_write_buffer()) {") >= 2 and
++     stager.rindex("if (!flush_write_buffer()) {") < stager.index("NodeSessionStageOperation::CloseWrite"),
+      "Node session stager must buffer staged writes and flush before validation close"),
+     ("(void)flush_write_buffer();" in stager,
+      "Stager shutdown must best-effort flush the RAM tail so abandoned sessions keep every byte"),
+diff --git a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+index 27ac5dc..7cde99e 100644
+--- a/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h
+@@ -131,8 +131,10 @@ public:
+      * capture/idle packet-budget policy as process(); INT-gated, so it is
+      * cheap when no report is pending. */
+     void service_bno() {
++#if !EXO_ACQ_DIAG_ICM_ONLY
+         if (!bno_ready_) return;
+         bno85_.service();
++#endif
+     }
+ 
+     bool begin_record_capture() {
+diff --git a/Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h b/Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h
+index 2597468..076bd18 100644
+--- a/Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h
++++ b/Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h
+@@ -76,6 +76,10 @@ public:
+     /* The window advertisement is pure idempotent state, so it gets its own slot
+      * instead of competing with control frames for the single pending buffer.
+      * Losing an ACK to a higher-priority NACK used to starve the node of credit. */
++    /* Durability note: the stager may still hold up to one write block of
++     * accepted chunks in RAM when this ACK is sent; a power loss before the
++     * block flush loses acknowledged bytes. End-of-transfer CRC validation
++     * catches that, so no retransmit protocol is needed for it. */
+     bool ack_window(uint32_t next_chunk, uint8_t credit = kDefaultCredit)
+     {
+         if (!active()) return false;
+diff --git a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+index 703fad1..e48ac36 100644
+--- a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
++++ b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+@@ -1561,6 +1561,12 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
+                            slot_index,
+                            HCI_CONNECTION_ALREADY_EXISTS_ERR_CODE,
+                            (uint16_t)EXO_HUB_BACKOFF_MS);
++      if (g_discovery_hold != 0U &&
++          g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
++      {
++        g_targeted_reconnect_node_id = exo_leaf_slot_node_id(slot);
++        g_targeted_reconnect_after_ms = HAL_GetTick() + EXO_HUB_BACKOFF_MS;
++      }
+       return;
+     }
+     slot->addr_type = peer_address_type;

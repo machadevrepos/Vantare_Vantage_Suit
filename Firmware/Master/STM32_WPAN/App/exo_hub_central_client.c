@@ -1561,6 +1561,12 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
                            slot_index,
                            HCI_CONNECTION_ALREADY_EXISTS_ERR_CODE,
                            (uint16_t)EXO_HUB_BACKOFF_MS);
+      if (g_discovery_hold != 0U &&
+          g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
+      {
+        g_targeted_reconnect_node_id = exo_leaf_slot_node_id(slot);
+        g_targeted_reconnect_after_ms = HAL_GetTick() + EXO_HUB_BACKOFF_MS;
+      }
       return;
     }
     slot->addr_type = peer_address_type;

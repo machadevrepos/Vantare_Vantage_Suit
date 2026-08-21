@@ -76,6 +76,10 @@ public:
     /* The window advertisement is pure idempotent state, so it gets its own slot
      * instead of competing with control frames for the single pending buffer.
      * Losing an ACK to a higher-priority NACK used to starve the node of credit. */
+    /* Durability note: the stager may still hold up to one write block of
+     * accepted chunks in RAM when this ACK is sent; a power loss before the
+     * block flush loses acknowledged bytes. End-of-transfer CRC validation
+     * catches that, so no retransmit protocol is needed for it. */
     bool ack_window(uint32_t next_chunk, uint8_t credit = kDefaultCredit)
     {
         if (!active()) return false;
