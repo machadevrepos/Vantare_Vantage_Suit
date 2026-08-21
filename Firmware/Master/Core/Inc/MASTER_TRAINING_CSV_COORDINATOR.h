@@ -165,6 +165,26 @@ cleanup_pending_mask_ = 0U;
 state_ = TrainingCsvState::Idle;
 return true;
 }
+/* Re-open a source that was written off after a stall so its retained flash
+ * copy can be pulled again. The caller must supply the retained RecordDone via
+ * on_node_record_done afterwards; abandoning keeps the node-side copy, so the
+ * data is still there. Only one retry at a time and never while another
+ * transfer owns the link. */
+bool retry_failed_source(uint8_t node_id)
+{
+if (node_id < 1U || node_id > 4U || partial_finalized_) return false;
+if (active_node_id_ != 0U || stager_.active() ||
+(state_ != TrainingCsvState::WaitingForNode &&
+state_ != TrainingCsvState::Complete)) return false;
+if ((failed_source_mask_ & static_cast<uint8_t>(1U << node_id)) == 0U) return false;
+if ((completed_source_mask_ & static_cast<uint8_t>(1U << node_id)) != 0U) return false;
+/* A failed source can be the one that resolved the run into Complete; reopen
+ * it so the re-pull has a live collection state to stage into. */
+if (state_ == TrainingCsvState::Complete) state_ = TrainingCsvState::WaitingForNode;
+failed_source_mask_ = static_cast<uint8_t>(failed_source_mask_ &
+static_cast<uint8_t>(~static_cast<uint8_t>(1U << node_id)));
+return true;
+}
 void on_master_finalized(MasterSdSessionRecorder &recorder)
 {
 if (state_ != TrainingCsvState::WaitingForMaster || !master_ops_->ready_fn(recorder) ||

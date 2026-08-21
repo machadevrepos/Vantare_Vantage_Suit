@@ -1400,6 +1400,43 @@ namespace {
 		return ok ? 1U : 0U;
 	}
 
+	/* Re-pull one source that was written off after a stall. The node kept its
+	 * flash copy (failed sources are never erased), so the retained RecordDone
+	 * is re-queued and the scheduler drives a fresh reliable window from the
+	 * same staged-file index. */
+	static uint8_t master_retry_failed_source(uint8_t node_id)
+			{
+		if (node_id < 1U || node_id > 4U) {
+			return 0U;
+		}
+		const exo::RecordDoneMessage done = g_training_node_done[node_id - 1U];
+		if (done.node_id != node_id || done.session_id == 0U ||
+				done.session_id != master_training_csv_coordinator.active_session_id()) {
+			return 0U;
+		}
+		if ((master_training_csv_coordinator.completed_source_mask() &
+				static_cast<uint8_t>(1U << node_id)) != 0U) {
+			return 0U;
+		}
+		if (!master_training_csv_coordinator.retry_failed_source(node_id)) {
+			return 0U;
+		}
+		if (!pending_node_done_push(done)) {
+			EXO_LOG("[RECORD][BIN] re-pull queue full source=NODE%u session=%lu\r\n",
+					static_cast<unsigned>(node_id),
+					static_cast<unsigned long>(done.session_id));
+			return 0U;
+		}
+		g_ble_record_transfer_mode = true;
+		g_ble_start_or_record_in_progress = true;
+		EXO_LOG("[RECORD][BIN] re-pull armed source=NODE%u session=%lu size=%lu crc=0x%08lX\r\n",
+				static_cast<unsigned>(node_id),
+				static_cast<unsigned long>(done.session_id),
+				static_cast<unsigned long>(done.total_size),
+				static_cast<unsigned long>(done.payload_crc32));
+		return 1U;
+	}
+
 	static void ble_send_discovered_nodes_report()
 	{
 		uint8_t discovered[8] = { 0U };
@@ -2321,6 +2358,16 @@ namespace {
 					const bool ok = stop_active_session(message);
 					master_blepipe_send_ack(hdr, ok ? 1U : 0U, payload[0]);
 					return ok;
+				}
+				master_blepipe_send_ack(hdr, 0U, payload[0]);
+				return false;
+			case static_cast<uint8_t>(exo::RecordCommand::RetrySource):
+				if (length == sizeof(exo::RetrySourceMessage)) {
+					exo::RetrySourceMessage message{};
+					memcpy(&message, payload, sizeof(message));
+					const uint8_t ok = master_retry_failed_source(message.node_id);
+					master_blepipe_send_ack(hdr, ok, payload[0]);
+					return ok != 0U;
 				}
 				master_blepipe_send_ack(hdr, 0U, payload[0]);
 				return false;

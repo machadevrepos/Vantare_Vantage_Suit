@@ -15,12 +15,13 @@ enum class RecordCommand : uint8_t {
     SessionCompleteAck = 0x07,
     EraseSession = 0x08,
     LaneFrameV3 = 0x09,
-    ReliableFrame = 0x0AU,
-    PrepareRecord = 0x0BU,
-    CommitPreparedRecord = 0x0CU,
-    AbortPreparedRecord = 0x0DU,
-    StopRecord = 0x0EU,
-    StartSession = 0x0FU
+    ReliableFrame = 0x0A,
+    PrepareRecord = 0x0B,
+    CommitPreparedRecord = 0x0C,
+    AbortPreparedRecord = 0x0D,
+    StopRecord = 0x0E,
+    StartSession = 0x0F,
+    RetrySource = 0x10
 };
 
 static constexpr uint8_t kRecordReliableProtoVersion = 6U;
@@ -83,6 +84,14 @@ struct StartRecordMessage {
 struct StopRecordMessage {
     RecordCommand command;
     uint32_t session_id;
+};
+
+/* Browser -> Master: re-pull one source that was written off after a stall.
+ * The node still holds its flash copy (abandoned sources are never erased), so
+ * the Master can re-stage the file and drive a fresh reliable window. */
+struct RetrySourceMessage {
+    RecordCommand command;
+    uint8_t node_id;
 };
 
 struct StartSessionMessage {

@@ -26,6 +26,9 @@ checks = [
      "incomplete-session UI must protect retained Node data from accidental reset"),
     ("failedSourceMask" in HTML and "cleanupPendingMask" in HTML,
      "Master SD status UI must expose failed/cleanup source masks"),
+    ("encodeRetrySource" in HTML and "retryFailedBtn" in HTML and
+     "dv.setUint8(0, 0x10);" in HTML,
+     "failed sources must be re-pullable from the UI (RetrySource 0x10)"),
     ("(completed & expected) !== expected" in HTML,
      "Master SD Complete state must not hide an incomplete expected-source mask"),
     ("liveExpectedCadenceMs" in HTML,

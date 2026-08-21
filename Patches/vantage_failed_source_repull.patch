@@ -1,0 +1,281 @@
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+index 9bc3fd4..c090342 100644
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -721,6 +721,7 @@ input[type="checkbox"] {
+       <div class="row">
+         <button id="startBtn" disabled>Start Stream</button>
+         <button id="stopBtn" disabled>Stop Stream</button>
++        <button id="retryFailedBtn" disabled title="Re-pull Node sessions the Master wrote off after a stall (Node flash copies are retained)">Retry Failed Nodes</button>
+       </div>
+       <div class="row">
+         <label for="intervalInput">Interval (ms)</label>
+@@ -1237,6 +1238,7 @@ input[type="checkbox"] {
+     recordStatus: el("recordStatus"),
+     connectBtn: el("connectBtn"), disconnectBtn: el("disconnectBtn"),
+     startBtn: el("startBtn"), stopBtn: el("stopBtn"), setIntervalBtn: el("setIntervalBtn"),
++    retryFailedBtn: el("retryFailedBtn"),
+     intervalInput: el("intervalInput"),
+     sessionIdInput: el("sessionIdInput"), durationInput: el("durationInput"), leadTimeInput: el("leadTimeInput"), startRecordBtn: el("startRecordBtn"),
+     sessionState: el("sessionState"), sessionNodes: el("sessionNodes"),
+@@ -1373,6 +1375,7 @@ input[type="checkbox"] {
+   ui.disconnectBtn.addEventListener("click", onDisconnect);
+   ui.startBtn.addEventListener("click", sendStartSessionCmd);
+   ui.stopBtn.addEventListener("click", sendStopSessionCmd);
++  ui.retryFailedBtn.addEventListener("click", sendRetryFailedSourcesCmd);
+   ui.setIntervalBtn.addEventListener("click", () => {
+     const ms = clamp(parseInt(ui.intervalInput.value, 10) || 20, 10, 100);
+     ui.intervalInput.value = String(ms);
+@@ -2228,6 +2231,54 @@ input[type="checkbox"] {
+     return bytes;
+   }
+ 
++  function encodeRetrySource(nodeId) {
++    const bytes = new Uint8Array(2);
++    const dv = new DataView(bytes.buffer);
++    dv.setUint8(0, 0x10);
++    dv.setUint8(1, nodeId & 0x0F);
++    return bytes;
++  }
++
++  function failedRetryNodeIds() {
++    const failedMask = (state.trainingCsv?.failed ?? 0) & 0x1E;
++    const nodes = [];
++    for (let n = 1; n <= 4; n += 1) if (failedMask & (1 << n)) nodes.push(n);
++    return nodes;
++  }
++
++  function refreshRetryFailedAvailability() {
++    if (!ui.retryFailedBtn) return;
++    const nodes = failedRetryNodeIds();
++    const connected = !!state.cmdChar;
++    ui.retryFailedBtn.disabled = !connected || nodes.length === 0 ||
++      !["Error", "Incomplete"].includes(state.sessionState);
++    ui.retryFailedBtn.textContent = nodes.length > 0
++      ? `Retry Failed Nodes (${nodes.length})`
++      : "Retry Failed Nodes";
++  }
++
++  async function sendRetryFailedSourcesCmd() {
++    const nodes = failedRetryNodeIds();
++    if (nodes.length === 0) {
++      log("Retry ignored: no retained failed Node sources to re-pull.");
++      return;
++    }
++    setSessionState("Collecting");
++    let armed = 0;
++    for (const n of nodes) {
++      const ok = await sendBlePipeCommand(encodeRetrySource(n), BLEPIPE.MSG_COMMAND);
++      if (ok) armed += 1;
++    }
++    if (armed > 0) {
++      resetTransferUi(`Re-pull armed: ${nodes.map((n) => `NODE${n}`).join(", ")} (retained session will re-upload)`);
++      log(`Retry source command(s) sent for ${nodes.map((n) => `NODE${n}`).join(", ")}.`);
++    } else {
++      setSessionState("Error");
++      log("Retry source command(s) rejected: the Master no longer holds those sessions.");
++    }
++    refreshRetryFailedAvailability();
++  }
++
+   function setSessionState(nextState) {
+     state.sessionState = nextState;
+     if (ui.sessionState) ui.sessionState.textContent = nextState;
+@@ -2251,6 +2302,7 @@ input[type="checkbox"] {
+       }
+     }
+     refreshStartRecordAvailability();
++    refreshRetryFailedAvailability();
+     renderDevices();
+   }
+ 
+@@ -3320,6 +3372,11 @@ input[type="checkbox"] {
+           log(`Session Stop ACK ${accepted ? "accepted" : "rejected"}.`);
+           return;
+         }
++        if (echoedCmd === 0x10) {
++          log(`Retry Source ACK ${accepted ? "accepted" : "rejected"}.`);
++          if (!accepted) setSessionState("Error");
++          return;
++        }
+         if (echoedCmd === 0x01) {
+           if (!state.startRecordInFlight && !state.startRecordAckTimer) {
+             log(`Start Record ACK ignored after flow settled: ${accepted ? "accepted" : "rejected"}.`);
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index 61c6156..f128b7c 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -125,6 +125,11 @@ checks = [
+     ("abandon_and_unlink" in stager and "stage_started_" in stager and
+      coordinator.count("stager_.abandon_and_unlink();") >= 3,
+      "Abandoned/failed node stages must be unlinked so run indexes stay reusable and no truncated R####N#.BIN survives"),
++    ("RetrySource = 0x10" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
++     "master_retry_failed_source" in master and
++     "retry_failed_source" in coordinator and
++     "master_retry_failed_source(message.node_id)" in master,
++     "A source written off after a stall must be re-pullable from the retained RecordDone (RetrySource 0x10)"),
+ ]
+ 
+ failures = [message for ok, message in checks if not ok]
+diff --git a/Firmware/HostTests/test_desktop_binary_first.py b/Firmware/HostTests/test_desktop_binary_first.py
+index 164f170..bc5a5c4 100644
+--- a/Firmware/HostTests/test_desktop_binary_first.py
++++ b/Firmware/HostTests/test_desktop_binary_first.py
+@@ -26,6 +26,9 @@ checks = [
+      "incomplete-session UI must protect retained Node data from accidental reset"),
+     ("failedSourceMask" in HTML and "cleanupPendingMask" in HTML,
+      "Master SD status UI must expose failed/cleanup source masks"),
++    ("encodeRetrySource" in HTML and "retryFailedBtn" in HTML and
++     "dv.setUint8(0, 0x10);" in HTML,
++     "failed sources must be re-pullable from the UI (RetrySource 0x10)"),
+     ("(completed & expected) !== expected" in HTML,
+      "Master SD Complete state must not hide an incomplete expected-source mask"),
+     ("liveExpectedCadenceMs" in HTML,
+diff --git a/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h b/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
+index e39bfb5..829f410 100644
+--- a/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
++++ b/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
+@@ -15,12 +15,13 @@ enum class RecordCommand : uint8_t {
+     SessionCompleteAck = 0x07,
+     EraseSession = 0x08,
+     LaneFrameV3 = 0x09,
+-    ReliableFrame = 0x0AU,
+-    PrepareRecord = 0x0BU,
+-    CommitPreparedRecord = 0x0CU,
+-    AbortPreparedRecord = 0x0DU,
+-    StopRecord = 0x0EU,
+-    StartSession = 0x0FU
++    ReliableFrame = 0x0A,
++    PrepareRecord = 0x0B,
++    CommitPreparedRecord = 0x0C,
++    AbortPreparedRecord = 0x0D,
++    StopRecord = 0x0E,
++    StartSession = 0x0F,
++    RetrySource = 0x10
+ };
+ 
+ static constexpr uint8_t kRecordReliableProtoVersion = 6U;
+@@ -85,6 +86,14 @@ struct StopRecordMessage {
+     uint32_t session_id;
+ };
+ 
++/* Browser -> Master: re-pull one source that was written off after a stall.
++ * The node still holds its flash copy (abandoned sources are never erased), so
++ * the Master can re-stage the file and drive a fresh reliable window. */
++struct RetrySourceMessage {
++    RecordCommand command;
++    uint8_t node_id;
++};
++
+ struct StartSessionMessage {
+     RecordCommand command;
+     uint32_t session_id;
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+index 0c428b6..c282e8a 100644
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -165,6 +165,26 @@ cleanup_pending_mask_ = 0U;
+ state_ = TrainingCsvState::Idle;
+ return true;
+ }
++/* Re-open a source that was written off after a stall so its retained flash
++ * copy can be pulled again. The caller must supply the retained RecordDone via
++ * on_node_record_done afterwards; abandoning keeps the node-side copy, so the
++ * data is still there. Only one retry at a time and never while another
++ * transfer owns the link. */
++bool retry_failed_source(uint8_t node_id)
++{
++if (node_id < 1U || node_id > 4U || partial_finalized_) return false;
++if (active_node_id_ != 0U || stager_.active() ||
++(state_ != TrainingCsvState::WaitingForNode &&
++state_ != TrainingCsvState::Complete)) return false;
++if ((failed_source_mask_ & static_cast<uint8_t>(1U << node_id)) == 0U) return false;
++if ((completed_source_mask_ & static_cast<uint8_t>(1U << node_id)) != 0U) return false;
++/* A failed source can be the one that resolved the run into Complete; reopen
++ * it so the re-pull has a live collection state to stage into. */
++if (state_ == TrainingCsvState::Complete) state_ = TrainingCsvState::WaitingForNode;
++failed_source_mask_ = static_cast<uint8_t>(failed_source_mask_ &
++static_cast<uint8_t>(~static_cast<uint8_t>(1U << node_id)));
++return true;
++}
+ void on_master_finalized(MasterSdSessionRecorder &recorder)
+ {
+ if (state_ != TrainingCsvState::WaitingForMaster || !master_ops_->ready_fn(recorder) ||
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+index 6709ea3..c0cf8c5 100644
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -1400,6 +1400,43 @@ namespace {
+ 		return ok ? 1U : 0U;
+ 	}
+ 
++	/* Re-pull one source that was written off after a stall. The node kept its
++	 * flash copy (failed sources are never erased), so the retained RecordDone
++	 * is re-queued and the scheduler drives a fresh reliable window from the
++	 * same staged-file index. */
++	static uint8_t master_retry_failed_source(uint8_t node_id)
++			{
++		if (node_id < 1U || node_id > 4U) {
++			return 0U;
++		}
++		const exo::RecordDoneMessage done = g_training_node_done[node_id - 1U];
++		if (done.node_id != node_id || done.session_id == 0U ||
++				done.session_id != master_training_csv_coordinator.active_session_id()) {
++			return 0U;
++		}
++		if ((master_training_csv_coordinator.completed_source_mask() &
++				static_cast<uint8_t>(1U << node_id)) != 0U) {
++			return 0U;
++		}
++		if (!master_training_csv_coordinator.retry_failed_source(node_id)) {
++			return 0U;
++		}
++		if (!pending_node_done_push(done)) {
++			EXO_LOG("[RECORD][BIN] re-pull queue full source=NODE%u session=%lu\r\n",
++					static_cast<unsigned>(node_id),
++					static_cast<unsigned long>(done.session_id));
++			return 0U;
++		}
++		g_ble_record_transfer_mode = true;
++		g_ble_start_or_record_in_progress = true;
++		EXO_LOG("[RECORD][BIN] re-pull armed source=NODE%u session=%lu size=%lu crc=0x%08lX\r\n",
++				static_cast<unsigned>(node_id),
++				static_cast<unsigned long>(done.session_id),
++				static_cast<unsigned long>(done.total_size),
++				static_cast<unsigned long>(done.payload_crc32));
++		return 1U;
++	}
++
+ 	static void ble_send_discovered_nodes_report()
+ 	{
+ 		uint8_t discovered[8] = { 0U };
+@@ -2324,6 +2361,16 @@ namespace {
+ 				}
+ 				master_blepipe_send_ack(hdr, 0U, payload[0]);
+ 				return false;
++			case static_cast<uint8_t>(exo::RecordCommand::RetrySource):
++				if (length == sizeof(exo::RetrySourceMessage)) {
++					exo::RetrySourceMessage message{};
++					memcpy(&message, payload, sizeof(message));
++					const uint8_t ok = master_retry_failed_source(message.node_id);
++					master_blepipe_send_ack(hdr, ok, payload[0]);
++					return ok != 0U;
++				}
++				master_blepipe_send_ack(hdr, 0U, payload[0]);
++				return false;
+ 			case static_cast<uint8_t>(exo::RecordCommand::ReliableFrame):
+ 				case static_cast<uint8_t>(exo::RecordCommand::SessionCompleteAck):
+ 				case static_cast<uint8_t>(exo::RecordCommand::ChunkAck):
+diff --git a/Firmware/Master/tests/ble_session_control_test.cpp b/Firmware/Master/tests/ble_session_control_test.cpp
+index cc1f141..3d213a0 100644
+--- a/Firmware/Master/tests/ble_session_control_test.cpp
++++ b/Firmware/Master/tests/ble_session_control_test.cpp
+@@ -7,6 +7,8 @@ static_assert(sizeof(exo::StopRecordMessage) == 5U,
+               "StopRecord wire format must remain compact");
+ static_assert(sizeof(exo::StartSessionMessage) == 19U,
+               "StartSession wire format must match the browser encoder");
++static_assert(sizeof(exo::RetrySourceMessage) == 2U,
++              "RetrySource wire format must match the browser encoder");
+ 
+ static_assert(exo::session_node_mask_valid(0x02U),
+               "A selected one-node session must be valid");

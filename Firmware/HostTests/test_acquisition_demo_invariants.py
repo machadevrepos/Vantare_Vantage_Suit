@@ -125,6 +125,11 @@ checks = [
     ("abandon_and_unlink" in stager and "stage_started_" in stager and
      coordinator.count("stager_.abandon_and_unlink();") >= 3,
      "Abandoned/failed node stages must be unlinked so run indexes stay reusable and no truncated R####N#.BIN survives"),
+    ("RetrySource = 0x10" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
+     "master_retry_failed_source" in master and
+     "retry_failed_source" in coordinator and
+     "master_retry_failed_source(message.node_id)" in master,
+     "A source written off after a stall must be re-pullable from the retained RecordDone (RetrySource 0x10)"),
 ]
 
 failures = [message for ok, message in checks if not ok]

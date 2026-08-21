@@ -721,6 +721,7 @@ input[type="checkbox"] {
       <div class="row">
         <button id="startBtn" disabled>Start Stream</button>
         <button id="stopBtn" disabled>Stop Stream</button>
+        <button id="retryFailedBtn" disabled title="Re-pull Node sessions the Master wrote off after a stall (Node flash copies are retained)">Retry Failed Nodes</button>
       </div>
       <div class="row">
         <label for="intervalInput">Interval (ms)</label>
@@ -1237,6 +1238,7 @@ input[type="checkbox"] {
     recordStatus: el("recordStatus"),
     connectBtn: el("connectBtn"), disconnectBtn: el("disconnectBtn"),
     startBtn: el("startBtn"), stopBtn: el("stopBtn"), setIntervalBtn: el("setIntervalBtn"),
+    retryFailedBtn: el("retryFailedBtn"),
     intervalInput: el("intervalInput"),
     sessionIdInput: el("sessionIdInput"), durationInput: el("durationInput"), leadTimeInput: el("leadTimeInput"), startRecordBtn: el("startRecordBtn"),
     sessionState: el("sessionState"), sessionNodes: el("sessionNodes"),
@@ -1373,6 +1375,7 @@ input[type="checkbox"] {
   ui.disconnectBtn.addEventListener("click", onDisconnect);
   ui.startBtn.addEventListener("click", sendStartSessionCmd);
   ui.stopBtn.addEventListener("click", sendStopSessionCmd);
+  ui.retryFailedBtn.addEventListener("click", sendRetryFailedSourcesCmd);
   ui.setIntervalBtn.addEventListener("click", () => {
     const ms = clamp(parseInt(ui.intervalInput.value, 10) || 20, 10, 100);
     ui.intervalInput.value = String(ms);
@@ -2228,6 +2231,54 @@ input[type="checkbox"] {
     return bytes;
   }
 
+  function encodeRetrySource(nodeId) {
+    const bytes = new Uint8Array(2);
+    const dv = new DataView(bytes.buffer);
+    dv.setUint8(0, 0x10);
+    dv.setUint8(1, nodeId & 0x0F);
+    return bytes;
+  }
+
+  function failedRetryNodeIds() {
+    const failedMask = (state.trainingCsv?.failed ?? 0) & 0x1E;
+    const nodes = [];
+    for (let n = 1; n <= 4; n += 1) if (failedMask & (1 << n)) nodes.push(n);
+    return nodes;
+  }
+
+  function refreshRetryFailedAvailability() {
+    if (!ui.retryFailedBtn) return;
+    const nodes = failedRetryNodeIds();
+    const connected = !!state.cmdChar;
+    ui.retryFailedBtn.disabled = !connected || nodes.length === 0 ||
+      !["Error", "Incomplete"].includes(state.sessionState);
+    ui.retryFailedBtn.textContent = nodes.length > 0
+      ? `Retry Failed Nodes (${nodes.length})`
+      : "Retry Failed Nodes";
+  }
+
+  async function sendRetryFailedSourcesCmd() {
+    const nodes = failedRetryNodeIds();
+    if (nodes.length === 0) {
+      log("Retry ignored: no retained failed Node sources to re-pull.");
+      return;
+    }
+    setSessionState("Collecting");
+    let armed = 0;
+    for (const n of nodes) {
+      const ok = await sendBlePipeCommand(encodeRetrySource(n), BLEPIPE.MSG_COMMAND);
+      if (ok) armed += 1;
+    }
+    if (armed > 0) {
+      resetTransferUi(`Re-pull armed: ${nodes.map((n) => `NODE${n}`).join(", ")} (retained session will re-upload)`);
+      log(`Retry source command(s) sent for ${nodes.map((n) => `NODE${n}`).join(", ")}.`);
+    } else {
+      setSessionState("Error");
+      log("Retry source command(s) rejected: the Master no longer holds those sessions.");
+    }
+    refreshRetryFailedAvailability();
+  }
+
   function setSessionState(nextState) {
     state.sessionState = nextState;
     if (ui.sessionState) ui.sessionState.textContent = nextState;
@@ -2251,6 +2302,7 @@ input[type="checkbox"] {
       }
     }
     refreshStartRecordAvailability();
+    refreshRetryFailedAvailability();
     renderDevices();
   }
 
@@ -3318,6 +3370,11 @@ input[type="checkbox"] {
         if (echoedCmd === 0x0E) {
           setSessionState(accepted ? "Collecting" : "Error");
           log(`Session Stop ACK ${accepted ? "accepted" : "rejected"}.`);
+          return;
+        }
+        if (echoedCmd === 0x10) {
+          log(`Retry Source ACK ${accepted ? "accepted" : "rejected"}.`);
+          if (!accepted) setSessionState("Error");
           return;
         }
         if (echoedCmd === 0x01) {
