@@ -369,6 +369,8 @@ namespace {
 	enum class LocalRecordPhase : uint8_t {
 		Idle,
 		Capturing,
+		Finalizing,
+		Archiving,
 		RecordDoneWait,
 		Manifest,
 		TransferActive,
@@ -381,6 +383,12 @@ namespace {
 	};
 
 	static LocalRecordPhase g_local_record_phase = LocalRecordPhase::Idle;
+	/* Chunked finalize/archive budget: bytes of archive I/O per superloop pass.
+	 * Bounded so BLE dispatch, BNO service and node collection keep running
+	 * while the Master recording is sealed (~2-4 ms per pass). */
+	static constexpr uint32_t kLocalRecordArchiveChunkBytes = 512U;
+	static constexpr uint8_t kLocalArchiveMaxAttempts = 3U;
+	static uint8_t g_local_archive_attempt = 0U;
 	static exo::StartRecordMessage g_local_start_msg { };
 	static bool g_local_record_armed = false;
 	static uint32_t g_local_arm_tick_ms = 0U;
@@ -2529,6 +2537,23 @@ namespace {
 
 	__attribute__((optimize("Os"))) static void local_record_collect(const exo::HubSensorSnapshot &hub_snapshot)
 			{
+		/* Latched-archive recovery (#10): retry a failed archive in bounded
+		 * chunks while no local recording is active, so an SD-full event cannot
+		 * refuse new sessions forever. After a durability failure the phase is
+		 * Finished, so recovery must run there too, not only from Idle. */
+		if (g_local_record_phase == LocalRecordPhase::Idle ||
+				g_local_record_phase == LocalRecordPhase::Finished ||
+				g_local_record_phase == LocalRecordPhase::Cancelled) {
+			if (g_local_session_recorder.archive_in_progress()) {
+				if (g_local_session_recorder.service_archive(kLocalRecordArchiveChunkBytes) ==
+						exo::MasterSdSessionRecorder::ArchiveStep::Complete) {
+					EXO_LOG("[RECORD][BIN] master archive recovered index=%u\r\n",
+							static_cast<unsigned>(g_local_session_recorder.last_archive_index()));
+				}
+			} else if (g_local_session_recorder.archive_blocked()) {
+				(void) g_local_session_recorder.service_archive_recovery(HAL_GetTick());
+			}
+		}
 		if (g_local_record_armed) {
 			const uint32_t lead_time_ms = static_cast<uint32_t>(g_local_start_msg.start_timestamp_us / 1000ULL);
 			const uint32_t elapsed_from_cmd_ms = HAL_GetTick() - g_local_arm_tick_ms;
@@ -2552,6 +2577,105 @@ namespace {
 					static_cast<unsigned long>(g_local_start_msg.requested_duration_ms));
 			/* hub_snapshot was acquired before begin_record_capture(). Never let
 			 * that pre-capture snapshot become sample zero of the new session. */
+			return;
+		}
+		if (g_local_record_phase == LocalRecordPhase::Finalizing) {
+			const exo::MasterSdSessionRecorder::FinalizeStep step =
+					g_local_session_recorder.service_finalize(kLocalRecordArchiveChunkBytes);
+			if (step == exo::MasterSdSessionRecorder::FinalizeStep::InProgress) {
+				return;
+			}
+			if (step == exo::MasterSdSessionRecorder::FinalizeStep::Failed ||
+					!g_local_session_recorder.ready()) {
+				EXO_LOG("[MASTER][REC] finalize failed fr=%d bno_fail=%lu icm_fail=%lu\r\n",
+						static_cast<int>(g_local_session_recorder.last_error()),
+						static_cast<unsigned long>(g_local_bno_append_fail),
+						static_cast<unsigned long>(g_local_icm_append_fail));
+				if (master_training_csv_coordinator.active_session_id() ==
+						g_local_start_msg.session_id) {
+					(void)master_training_csv_coordinator.cancel_session();
+				}
+				local_record_finish_without_transfer();
+				return;
+			}
+			if (g_active_session_file_index == 0U) {
+				EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
+						static_cast<unsigned long>(g_local_start_msg.session_id),
+						static_cast<unsigned>(g_active_session_file_index));
+				master_training_csv_coordinator.fail_durability();
+				local_record_finish_without_transfer();
+				return;
+			}
+			g_local_archive_attempt = 0U;
+			g_local_record_phase = LocalRecordPhase::Archiving;
+			return;
+		}
+		if (g_local_record_phase == LocalRecordPhase::Archiving) {
+			if (!g_local_session_recorder.archive_in_progress()) {
+				if (g_local_archive_attempt >= kLocalArchiveMaxAttempts) {
+					EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
+							static_cast<unsigned long>(g_local_start_msg.session_id),
+							static_cast<unsigned>(g_active_session_file_index));
+					master_training_csv_coordinator.fail_durability();
+					local_record_finish_without_transfer();
+					return;
+				}
+				++g_local_archive_attempt;
+				if (!g_local_session_recorder.begin_archive(g_active_session_file_index)) {
+					/* The attempt is consumed; retry from the next iteration so
+					 * BLE keeps flowing between attempts. */
+					return;
+				}
+				EXO_LOG("[RECORD][BIN] master archive attempt=%u session=%lu index=%u\r\n",
+						static_cast<unsigned>(g_local_archive_attempt),
+						static_cast<unsigned long>(g_local_start_msg.session_id),
+						static_cast<unsigned>(g_active_session_file_index));
+			}
+			const exo::MasterSdSessionRecorder::ArchiveStep step =
+					g_local_session_recorder.service_archive(kLocalRecordArchiveChunkBytes);
+			if (step == exo::MasterSdSessionRecorder::ArchiveStep::InProgress) {
+				return;
+			}
+			if (step == exo::MasterSdSessionRecorder::ArchiveStep::Failed) {
+				EXO_LOG("[RECORD][BIN] master archive retry session=%lu index=%u attempt=%u fr=%d\r\n",
+						static_cast<unsigned long>(g_local_start_msg.session_id),
+						static_cast<unsigned>(g_active_session_file_index),
+						static_cast<unsigned>(g_local_archive_attempt),
+						static_cast<int>(g_local_session_recorder.last_error()));
+				/* The machine is idle again; the next iteration re-begins until
+				 * the attempt budget is exhausted. */
+				return;
+			}
+			EXO_LOG("[RECORD][BIN] master durable session=%lu index=%u\r\n",
+					static_cast<unsigned long>(g_local_start_msg.session_id),
+					static_cast<unsigned>(g_active_session_file_index));
+			master_training_csv_coordinator.on_master_finalized(g_local_session_recorder);
+			const exo::SessionHeader &session_header = g_local_session_recorder.header();
+			g_local_session_size = g_local_session_recorder.total_size();
+			EXO_LOG("[MASTER][REC] finalized session=%lu bno=%lu icm=%lu size=%lu bno_fail=%lu icm_fail=%lu\r\n",
+					static_cast<unsigned long>(session_header.session_id),
+					static_cast<unsigned long>(session_header.bno85_sample_count),
+					static_cast<unsigned long>(session_header.icm45686_sample_count),
+					static_cast<unsigned long>(g_local_session_size),
+					static_cast<unsigned long>(g_local_bno_append_fail),
+					static_cast<unsigned long>(g_local_icm_append_fail));
+			EXO_LOG("[RECORD][MASTER] END session=%lu duration_ms=%lu size=%lu bno=%lu icm=%lu\r\n",
+					static_cast<unsigned long>(session_header.session_id),
+					static_cast<unsigned long>(g_local_finalize_duration_ms),
+					static_cast<unsigned long>(g_local_session_size),
+					static_cast<unsigned long>(session_header.bno85_sample_count),
+					static_cast<unsigned long>(session_header.icm45686_sample_count));
+
+			g_local_done.command = exo::RecordCommand::RecordDone;
+			g_local_done.node_id = kMasterNodeId;
+			g_local_done.session_id = g_local_start_msg.session_id;
+			g_local_done.actual_duration_ms = g_local_finalize_duration_ms;
+			g_local_done.total_size = g_local_session_size;
+			g_local_done.payload_crc32 = session_header.payload_crc32;
+			/* The SD archive is the authoritative deliverable. Do not put the browser
+			 * bulk-transfer lane between Master finalization and node collection. */
+			g_local_record_phase = LocalRecordPhase::Finished;
+			leaf_ble_manager.set_transfer_hold(false);
 			return;
 		}
 		if (g_local_record_phase != LocalRecordPhase::Capturing) {
@@ -2764,8 +2888,12 @@ namespace {
 
 		g_local_session_recorder.set_capture_failures(
 				g_local_bno_append_fail, g_local_icm_append_fail);
-		if (!g_local_session_recorder.finalize(g_local_finalize_duration_ms)) {
-			EXO_LOG("[MASTER][REC] finalize failed fr=%d bno_fail=%lu icm_fail=%lu\r\n",
+		/* Finalize (payload CRC + header seal) and the archive copy/validate
+		 * passes run chunked from the Finalizing/Archiving branches above, so
+		 * BLE dispatch and node collection continue while the recording is
+		 * sealed. */
+		if (!g_local_session_recorder.begin_finalize(g_local_finalize_duration_ms)) {
+			EXO_LOG("[MASTER][REC] finalize begin failed fr=%d bno_fail=%lu icm_fail=%lu\r\n",
 					static_cast<int>(g_local_session_recorder.last_error()),
 					static_cast<unsigned long>(g_local_bno_append_fail),
 					static_cast<unsigned long>(g_local_icm_append_fail));
@@ -2776,65 +2904,7 @@ namespace {
 			local_record_finish_without_transfer();
 			return;
 		}
-		if (g_active_session_file_index == 0U) {
-			EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
-					static_cast<unsigned long>(g_local_start_msg.session_id),
-					static_cast<unsigned>(g_active_session_file_index));
-			master_training_csv_coordinator.fail_durability();
-			local_record_finish_without_transfer();
-			return;
-		}
-		bool master_archive_ok = false;
-		for (uint8_t archive_attempt = 0U; archive_attempt < 3U; ++archive_attempt) {
-			if (g_local_session_recorder.archive_to_index(g_active_session_file_index)) {
-				master_archive_ok = true;
-				break;
-			}
-			EXO_LOG("[RECORD][BIN] master archive retry session=%lu index=%u attempt=%u fr=%d\r\n",
-					static_cast<unsigned long>(g_local_start_msg.session_id),
-					static_cast<unsigned>(g_active_session_file_index),
-					static_cast<unsigned>(archive_attempt + 1U),
-					static_cast<int>(g_local_session_recorder.last_error()));
-			HAL_Delay(10U);
-		}
-		if (!master_archive_ok) {
-			EXO_LOG("[RECORD][BIN] master archive failed session=%lu index=%u\r\n",
-					static_cast<unsigned long>(g_local_start_msg.session_id),
-					static_cast<unsigned>(g_active_session_file_index));
-			master_training_csv_coordinator.fail_durability();
-			local_record_finish_without_transfer();
-			return;
-		}
-		EXO_LOG("[RECORD][BIN] master durable session=%lu index=%u\r\n",
-				static_cast<unsigned long>(g_local_start_msg.session_id),
-				static_cast<unsigned>(g_active_session_file_index));
-		master_training_csv_coordinator.on_master_finalized(g_local_session_recorder);
-		const exo::SessionHeader &session_header = g_local_session_recorder.header();
-		g_local_session_size = g_local_session_recorder.total_size();
-		EXO_LOG("[MASTER][REC] finalized session=%lu bno=%lu icm=%lu size=%lu bno_fail=%lu icm_fail=%lu\r\n",
-				static_cast<unsigned long>(session_header.session_id),
-				static_cast<unsigned long>(session_header.bno85_sample_count),
-				static_cast<unsigned long>(session_header.icm45686_sample_count),
-				static_cast<unsigned long>(g_local_session_size),
-				static_cast<unsigned long>(g_local_bno_append_fail),
-				static_cast<unsigned long>(g_local_icm_append_fail));
-		EXO_LOG("[RECORD][MASTER] END session=%lu duration_ms=%lu size=%lu bno=%lu icm=%lu\r\n",
-				static_cast<unsigned long>(session_header.session_id),
-				static_cast<unsigned long>(g_local_finalize_duration_ms),
-				static_cast<unsigned long>(g_local_session_size),
-				static_cast<unsigned long>(session_header.bno85_sample_count),
-				static_cast<unsigned long>(session_header.icm45686_sample_count));
-
-		g_local_done.command = exo::RecordCommand::RecordDone;
-		g_local_done.node_id = kMasterNodeId;
-		g_local_done.session_id = g_local_start_msg.session_id;
-		g_local_done.actual_duration_ms = g_local_finalize_duration_ms;
-		g_local_done.total_size = g_local_session_size;
-		g_local_done.payload_crc32 = session_header.payload_crc32;
-		/* The SD archive is the authoritative deliverable. Do not put the browser
-		 * bulk-transfer lane between Master finalization and node collection. */
-		g_local_record_phase = LocalRecordPhase::Finished;
-		leaf_ble_manager.set_transfer_hold(false);
+		g_local_record_phase = LocalRecordPhase::Finalizing;
 	}
 }
 

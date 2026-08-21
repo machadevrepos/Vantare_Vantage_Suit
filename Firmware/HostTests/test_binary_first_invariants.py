@@ -60,12 +60,20 @@ def main() -> int:
             "binary run allocation must complete before PrepareRecord is sent", failures)
     require("g_active_session_file_index" in main_src,
             "Master must persist the allocated run index across record-sync teardown", failures)
-    archive = main_src.find("archive_to_index(g_active_session_file_index)")
+    archive = main_src.find("begin_archive(g_active_session_file_index)")
     finalized = main_src.find("master_training_csv_coordinator.on_master_finalized", archive)
     require(archive >= 0 and finalized > archive,
             "Master binary must be archived before the coordinator accepts it as durable", failures)
-    require("archive_attempt < 3U" in main_src and "master archive retry" in main_src,
+    require("g_local_archive_attempt >= kLocalArchiveMaxAttempts" in main_src and
+            "master archive retry" in main_src,
             "Master must retry transient canonical archive failures before declaring durability failure", failures)
+    require("begin_finalize(g_local_finalize_duration_ms)" in main_src and
+            "service_finalize(kLocalRecordArchiveChunkBytes)" in main_src and
+            "service_archive(kLocalRecordArchiveChunkBytes)" in main_src and
+            "LocalRecordPhase::Finalizing" in main_src and
+            "LocalRecordPhase::Archiving" in main_src and
+            "master_archive_ok" not in main_src,
+            "Master finalize/archive must advance as bounded superloop phases so BLE dispatch keeps running", failures)
     require("g_local_record_phase = LocalRecordPhase::Finished;" in main_src,
             "binary-first mode must not enter the Master-to-browser bulk transfer phase", failures)
     require("!master_training_csv_coordinator.binary_only() &&" in main_src,
@@ -80,25 +88,25 @@ def main() -> int:
     recorder = read("Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h")
     require("/SESSIONS/R0000T.BIN" in recorder,
             "Master archive must use a temporary compact file", failures)
-    require("read(logical_offset, copy_buffer_, chunk)" in recorder,
+    require("read(archive_offset_, copy_buffer_, chunk)" in recorder,
             "Master archive must copy the recorder's canonical logical stream", failures)
-    require("validate_compact_archive" in recorder and "f_size(&file)" in recorder,
+    require("service_archive_validate" in recorder and "f_size(&archive_file_)" in recorder,
             "Master archive must validate the exact compact file size", failures)
     require("session_header_crc(compact_header)" in recorder and
-            "compact_header.payload_crc32" in recorder and
-            "crc32_update(payload_crc" in recorder,
+            "archive_crc_ != header_.payload_crc32" in recorder and
+            "crc32_update(archive_crc_" in recorder,
             "Master archive must validate both header and payload CRCs", failures)
-    require("f_rename(temp_path, archive_path)" in recorder and
+    require("f_rename(temp_path_, archive_path_)" in recorder and
             "f_rename(EXO_MASTER_REC_FINAL_PATH, archive_path)" not in recorder,
             "Master archive must install the validated compact file, not rename the sparse source", failures)
-    archive_install = recorder.find("f_rename(temp_path, archive_path)")
+    archive_install = recorder.find("f_rename(temp_path_, archive_path_)")
     live_remove = recorder.find("f_unlink(EXO_MASTER_REC_FINAL_PATH)", archive_install)
     require(archive_install >= 0 and live_remove > archive_install,
             "sparse MREC.BIN must survive until the compact archive is installed", failures)
-    require(recorder.count("f_unlink(temp_path)") >= 2,
+    require(recorder.count("f_unlink(temp_path_)") >= 2,
             "failed compact/archive attempts must clean temporary files", failures)
     installed_tail = recorder[archive_install:] if archive_install >= 0 else ""
-    require("set_archive_cleanup_path(archive_path)" in installed_tail and
+    require("set_archive_cleanup_path(archive_path_)" in installed_tail and
             "service_archive_cleanup()" in recorder,
             "failed post-install validation must remain retry-cleanable without losing a live FatFs handle", failures)
     require("FIL archive_file_{};" in recorder and "bool archive_file_open_ = false;" in recorder,
@@ -110,14 +118,18 @@ def main() -> int:
             "a finalized unarchived Master recording must block overwrite by a new session", failures)
     require("if (!close_all_files())" in recorder,
             "a new Master recording must not start while a prior FatFs handle cannot be closed", failures)
-    require("set_archive_cleanup_path(temp_path)" in recorder and
-            "set_archive_cleanup_path(archive_path)" in recorder,
+    require("set_archive_cleanup_path(archive_phase_ == ArchivePhase::InstallValidate ?" in recorder and
+            "archive_path_ : temp_path_)" in recorder and
+            "set_archive_cleanup_path(archive_path_)" in recorder,
             "failed temp/final archive closes must remain retry-cleanable", failures)
     durable = recorder.find("archive_required_ = false;", archive_install)
     durable_tail = recorder[durable:] if durable >= 0 else ""
     require(durable >= 0 and "sparse_cleanup_pending_ = true;" in durable_tail and
-            "return true;" in durable_tail,
+            "return ArchiveStep::Complete;" in durable_tail,
             "once R####M.BIN is validated, cleanup-only failures must not revoke durability", failures)
+    require("service_archive_recovery" in recorder and "kArchiveRecoveryRetryMs" in recorder and
+            "service_archive_recovery(HAL_GetTick())" in main_src,
+            "a latched archive (SD full/rename failure) must self-heal with backoff instead of refusing new sessions forever", failures)
 
     if failures:
         for failure in failures:
