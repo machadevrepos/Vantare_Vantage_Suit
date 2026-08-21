@@ -12,11 +12,11 @@
 |---|-------|----------|--------|
 | 1 | BLE path broken (Master won't advertise, nodes won't connect) | Blocker | **Resolved** (environmental, not a source regression) |
 | 2 | Node ICM data is ~50 % duplicated register reads + synthetic timestamps | High (training data) | **Fixed in firmware** |
-| 3 | Master BNO ~78 % sample loss (~22 Hz vs 100 Hz) | High (training data) | **Open** — root cause identified |
-| 4 | Node1 upload failed; abandoned after 30 s stall (0-byte staged file) | Medium | **Open** — link-recovery gap identified |
-| 5 | Node→Master transfer throughput ~1.8 KB/s | High (blocks 10-min sessions) | **Open** — root cause hypothesis |
+| 3 | Master BNO ~78 % sample loss (~22 Hz vs 100 Hz) | High (training data) | **Fixed in firmware** (`b894711`) — awaiting hardware verification |
+| 4 | Node1 upload failed; abandoned after 30 s stall (0-byte staged file) | Medium | **Fixed in firmware** (`5f5d2e4`) — awaiting hardware verification |
+| 5 | Node→Master transfer throughput ~1.8 KB/s | High (blocks 10-min sessions) | **Fixed in firmware** (`9a808c7`) — awaiting hardware verification |
 
-The only issue fixed in code so far is **#2 (node ICM FIFO)**. The rest are documented with root cause and recommended direction.
+Issues #3/#4/#5 were fixed in code on 2026-08-21; the sections below retain the original session-1 analysis. The only issue fixed in code before that date was **#2 (node ICM FIFO)**.
 
 ---
 
@@ -185,3 +185,26 @@ Note: the CSV schema omits derived roll/pitch/yaw (the v4 sample format dropped 
 - `Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h` — documented FIFO config (RMW + `BW=ODR/4`) and `INVALID_VALUE_FIFO` validation.
 - `Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h` — node arms the 200 Hz FIFO at both record-start sites, with automatic register-poll fallback; stale comments updated.
 - `Firmware/HostTests/test_acquisition_demo_invariants.py` — invariant restored to require the node FIFO.
+
+---
+
+## Fixes applied 2026-08-21 (Issues 3, 4, 5)
+
+### Issue 3 — `b894711` applied master_bno_service_recovery_patch
+- `HUB_SENSOR_TEST_APP.h`: new `service_bno()` bounded drain (same capture/idle packet-budget policy as `process()`).
+- Master superloop: two extra BNO service points — right after `MX_APPE_Process()` and right after `local_record_collect()` — so the worst-case gap between SHTP drains is the longest single blocking region, not the whole loop period.
+- Quiet capture: phone-facing live IMU stream and per-sample SWO telemetry are paused while `record_bno_queue_active()` is true; both resume automatically when recording ends.
+
+### Issue 5 — `9a808c7` applied node_transfer_throughput_fix_patch
+- ACK cadence: coordinator gained `service_reliable_control(now_ms)` (honors the post-manifest defer counter); the superloop calls it straight after BLE dispatch, so a chunk ACK is transmitted within the same iteration it was queued instead of one full loop later.
+- Stager write buffering: sequential chunk appends accumulate in a 4 KB RAM block (`MASTER_NODE_SESSION_STAGER.h`) and flush on full / before duplicate read-back / before validation close / best-effort at shutdown, removing the per-chunk blocking `f_lseek+f_write` from BLE event context.
+- Quiet transfer: live stream + SWO prints also pause while `g_ble_record_transfer_mode || g_remote_transfer_active`; per-chunk pipe logs moved behind default-off `EXO_HUB_VERBOSE_PIPE_LOGS`.
+
+### Issue 4 — `5f5d2e4` applied session_link_recovery_patch
+- New `exo_hub_central_client_request_targeted_reconnect(node_id)`: while discovery hold is active, a dropped node is direct-connected from its stored address (no general scan; healthy links untouched).
+- `exo_hub_central_client_process()` hold branch executes the armed targeted connect; the disconnect handler arms it automatically mid-session. Consecutive failed attempts are capped at 3 (budget resets on any successful connection or when hold releases), and radio failures re-arm after the status backoff.
+- Once the link is READY again, existing manifest re-send scheduling delivers MANIFEST and the upload resumes; a re-pull command for already-abandoned sources remains future work.
+
+### Verification
+- Host suite: all Python invariant tests pass (extended with checks for each fix). C++ host tests (incl. new stager buffered-write scenarios) must be compiled in the STM32CubeIDE environment — no host toolchain on the dev box.
+- Hardware: build Master + Nodes, then confirm (a) Master BNO `captured/attempted` ≈ 100 Hz, (b) collection throughput ≥10× the ~1.8 KB/s baseline, (c) pulling a node's link mid-collection recovers within seconds without disturbing other nodes.
