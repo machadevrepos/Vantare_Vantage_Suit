@@ -133,6 +133,8 @@ checks = [
     ("kMaxConsecutiveWriteFails" in node and "drop_pending_batches" in node and
      "kMaxFinalizeAttempts" in node and "finalize_failed_" in node,
      "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
+    ("kNodeRecordBurstLimit = 4U" in node_main,
+     "Node upload pacing must not cap the link at ~22 KB/s (one chunk per 8 ms gap) — the 10-min offload target needs headroom"),
 ]
 
 failures = [message for ok, message in checks if not ok]

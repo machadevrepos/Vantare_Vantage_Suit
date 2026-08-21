@@ -1,0 +1,30 @@
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index d5df8bb..1074b60 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -133,6 +133,8 @@ checks = [
+     ("kMaxConsecutiveWriteFails" in node and "drop_pending_batches" in node and
+      "kMaxFinalizeAttempts" in node and "finalize_failed_" in node,
+      "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
++    ("kNodeRecordBurstLimit = 4U" in node_main,
++     "Node upload pacing must not cap the link at ~22 KB/s (one chunk per 8 ms gap) — the 10-min offload target needs headroom"),
+ ]
+ 
+ failures = [message for ok, message in checks if not ok]
+diff --git a/Firmware/Node/Core/Src/main.c b/Firmware/Node/Core/Src/main.c
+index ac8f82d..bff1ca9 100644
+--- a/Firmware/Node/Core/Src/main.c
++++ b/Firmware/Node/Core/Src/main.c
+@@ -302,7 +302,11 @@ static constexpr uint8_t kTouchStatusShutdownArmed = 2U;
+ static constexpr uint8_t kTouchStatusTurningOff = 3U;
+ static constexpr uint16_t kNodeRecordChunkPayloadBytes = exo::kRecordReliableDefaultChunkSize;
+ static constexpr uint32_t kNodeRecordChunkGapMs = 8U;
+-static constexpr uint8_t kNodeRecordBurstLimit = 1U;
++/* Burst >1 removes the old ~22 KB/s hard ceiling (one 180 B chunk per gap) so
++ * the 10-minute-session offload target (>=10x the ~1.8 KB/s baseline) has
++ * headroom. The credit window still bounds data in flight, and a busy BLE
++ * stack simply fails a burst send, which the sender retries next tick. */
++static constexpr uint8_t kNodeRecordBurstLimit = 4U;
+ static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
+ static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
+ /* An upload that has run out of credit is only restarted by an inbound control

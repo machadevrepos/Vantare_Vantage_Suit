@@ -302,7 +302,11 @@ static constexpr uint8_t kTouchStatusShutdownArmed = 2U;
 static constexpr uint8_t kTouchStatusTurningOff = 3U;
 static constexpr uint16_t kNodeRecordChunkPayloadBytes = exo::kRecordReliableDefaultChunkSize;
 static constexpr uint32_t kNodeRecordChunkGapMs = 8U;
-static constexpr uint8_t kNodeRecordBurstLimit = 1U;
+/* Burst >1 removes the old ~22 KB/s hard ceiling (one 180 B chunk per gap) so
+ * the 10-minute-session offload target (>=10x the ~1.8 KB/s baseline) has
+ * headroom. The credit window still bounds data in flight, and a busy BLE
+ * stack simply fails a burst send, which the sender retries next tick. */
+static constexpr uint8_t kNodeRecordBurstLimit = 4U;
 static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
 static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
 /* An upload that has run out of credit is only restarted by an inbound control
