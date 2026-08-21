@@ -3,3 +3,15 @@ Output/
 Session_output/
 Firmware/Master/.settings/language.settings.xml
 Firmware/Node/.settings/language.settings.xml
+converted_csv/R0001M_BNO85.csv
+converted_csv/R0001M_ICM45686.csv
+converted_csv/R0001M_metadata.json
+converted_csv/R0001N2_BNO85.csv
+converted_csv/R0001N2_ICM45686.csv
+converted_csv/R0001N2_metadata.json
+converted_csv/R0001N3_BNO85.csv
+converted_csv/R0001N3_ICM45686.csv
+converted_csv/R0001N3_metadata.json
+converted_csv/R0001N4_BNO85.csv
+converted_csv/R0001N4_ICM45686.csv
+converted_csv/R0001N4_metadata.json

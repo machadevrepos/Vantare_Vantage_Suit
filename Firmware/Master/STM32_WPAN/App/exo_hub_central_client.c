@@ -38,7 +38,8 @@ extern void exo_hub_leaf_control_ingest(uint8_t node_id,
                                         const uint8_t *payload,
                                         uint16_t payload_len);
 
-#define EXO_HUB_LEAF_MAX                 5U
+/* Four physical suit nodes; CFG_BLE_NUM_LINK still reserves the browser link. */
+#define EXO_HUB_LEAF_MAX                 4U
 #define EXO_HUB_SCAN_INTERVAL            0x0040U
 #define EXO_HUB_SCAN_WINDOW              0x0030U
 #define EXO_HUB_SCAN_INTERVAL_CONNECTED  0x00A0U
@@ -1669,6 +1670,18 @@ void aci_gap_proc_complete_event(uint8_t Procedure_Code,
             (unsigned)Status,
             (unsigned)g_connect_after_scan_slot,
             (unsigned)g_connect_busy);
+    if (g_discovery_hold != 0U &&
+        g_connect_busy == 0U &&
+        g_discovery_active == 0U)
+    {
+      g_connect_after_scan_slot = 0xFFU;
+      g_connect_after_scan_ms = 0U;
+      g_scan_requested = 0U;
+      g_scan_timeout_stop = 0U;
+      EXO_LOG("[BLE][HUB][DISC] scan complete held idle adv resume\r\n");
+      APP_BLE_LeafClientScanIdle();
+      return;
+    }
     if (g_connect_after_scan_slot == 0xFFU &&
         g_connect_busy == 0U &&
         Status == 0U)
@@ -2007,11 +2020,25 @@ void exo_hub_central_client_set_discovery_hold(uint8_t hold)
   {
     /* Cancel only a passive scan. Never tear down an established leaf link or
      * a GATT procedure. Discovered slots remain available after the session. */
+    g_scan_requested = 0U;
     g_connect_after_scan_slot = 0xFFU;
     g_connect_after_scan_ms = 0U;
     if (g_scan_active != 0U && g_connect_busy == 0U && g_discovery_active == 0U)
     {
-      (void)aci_gap_terminate_gap_proc(g_scan_proc_code);
+      const tBleStatus status = aci_gap_terminate_gap_proc(g_scan_proc_code);
+      g_scan_timeout_stop = 1U;
+      if (status != BLE_STATUS_SUCCESS)
+      {
+        g_scan_active = 0U;
+        g_scan_timeout_stop = 0U;
+        EXO_LOG("[BLE][HUB][DISC] hold stop-scan failed status=%u, idling app radio\r\n",
+                (unsigned)status);
+        APP_BLE_LeafClientScanIdle();
+      }
+    }
+    else if (g_connect_busy == 0U && g_discovery_active == 0U)
+    {
+      APP_BLE_LeafClientScanIdle();
     }
   }
   else

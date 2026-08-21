@@ -71,9 +71,9 @@ checks = [
      "Node attempted/dropped metadata must include known buffer/write losses"),
     ("freeze_record_bno_capture" in master and "drain_record_bno_samples" in master,
      "Master stop must freeze then drain the final BNO queue tail"),
-    ("begin_fifo_capture_200hz" not in node and
-     "kIcmPeriodUs = 5000U" in node and "icm45686_.read_sample" in node,
-     "Node recording must remain on the established 5 ms direct-register ICM path"),
+    ("begin_fifo_capture_200hz" in node and "read_fifo_samples(icm_drain_buf_" in node and
+     "record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();" in node,
+     "Node recording must arm the real 200 Hz ICM FIFO instead of synthetic catch-up reads"),
     ("kLocalRecordFinalizeIcmDrainPasses" in master and
      "WARN ICM FIFO tail drain reached safety bound" in master,
      "Master stop must drain the ICM FIFO tail before ending capture"),

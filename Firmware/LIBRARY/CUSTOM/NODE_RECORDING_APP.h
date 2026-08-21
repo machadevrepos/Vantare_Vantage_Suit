@@ -28,7 +28,8 @@ namespace exo {
 			static constexpr uint32_t kDataRateLogPeriodMs = 10000U;
 			static constexpr uint32_t kIcmPeriodUs = 5000U;
 			/* Recorded fusion target. The BNO wrapper queues one composite sample
-			 * per 100 Hz game-rotation-vector report; Node ICM remains direct-register 200 Hz. */
+			 * per 100 Hz game-rotation-vector report; Node ICM captures via the
+			 * documented 200 Hz hardware FIFO (register-poll fallback if unavailable). */
 			static constexpr uint16_t kBnoTargetRateHz = 100U;
 			static constexpr uint16_t kIcmTargetRateHz = 200U;
 			static constexpr uint8_t kMaxBnoDrainPerTick = 8U;
@@ -252,9 +253,11 @@ namespace exo {
 							return;
 						}
 						bno85_.set_capture_queue_enabled(true);
-						/* Nodes intentionally use the deterministic 5 ms direct-register
-						 * ICM path. Hardware FIFO capture is reserved for Master. */
-						record_icm_fifo_active_ = false;
+						/* Node ICM records through the documented 200 Hz hardware FIFO
+						 * (real per-frame timestamps, no polled duplicates). If the
+						 * FIFO cannot be armed, record_icm_fifo_active_ stays false and
+						 * the 5 ms direct-register path runs as an automatic fallback. */
+						record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
 						reset_capture_schedule();
 						record_finalize_pending_ = false;
 						reset_data_rate_log();
@@ -489,9 +492,11 @@ namespace exo {
 					return false;
 				}
 				bno85_.set_capture_queue_enabled(true);
-				/* Nodes intentionally use the deterministic 5 ms direct-register
-				 * ICM path. Hardware FIFO capture is reserved for Master. */
-				record_icm_fifo_active_ = false;
+				/* Node ICM records through the documented 200 Hz hardware FIFO
+				 * (real per-frame timestamps, no polled duplicates). If the
+				 * FIFO cannot be armed, record_icm_fifo_active_ stays false and
+				 * the 5 ms direct-register path runs as an automatic fallback. */
+				record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
 				reset_capture_schedule();
 				record_finalize_pending_ = false;
 				reset_data_rate_log();

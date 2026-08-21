@@ -131,8 +131,16 @@ public:
         }
         if (status == 0) status = inv_imu_set_accel_frequency(&device_, ACCEL_CONFIG0_ACCEL_ODR_200_HZ);
         if (status == 0) status = inv_imu_set_gyro_frequency(&device_, GYRO_CONFIG0_GYRO_ODR_200_HZ);
+        /* Low-noise anti-alias bandwidth = ODR/4, matching the InvenSense
+         * basic_read_fifo reference for a clean 200 Hz capture. */
+        if (status == 0) status = inv_imu_set_accel_ln_bw(&device_, IPREG_SYS2_REG_131_ACCEL_UI_LPFBW_DIV_4);
+        if (status == 0) status = inv_imu_set_gyro_ln_bw(&device_, IPREG_SYS1_REG_172_GYRO_UI_LPFBW_DIV_4);
 
+        /* Documented read-modify-write: start from the device's current FIFO
+         * configuration so driver-managed reserved fields are preserved, then
+         * enable the combined accel+gyro stream. */
         inv_imu_fifo_config_t fifo{};
+        if (status == 0) status = inv_imu_get_fifo_config(&device_, &fifo);
         fifo.accel_en = INV_IMU_ENABLE;
         fifo.gyro_en = INV_IMU_ENABLE;
         fifo.hires_en = INV_IMU_DISABLE;
@@ -179,6 +187,17 @@ public:
             }
             if (frame.header.bits.accel_bit == 0U || frame.header.bits.gyro_bit == 0U ||
                     frame.header.bits.timestamp_bit == 0U) {
+                continue;
+            }
+            /* Documented invalid-sample sentinel (0x8000): a frame carrying it on
+             * any accel/gyro axis is a settling/unavailable artefact, not real
+             * sensor data, so it must not enter the recorded stream. */
+            if (frame.byte_16.accel_data[0] == INVALID_VALUE_FIFO ||
+                    frame.byte_16.accel_data[1] == INVALID_VALUE_FIFO ||
+                    frame.byte_16.accel_data[2] == INVALID_VALUE_FIFO ||
+                    frame.byte_16.gyro_data[0] == INVALID_VALUE_FIFO ||
+                    frame.byte_16.gyro_data[1] == INVALID_VALUE_FIFO ||
+                    frame.byte_16.gyro_data[2] == INVALID_VALUE_FIFO) {
                 continue;
             }
 
