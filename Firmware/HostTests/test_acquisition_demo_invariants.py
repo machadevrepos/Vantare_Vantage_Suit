@@ -12,6 +12,8 @@ recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_
 central = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c").read_text()
 central_h = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h").read_text()
 node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
+stager = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h").read_text()
+coordinator = (ROOT / "Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h").read_text()
 
 checks = [
     ("void service_pending(uint8_t max_packets)" in bno,
@@ -88,8 +90,25 @@ checks = [
      master.index("hub_sensor_test_app.service_bno();") > master.index("MX_APPE_Process();") and
      "local_record_collect(hub_snapshot);\n\t\t/* SD appends/flushes above can block" in master,
      "Master superloop must service the BNO after BLE dispatch and after SD collect, not once per iteration"),
-    ("!hub_sensor_test_app.record_bno_queue_active();" in master,
+    ("!hub_sensor_test_app.record_bno_queue_active()" in master,
      "Master must hold SWO telemetry and the live plot stream while a recorded capture owns the sensors"),
+    ("flush_write_buffer" in stager and "write_buffer_len_" in stager and
+     "if (!flush_write_buffer()) {\n            return false;\n        }\n        FRESULT result = ops_->close_fn(&file_);" in stager,
+     "Node session stager must buffer staged writes and flush before validation close"),
+    ("(void)flush_write_buffer();" in stager,
+     "Stager shutdown must best-effort flush the RAM tail so abandoned sessions keep every byte"),
+    ("service_reliable_control" in coordinator and
+     "reliable_defer_services_" in coordinator,
+     "Coordinator must expose an early reliable-control flush that honors the manifest defer counter"),
+    ("master_training_csv_coordinator.service_reliable_control(HAL_GetTick());" in master and
+     master.index("master_training_csv_coordinator.service_reliable_control(HAL_GetTick());") <
+     master.index("hub_snapshot = hub_sensor_test_app.process()"),
+     "Chunk ACKs must flush right after BLE dispatch, not once per superloop"),
+    (master.count("!g_ble_record_transfer_mode && !g_remote_transfer_active") >= 2,
+     "Master must hold SWO telemetry and the live plot stream while a node upload owns the links"),
+    ("#define EXO_HUB_VERBOSE_PIPE_LOGS 0" in central and
+     central.count("#if EXO_HUB_VERBOSE_PIPE_LOGS") >= 2,
+     "Per-chunk pipe logs must stay behind a default-off verbose switch"),
 ]
 
 failures = [message for ok, message in checks if not ok]

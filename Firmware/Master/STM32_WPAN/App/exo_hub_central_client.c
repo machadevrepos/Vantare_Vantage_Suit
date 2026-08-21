@@ -16,6 +16,13 @@
 extern void exo_ble_debug_printf(const char *fmt, ...);
 #define EXO_LOG exo_ble_debug_printf
 
+/* Per-notification logging fires once per transferred chunk; at transfer
+ * rates above ~10 chunks/s the console writes themselves stretch the
+ * superloop. Keep them behind this default-off switch. */
+#ifndef EXO_HUB_VERBOSE_PIPE_LOGS
+#define EXO_HUB_VERBOSE_PIPE_LOGS 0
+#endif
+
 #pragma pack(push, 1)
 typedef struct
 {
@@ -1194,12 +1201,14 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
   }
   if (hdr.msg_type == BLEPIPE_MSG_RAW_FORWARD && payload_len > 0U && payload_len <= 255U)
   {
+#if EXO_HUB_VERBOSE_PIPE_LOGS
     EXO_LOG("[BLE][HUB][LEAF] raw_forward slot=%u src=0x%04X len=%u first=0x%02X status=%u\r\n",
             (unsigned)(slot - &g_leaf_slots[0]),
             (unsigned)hdr.src_id,
             (unsigned)payload_len,
             (unsigned)payload[0],
             (unsigned)decode_status);
+#endif
     exo_hub_leaf_record_frame_ingest(exo_leaf_slot_node_id(slot), payload, payload_len);
     if (exo_hub_maybe_queue_record_done(payload, payload_len, "raw_forward") != 0U)
     {
@@ -1856,10 +1865,12 @@ void aci_gatt_notification_event(uint16_t Connection_Handle,
   }
   else if (Attribute_Handle == slot->data_value_handle)
   {
+#if EXO_HUB_VERBOSE_PIPE_LOGS
     EXO_LOG("[BLE][HUB][DISC] notify data slot=%u handle=0x%04X len=%u\r\n",
             (unsigned)(slot - &g_leaf_slots[0]),
             (unsigned)Attribute_Handle,
             (unsigned)Attribute_Value_Length);
+#endif
     exo_handle_pipe_packet(slot, BLEPIPE_LANE_DATA_TX, Attribute_Value, Attribute_Value_Length);
   }
 }

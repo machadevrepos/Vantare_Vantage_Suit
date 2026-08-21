@@ -264,6 +264,19 @@ if (inspection.decision == NodeTransferDecision::Complete) {
 state_ = TrainingCsvState::ValidateNode;
 }
 }
+/* Flush queued reliable-control frames (ACK windows, NACKs) without the
+full state-machine pass. Called straight after BLE event dispatch so an
+ACK reaches the node within the iteration it was queued instead of after
+all remaining superloop work; honors reliable_defer_services_ so a
+freshly queued ManifestAck still transmits before any ACK. */
+void service_reliable_control(uint32_t now_ms)
+{
+if (reliable_defer_services_ != 0U) {
+--reliable_defer_services_;
+return;
+}
+(void)reliable_control_.service(now_ms);
+}
 void service(MasterSdSessionRecorder &recorder, uint32_t now_ms)
 {
 if (reliable_defer_services_ != 0U) {

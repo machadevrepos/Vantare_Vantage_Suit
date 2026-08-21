@@ -1,0 +1,431 @@
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index 7087281..14ddc6c 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -12,6 +12,8 @@ recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_
+ central = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c").read_text()
+ central_h = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h").read_text()
+ node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
++stager = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h").read_text()
++coordinator = (ROOT / "Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h").read_text()
+ 
+ checks = [
+     ("void service_pending(uint8_t max_packets)" in bno,
+@@ -88,8 +90,25 @@ checks = [
+      master.index("hub_sensor_test_app.service_bno();") > master.index("MX_APPE_Process();") and
+      "local_record_collect(hub_snapshot);\n\t\t/* SD appends/flushes above can block" in master,
+      "Master superloop must service the BNO after BLE dispatch and after SD collect, not once per iteration"),
+-    ("!hub_sensor_test_app.record_bno_queue_active();" in master,
++    ("!hub_sensor_test_app.record_bno_queue_active()" in master,
+      "Master must hold SWO telemetry and the live plot stream while a recorded capture owns the sensors"),
++    ("flush_write_buffer" in stager and "write_buffer_len_" in stager and
++     "if (!flush_write_buffer()) {\n            return false;\n        }\n        FRESULT result = ops_->close_fn(&file_);" in stager,
++     "Node session stager must buffer staged writes and flush before validation close"),
++    ("(void)flush_write_buffer();" in stager,
++     "Stager shutdown must best-effort flush the RAM tail so abandoned sessions keep every byte"),
++    ("service_reliable_control" in coordinator and
++     "reliable_defer_services_" in coordinator,
++     "Coordinator must expose an early reliable-control flush that honors the manifest defer counter"),
++    ("master_training_csv_coordinator.service_reliable_control(HAL_GetTick());" in master and
++     master.index("master_training_csv_coordinator.service_reliable_control(HAL_GetTick());") <
++     master.index("hub_snapshot = hub_sensor_test_app.process()"),
++     "Chunk ACKs must flush right after BLE dispatch, not once per superloop"),
++    (master.count("!g_ble_record_transfer_mode && !g_remote_transfer_active") >= 2,
++     "Master must hold SWO telemetry and the live plot stream while a node upload owns the links"),
++    ("#define EXO_HUB_VERBOSE_PIPE_LOGS 0" in central and
++     central.count("#if EXO_HUB_VERBOSE_PIPE_LOGS") >= 2,
++     "Per-chunk pipe logs must stay behind a default-off verbose switch"),
+ ]
+ 
+ failures = [message for ok, message in checks if not ok]
+diff --git a/Firmware/HostTests/test_master_node_session_stager_sequential.cpp b/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
+index bbb9f4f..9798716 100644
+--- a/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
++++ b/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
+@@ -127,6 +127,88 @@ int main()
+     // so every later row is read without another FAT filesystem seek.
+     assert(g_lseek_count == 1U);
+ 
++    // Buffered-write scenario: many small appends must cross the internal
++    // write-block boundary, a duplicate may straddle flushed prefix vs RAM
++    // tail, gaps stay rejected, and shutdown must flush any pending tail.
++    constexpr uint32_t big_bno_count = 100U;
++    constexpr uint32_t big_icm_count = 170U;
++    exo::SessionHeader big_header{};
++    big_header.magic = exo::kSessionMagic;
++    big_header.version = exo::kSessionFormatVersion;
++    big_header.node_id = 2U;
++    big_header.session_id = 77U;
++    big_header.completion_flag = exo::kSessionComplete;
++    big_header.bno85_sample_count = big_bno_count;
++    big_header.icm45686_sample_count = big_icm_count;
++    big_header.bno85_payload_size = big_bno_count * sizeof(exo::Bno85Sample);
++    big_header.icm45686_payload_size = big_icm_count * sizeof(exo::Icm45686Sample);
++
++    std::vector<uint8_t> big_payload(
++            big_header.bno85_payload_size + big_header.icm45686_payload_size);
++    for (size_t i = 0U; i < big_payload.size(); ++i) {
++        big_payload[i] = static_cast<uint8_t>(i * 7U + 3U);
++    }
++    big_header.payload_crc32 = exo::crc32(big_payload.data(), big_payload.size());
++    big_header.header_crc32 = exo::session_header_crc(big_header);
++
++    std::vector<uint8_t> big_session(sizeof(big_header) + big_payload.size());
++    memcpy(big_session.data(), &big_header, sizeof(big_header));
++    memcpy(big_session.data() + sizeof(big_header), big_payload.data(), big_payload.size());
++
++    exo::RecordDoneMessage big_done{};
++    big_done.command = exo::RecordCommand::RecordDone;
++    big_done.node_id = 2U;
++    big_done.session_id = 77U;
++    big_done.total_size = static_cast<uint32_t>(big_session.size());
++    big_done.payload_crc32 = big_header.payload_crc32;
++
++    g_file.clear();
++    g_cursor = 0U;
++    exo::MasterNodeSessionStager buffered(&kSeqOps);
++    assert(buffered.begin(big_done, 2U));
++    uint32_t append_offset = 0U;
++    while (append_offset < big_session.size()) {
++        const size_t left = big_session.size() - append_offset;
++        const uint16_t take = left < 180U ? static_cast<uint16_t>(left) : 180U;
++        assert(buffered.accept_chunk(2U, 77U, append_offset,
++                big_session.data() + append_offset, take));
++        append_offset += take;
++    }
++    assert(buffered.staged_size() == big_session.size());
++    // At least one full write block reached the card before validation, i.e.
++    // appends were amortized instead of written per chunk.
++    assert(g_file.size() >= 4096U);
++
++    // Duplicate whose range starts in the flushed prefix and ends inside the
++    // RAM tail buffer.
++    const uint32_t straddle_offset =
++            static_cast<uint32_t>(big_session.size()) - 100U;
++    assert(buffered.accept_chunk(2U, 77U, straddle_offset,
++            big_session.data() + straddle_offset, 100U));
++
++    // A gap beyond the staged end must still be rejected.
++    assert(!buffered.accept_chunk(2U, 77U,
++            static_cast<uint32_t>(big_session.size()) + 1U,
++            big_session.data(), 1U));
++
++    assert(buffered.begin_validation());
++    while (buffered.validation_status() ==
++            exo::node_session_staging::NodeSessionValidationStatus::InProgress) {
++        assert(buffered.step_validation(256U));
++    }
++    assert(buffered.finalize_validation());
++
++    // Abandon path: shutdown must flush the short tail so the staged file
++    // keeps every byte that was acknowledged.
++    g_file.clear();
++    g_cursor = 0U;
++    exo::MasterNodeSessionStager abandoned(&kSeqOps);
++    assert(abandoned.begin(big_done, 3U));
++    assert(abandoned.accept_chunk(2U, 77U, 0U, big_session.data(), 200U));
++    assert(abandoned.shutdown());
++    assert(g_file.size() == 200U);
++    assert(memcmp(g_file.data(), big_session.data(), 200U) == 0);
++
+     std::cout << "master node stager sequential read tests passed\n";
+     return 0;
+ }
+diff --git a/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h b/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
+index b2dfa75..55e4de8 100644
+--- a/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
++++ b/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
+@@ -136,18 +136,25 @@ public:
+             return duplicate_matches(byte_offset, data, size);
+         }
+ 
+-        FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(byte_offset));
+-        read_cursor_ = kInvalidCursor;
+-        if (result != FR_OK) {
+-            return set_error(node_session_staging::NodeSessionStageOperation::WriteSeek, result);
+-        }
+-        UINT written = 0U;
+-        result = ops_->write_fn(&file_, data, size, &written);
+-        if (result != FR_OK) {
+-            return set_error(node_session_staging::NodeSessionStageOperation::Write, result);
+-        }
+-        if (written != size) {
+-            return set_error(node_session_staging::NodeSessionStageOperation::WriteShort, FR_OK);
++        /* Append path (byte_offset == staged_size_): accumulate in RAM and
++         * write larger blocks. accept_chunk runs in BLE event context, so a
++         * per-chunk f_lseek+f_write serializes every radio event behind SD
++         * latency; buffering amortizes one write across many chunks. */
++        uint16_t pending = size;
++        const uint8_t *cursor = data;
++        while (pending > 0U) {
++            if (write_buffer_len_ == sizeof(write_buffer_)) {
++                if (!flush_write_buffer()) {
++                    return false;
++                }
++            }
++            const uint16_t space = static_cast<uint16_t>(sizeof(write_buffer_) -
++                    write_buffer_len_);
++            const uint16_t take = pending < space ? pending : space;
++            memcpy(&write_buffer_[write_buffer_len_], cursor, take);
++            write_buffer_len_ = static_cast<uint16_t>(write_buffer_len_ + take);
++            cursor += take;
++            pending = static_cast<uint16_t>(pending - take);
+         }
+         staged_size_ = end;
+         clear_error();
+@@ -161,6 +168,9 @@ public:
+             return set_error(node_session_staging::NodeSessionStageOperation::Incomplete,
+                     FR_INVALID_OBJECT);
+         }
++        if (!flush_write_buffer()) {
++            return false;
++        }
+         FRESULT result = ops_->close_fn(&file_);
+         read_cursor_ = kInvalidCursor;
+         if (result != FR_OK) {
+@@ -310,6 +320,9 @@ public:
+     bool shutdown()
+     {
+         if (file_open_) {
++            /* Best effort: shutdown is also the abandon path, so the staged
++             * file must be closed even if the tail cannot be written. */
++            (void)flush_write_buffer();
+             const FRESULT close_result = ops_->close_fn(&file_);
+             read_cursor_ = kInvalidCursor;
+             if (close_result != FR_OK) {
+@@ -372,6 +385,7 @@ private:
+         memset(&done_, 0, sizeof(done_));
+         memset(&header_, 0, sizeof(header_));
+         staged_size_ = 0U;
++        write_buffer_len_ = 0U;
+         active_ = false;
+         writable_ = false;
+         file_open_ = false;
+@@ -384,38 +398,73 @@ private:
+         clear_error();
+     }
+ 
+-    bool duplicate_matches(uint32_t offset, const uint8_t *data, uint16_t size)
++    /* Write the buffered tail at its absolute offset. Every staged write goes
++     * through here, so the file cursor never carries state between calls. */
++    bool flush_write_buffer()
+     {
+-        FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(offset));
++        if (write_buffer_len_ == 0U) {
++            return true;
++        }
++        const uint32_t buffer_start = staged_size_ - write_buffer_len_;
++        const FRESULT seek = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(buffer_start));
+         read_cursor_ = kInvalidCursor;
++        if (seek != FR_OK) {
++            return set_error(node_session_staging::NodeSessionStageOperation::WriteSeek, seek);
++        }
++        UINT written = 0U;
++        const FRESULT result = ops_->write_fn(&file_, write_buffer_, write_buffer_len_, &written);
+         if (result != FR_OK) {
+-            return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
+-                    result);
++            return set_error(node_session_staging::NodeSessionStageOperation::Write, result);
++        }
++        if (written != write_buffer_len_) {
++            return set_error(node_session_staging::NodeSessionStageOperation::WriteShort, FR_OK);
+         }
+-        uint16_t remaining = size;
++        write_buffer_len_ = 0U;
++        return true;
++    }
++
++    bool duplicate_matches(uint32_t offset, const uint8_t *data, uint16_t size)
++    {
++        /* The tail held in the RAM write buffer is compared without I/O; only
++         * the already-flushed prefix is read back from the file. */
++        const uint32_t buffer_start = staged_size_ - write_buffer_len_;
++        uint32_t cursor = offset;
+         const uint8_t *expected = data;
+-        while (remaining > 0U) {
+-            const UINT request = remaining < sizeof(io_buffer_) ?
+-                    static_cast<UINT>(remaining) : static_cast<UINT>(sizeof(io_buffer_));
+-            UINT received = 0U;
+-            result = ops_->read_fn(&file_, io_buffer_, request, &received);
+-            if (result != FR_OK || received != request) {
+-                return set_error(node_session_staging::NodeSessionStageOperation::DuplicateRead,
+-                        result);
++        uint32_t remaining = size;
++        if (cursor < buffer_start) {
++            const FRESULT seek = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(cursor));
++            read_cursor_ = kInvalidCursor;
++            if (seek != FR_OK) {
++                return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
++                        seek);
+             }
+-            if (memcmp(io_buffer_, expected, request) != 0) {
++            uint32_t flushed_bytes = buffer_start - cursor;
++            while (flushed_bytes > 0U) {
++                const UINT request = flushed_bytes < sizeof(io_buffer_) ?
++                        static_cast<UINT>(flushed_bytes) : static_cast<UINT>(sizeof(io_buffer_));
++                UINT received = 0U;
++                const FRESULT result = ops_->read_fn(&file_, io_buffer_, request, &received);
++                if (result != FR_OK || received != request) {
++                    return set_error(node_session_staging::NodeSessionStageOperation::DuplicateRead,
++                            result);
++                }
++                if (memcmp(io_buffer_, expected, request) != 0) {
++                    return set_error(
++                            node_session_staging::NodeSessionStageOperation::DuplicateMismatch,
++                            FR_INVALID_PARAMETER);
++                }
++                flushed_bytes -= request;
++                cursor += request;
++                expected += request;
++                remaining -= static_cast<uint16_t>(request);
++            }
++        }
++        if (remaining > 0U) {
++            if (memcmp(&write_buffer_[cursor - buffer_start], expected, remaining) != 0) {
+                 return set_error(
+                         node_session_staging::NodeSessionStageOperation::DuplicateMismatch,
+                         FR_INVALID_PARAMETER);
+             }
+-            remaining = static_cast<uint16_t>(remaining - request);
+-            expected += request;
+-        }
+-        result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(staged_size_));
+-        read_cursor_ = kInvalidCursor;
+-        if (result != FR_OK) {
+-            return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
+-                    result);
+         }
+         clear_error();
+         return true;
+@@ -486,6 +535,12 @@ private:
+     SessionHeader header_{};
+     char staging_path_[32]{};
+     uint8_t io_buffer_[256]{};
++    /* Staged-write accumulator: the tail [staged_size_ - write_buffer_len_,
++     * staged_size_) lives here until a full block, a read-back, validation or
++     * shutdown forces it to the card. */
++    static constexpr uint16_t kWriteBufferBytes = 4096U;
++    uint8_t write_buffer_[kWriteBufferBytes]{};
++    uint16_t write_buffer_len_ = 0U;
+     uint32_t staged_size_ = 0U;
+     uint32_t validation_remaining_ = 0U;
+     uint32_t validation_crc_ = 0U;
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+index 54b052c..8ff1b3c 100644
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -264,6 +264,19 @@ if (inspection.decision == NodeTransferDecision::Complete) {
+ state_ = TrainingCsvState::ValidateNode;
+ }
+ }
++/* Flush queued reliable-control frames (ACK windows, NACKs) without the
++full state-machine pass. Called straight after BLE event dispatch so an
++ACK reaches the node within the iteration it was queued instead of after
++all remaining superloop work; honors reliable_defer_services_ so a
++freshly queued ManifestAck still transmits before any ACK. */
++void service_reliable_control(uint32_t now_ms)
++{
++if (reliable_defer_services_ != 0U) {
++--reliable_defer_services_;
++return;
++}
++(void)reliable_control_.service(now_ms);
++}
+ void service(MasterSdSessionRecorder &recorder, uint32_t now_ms)
+ {
+ if (reliable_defer_services_ != 0U) {
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+index e73dbd3..6709ea3 100644
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -2998,6 +2998,10 @@ int main(void)
+ 		 * that accumulated during that window before continuing, so the
+ 		 * sensor-internal SHTP buffer cannot overflow across the gap. */
+ 		hub_sensor_test_app.service_bno();
++		/* Chunk ACKs are queued from BLE RX context; transmit them now so the
++		 * node's credit round trip is bounded by the BLE batch, not by the
++		 * whole superloop period. */
++		master_training_csv_coordinator.service_reliable_control(HAL_GetTick());
+ 
+ 		/* USER CODE BEGIN 3 */
+ 		static uint32_t last_hub_sensor_print_ms = 0U;
+@@ -3449,10 +3453,12 @@ int main(void)
+ 		const bool hub_sensor_print_allowed = !g_acq_diag.capturing;
+ #else
+ 		/* Per-sample SWO telemetry is held off while a recorded capture owns
+-		 * the sensors; the console writes compete with the BNO service budget
+-		 * for the same superloop time. */
++		 * the sensors or a node upload owns the links; the console writes
++		 * compete with the BNO service budget and the chunk ACK path for the
++		 * same superloop time. */
+ 		const bool hub_sensor_print_allowed =
+-				!hub_sensor_test_app.record_bno_queue_active();
++				!hub_sensor_test_app.record_bno_queue_active() &&
++				!g_ble_record_transfer_mode && !g_remote_transfer_active;
+ #endif
+ 		if (hub_sensor_print_allowed &&
+ 				(hub_sensor_print_now_ms - last_hub_sensor_print_ms) >= EXO_MASTER_IMU_SWO_INTERVAL_MS &&
+@@ -3511,11 +3517,13 @@ int main(void)
+ 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) && !g_acq_diag.capturing;
+ #else
+ 		/* The live plot stream is paused while a recorded capture owns the
+-		 * sensors: notify packing competes with the BNO service budget for
+-		 * the same superloop time, and the stored session is the deliverable.
+-		 * Streaming resumes automatically when the capture queue is frozen. */
++		 * sensors or a node upload owns the links: notify packing competes
++		 * with the BNO service budget and the chunk ACK path for the same
++		 * superloop time, and the stored session is the deliverable.
++		 * Streaming resumes automatically when capture and transfer end. */
+ 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) &&
+-				!hub_sensor_test_app.record_bno_queue_active();
++				!hub_sensor_test_app.record_bno_queue_active() &&
++				!g_ble_record_transfer_mode && !g_remote_transfer_active;
+ #endif
+ 		/* One BLE notification can be in flight at a time: sending BNO and
+ 		 * ICM back-to-back made the second send fail every iteration, so the
+diff --git a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+index 4216691..2aae10e 100644
+--- a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
++++ b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+@@ -16,6 +16,13 @@
+ extern void exo_ble_debug_printf(const char *fmt, ...);
+ #define EXO_LOG exo_ble_debug_printf
+ 
++/* Per-notification logging fires once per transferred chunk; at transfer
++ * rates above ~10 chunks/s the console writes themselves stretch the
++ * superloop. Keep them behind this default-off switch. */
++#ifndef EXO_HUB_VERBOSE_PIPE_LOGS
++#define EXO_HUB_VERBOSE_PIPE_LOGS 0
++#endif
++
+ #pragma pack(push, 1)
+ typedef struct
+ {
+@@ -1194,12 +1201,14 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
+   }
+   if (hdr.msg_type == BLEPIPE_MSG_RAW_FORWARD && payload_len > 0U && payload_len <= 255U)
+   {
++#if EXO_HUB_VERBOSE_PIPE_LOGS
+     EXO_LOG("[BLE][HUB][LEAF] raw_forward slot=%u src=0x%04X len=%u first=0x%02X status=%u\r\n",
+             (unsigned)(slot - &g_leaf_slots[0]),
+             (unsigned)hdr.src_id,
+             (unsigned)payload_len,
+             (unsigned)payload[0],
+             (unsigned)decode_status);
++#endif
+     exo_hub_leaf_record_frame_ingest(exo_leaf_slot_node_id(slot), payload, payload_len);
+     if (exo_hub_maybe_queue_record_done(payload, payload_len, "raw_forward") != 0U)
+     {
+@@ -1856,10 +1865,12 @@ void aci_gatt_notification_event(uint16_t Connection_Handle,
+   }
+   else if (Attribute_Handle == slot->data_value_handle)
+   {
++#if EXO_HUB_VERBOSE_PIPE_LOGS
+     EXO_LOG("[BLE][HUB][DISC] notify data slot=%u handle=0x%04X len=%u\r\n",
+             (unsigned)(slot - &g_leaf_slots[0]),
+             (unsigned)Attribute_Handle,
+             (unsigned)Attribute_Value_Length);
++#endif
+     exo_handle_pipe_packet(slot, BLEPIPE_LANE_DATA_TX, Attribute_Value, Attribute_Value_Length);
+   }
+ }

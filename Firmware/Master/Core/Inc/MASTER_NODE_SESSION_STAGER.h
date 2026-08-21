@@ -136,18 +136,25 @@ public:
             return duplicate_matches(byte_offset, data, size);
         }
 
-        FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(byte_offset));
-        read_cursor_ = kInvalidCursor;
-        if (result != FR_OK) {
-            return set_error(node_session_staging::NodeSessionStageOperation::WriteSeek, result);
-        }
-        UINT written = 0U;
-        result = ops_->write_fn(&file_, data, size, &written);
-        if (result != FR_OK) {
-            return set_error(node_session_staging::NodeSessionStageOperation::Write, result);
-        }
-        if (written != size) {
-            return set_error(node_session_staging::NodeSessionStageOperation::WriteShort, FR_OK);
+        /* Append path (byte_offset == staged_size_): accumulate in RAM and
+         * write larger blocks. accept_chunk runs in BLE event context, so a
+         * per-chunk f_lseek+f_write serializes every radio event behind SD
+         * latency; buffering amortizes one write across many chunks. */
+        uint16_t pending = size;
+        const uint8_t *cursor = data;
+        while (pending > 0U) {
+            if (write_buffer_len_ == sizeof(write_buffer_)) {
+                if (!flush_write_buffer()) {
+                    return false;
+                }
+            }
+            const uint16_t space = static_cast<uint16_t>(sizeof(write_buffer_) -
+                    write_buffer_len_);
+            const uint16_t take = pending < space ? pending : space;
+            memcpy(&write_buffer_[write_buffer_len_], cursor, take);
+            write_buffer_len_ = static_cast<uint16_t>(write_buffer_len_ + take);
+            cursor += take;
+            pending = static_cast<uint16_t>(pending - take);
         }
         staged_size_ = end;
         clear_error();
@@ -160,6 +167,9 @@ public:
         if (!active_ || !writable_ || !file_open_ || staged_size_ != done_.total_size) {
             return set_error(node_session_staging::NodeSessionStageOperation::Incomplete,
                     FR_INVALID_OBJECT);
+        }
+        if (!flush_write_buffer()) {
+            return false;
         }
         FRESULT result = ops_->close_fn(&file_);
         read_cursor_ = kInvalidCursor;
@@ -310,6 +320,9 @@ public:
     bool shutdown()
     {
         if (file_open_) {
+            /* Best effort: shutdown is also the abandon path, so the staged
+             * file must be closed even if the tail cannot be written. */
+            (void)flush_write_buffer();
             const FRESULT close_result = ops_->close_fn(&file_);
             read_cursor_ = kInvalidCursor;
             if (close_result != FR_OK) {
@@ -372,6 +385,7 @@ private:
         memset(&done_, 0, sizeof(done_));
         memset(&header_, 0, sizeof(header_));
         staged_size_ = 0U;
+        write_buffer_len_ = 0U;
         active_ = false;
         writable_ = false;
         file_open_ = false;
@@ -384,38 +398,73 @@ private:
         clear_error();
     }
 
+    /* Write the buffered tail at its absolute offset. Every staged write goes
+     * through here, so the file cursor never carries state between calls. */
+    bool flush_write_buffer()
+    {
+        if (write_buffer_len_ == 0U) {
+            return true;
+        }
+        const uint32_t buffer_start = staged_size_ - write_buffer_len_;
+        const FRESULT seek = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(buffer_start));
+        read_cursor_ = kInvalidCursor;
+        if (seek != FR_OK) {
+            return set_error(node_session_staging::NodeSessionStageOperation::WriteSeek, seek);
+        }
+        UINT written = 0U;
+        const FRESULT result = ops_->write_fn(&file_, write_buffer_, write_buffer_len_, &written);
+        if (result != FR_OK) {
+            return set_error(node_session_staging::NodeSessionStageOperation::Write, result);
+        }
+        if (written != write_buffer_len_) {
+            return set_error(node_session_staging::NodeSessionStageOperation::WriteShort, FR_OK);
+        }
+        write_buffer_len_ = 0U;
+        return true;
+    }
+
     bool duplicate_matches(uint32_t offset, const uint8_t *data, uint16_t size)
     {
-        FRESULT result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(offset));
-        read_cursor_ = kInvalidCursor;
-        if (result != FR_OK) {
-            return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
-                    result);
-        }
-        uint16_t remaining = size;
+        /* The tail held in the RAM write buffer is compared without I/O; only
+         * the already-flushed prefix is read back from the file. */
+        const uint32_t buffer_start = staged_size_ - write_buffer_len_;
+        uint32_t cursor = offset;
         const uint8_t *expected = data;
-        while (remaining > 0U) {
-            const UINT request = remaining < sizeof(io_buffer_) ?
-                    static_cast<UINT>(remaining) : static_cast<UINT>(sizeof(io_buffer_));
-            UINT received = 0U;
-            result = ops_->read_fn(&file_, io_buffer_, request, &received);
-            if (result != FR_OK || received != request) {
-                return set_error(node_session_staging::NodeSessionStageOperation::DuplicateRead,
-                        result);
+        uint32_t remaining = size;
+        if (cursor < buffer_start) {
+            const FRESULT seek = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(cursor));
+            read_cursor_ = kInvalidCursor;
+            if (seek != FR_OK) {
+                return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
+                        seek);
             }
-            if (memcmp(io_buffer_, expected, request) != 0) {
+            uint32_t flushed_bytes = buffer_start - cursor;
+            while (flushed_bytes > 0U) {
+                const UINT request = flushed_bytes < sizeof(io_buffer_) ?
+                        static_cast<UINT>(flushed_bytes) : static_cast<UINT>(sizeof(io_buffer_));
+                UINT received = 0U;
+                const FRESULT result = ops_->read_fn(&file_, io_buffer_, request, &received);
+                if (result != FR_OK || received != request) {
+                    return set_error(node_session_staging::NodeSessionStageOperation::DuplicateRead,
+                            result);
+                }
+                if (memcmp(io_buffer_, expected, request) != 0) {
+                    return set_error(
+                            node_session_staging::NodeSessionStageOperation::DuplicateMismatch,
+                            FR_INVALID_PARAMETER);
+                }
+                flushed_bytes -= request;
+                cursor += request;
+                expected += request;
+                remaining -= static_cast<uint16_t>(request);
+            }
+        }
+        if (remaining > 0U) {
+            if (memcmp(&write_buffer_[cursor - buffer_start], expected, remaining) != 0) {
                 return set_error(
                         node_session_staging::NodeSessionStageOperation::DuplicateMismatch,
                         FR_INVALID_PARAMETER);
             }
-            remaining = static_cast<uint16_t>(remaining - request);
-            expected += request;
-        }
-        result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(staged_size_));
-        read_cursor_ = kInvalidCursor;
-        if (result != FR_OK) {
-            return set_error(node_session_staging::NodeSessionStageOperation::DuplicateSeek,
-                    result);
         }
         clear_error();
         return true;
@@ -486,6 +535,12 @@ private:
     SessionHeader header_{};
     char staging_path_[32]{};
     uint8_t io_buffer_[256]{};
+    /* Staged-write accumulator: the tail [staged_size_ - write_buffer_len_,
+     * staged_size_) lives here until a full block, a read-back, validation or
+     * shutdown forces it to the card. */
+    static constexpr uint16_t kWriteBufferBytes = 4096U;
+    uint8_t write_buffer_[kWriteBufferBytes]{};
+    uint16_t write_buffer_len_ = 0U;
     uint32_t staged_size_ = 0U;
     uint32_t validation_remaining_ = 0U;
     uint32_t validation_crc_ = 0U;

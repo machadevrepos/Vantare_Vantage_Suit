@@ -2998,6 +2998,10 @@ int main(void)
 		 * that accumulated during that window before continuing, so the
 		 * sensor-internal SHTP buffer cannot overflow across the gap. */
 		hub_sensor_test_app.service_bno();
+		/* Chunk ACKs are queued from BLE RX context; transmit them now so the
+		 * node's credit round trip is bounded by the BLE batch, not by the
+		 * whole superloop period. */
+		master_training_csv_coordinator.service_reliable_control(HAL_GetTick());
 
 		/* USER CODE BEGIN 3 */
 		static uint32_t last_hub_sensor_print_ms = 0U;
@@ -3449,10 +3453,12 @@ int main(void)
 		const bool hub_sensor_print_allowed = !g_acq_diag.capturing;
 #else
 		/* Per-sample SWO telemetry is held off while a recorded capture owns
-		 * the sensors; the console writes compete with the BNO service budget
-		 * for the same superloop time. */
+		 * the sensors or a node upload owns the links; the console writes
+		 * compete with the BNO service budget and the chunk ACK path for the
+		 * same superloop time. */
 		const bool hub_sensor_print_allowed =
-				!hub_sensor_test_app.record_bno_queue_active();
+				!hub_sensor_test_app.record_bno_queue_active() &&
+				!g_ble_record_transfer_mode && !g_remote_transfer_active;
 #endif
 		if (hub_sensor_print_allowed &&
 				(hub_sensor_print_now_ms - last_hub_sensor_print_ms) >= EXO_MASTER_IMU_SWO_INTERVAL_MS &&
@@ -3511,11 +3517,13 @@ int main(void)
 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) && !g_acq_diag.capturing;
 #else
 		/* The live plot stream is paused while a recorded capture owns the
-		 * sensors: notify packing competes with the BNO service budget for
-		 * the same superloop time, and the stored session is the deliverable.
-		 * Streaming resumes automatically when the capture queue is frozen. */
+		 * sensors or a node upload owns the links: notify packing competes
+		 * with the BNO service budget and the chunk ACK path for the same
+		 * superloop time, and the stored session is the deliverable.
+		 * Streaming resumes automatically when capture and transfer end. */
 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) &&
-				!hub_sensor_test_app.record_bno_queue_active();
+				!hub_sensor_test_app.record_bno_queue_active() &&
+				!g_ble_record_transfer_mode && !g_remote_transfer_active;
 #endif
 		/* One BLE notification can be in flight at a time: sending BNO and
 		 * ICM back-to-back made the second send fail every iteration, so the

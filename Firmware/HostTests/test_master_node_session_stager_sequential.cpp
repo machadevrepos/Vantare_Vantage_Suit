@@ -127,6 +127,88 @@ int main()
     // so every later row is read without another FAT filesystem seek.
     assert(g_lseek_count == 1U);
 
+    // Buffered-write scenario: many small appends must cross the internal
+    // write-block boundary, a duplicate may straddle flushed prefix vs RAM
+    // tail, gaps stay rejected, and shutdown must flush any pending tail.
+    constexpr uint32_t big_bno_count = 100U;
+    constexpr uint32_t big_icm_count = 170U;
+    exo::SessionHeader big_header{};
+    big_header.magic = exo::kSessionMagic;
+    big_header.version = exo::kSessionFormatVersion;
+    big_header.node_id = 2U;
+    big_header.session_id = 77U;
+    big_header.completion_flag = exo::kSessionComplete;
+    big_header.bno85_sample_count = big_bno_count;
+    big_header.icm45686_sample_count = big_icm_count;
+    big_header.bno85_payload_size = big_bno_count * sizeof(exo::Bno85Sample);
+    big_header.icm45686_payload_size = big_icm_count * sizeof(exo::Icm45686Sample);
+
+    std::vector<uint8_t> big_payload(
+            big_header.bno85_payload_size + big_header.icm45686_payload_size);
+    for (size_t i = 0U; i < big_payload.size(); ++i) {
+        big_payload[i] = static_cast<uint8_t>(i * 7U + 3U);
+    }
+    big_header.payload_crc32 = exo::crc32(big_payload.data(), big_payload.size());
+    big_header.header_crc32 = exo::session_header_crc(big_header);
+
+    std::vector<uint8_t> big_session(sizeof(big_header) + big_payload.size());
+    memcpy(big_session.data(), &big_header, sizeof(big_header));
+    memcpy(big_session.data() + sizeof(big_header), big_payload.data(), big_payload.size());
+
+    exo::RecordDoneMessage big_done{};
+    big_done.command = exo::RecordCommand::RecordDone;
+    big_done.node_id = 2U;
+    big_done.session_id = 77U;
+    big_done.total_size = static_cast<uint32_t>(big_session.size());
+    big_done.payload_crc32 = big_header.payload_crc32;
+
+    g_file.clear();
+    g_cursor = 0U;
+    exo::MasterNodeSessionStager buffered(&kSeqOps);
+    assert(buffered.begin(big_done, 2U));
+    uint32_t append_offset = 0U;
+    while (append_offset < big_session.size()) {
+        const size_t left = big_session.size() - append_offset;
+        const uint16_t take = left < 180U ? static_cast<uint16_t>(left) : 180U;
+        assert(buffered.accept_chunk(2U, 77U, append_offset,
+                big_session.data() + append_offset, take));
+        append_offset += take;
+    }
+    assert(buffered.staged_size() == big_session.size());
+    // At least one full write block reached the card before validation, i.e.
+    // appends were amortized instead of written per chunk.
+    assert(g_file.size() >= 4096U);
+
+    // Duplicate whose range starts in the flushed prefix and ends inside the
+    // RAM tail buffer.
+    const uint32_t straddle_offset =
+            static_cast<uint32_t>(big_session.size()) - 100U;
+    assert(buffered.accept_chunk(2U, 77U, straddle_offset,
+            big_session.data() + straddle_offset, 100U));
+
+    // A gap beyond the staged end must still be rejected.
+    assert(!buffered.accept_chunk(2U, 77U,
+            static_cast<uint32_t>(big_session.size()) + 1U,
+            big_session.data(), 1U));
+
+    assert(buffered.begin_validation());
+    while (buffered.validation_status() ==
+            exo::node_session_staging::NodeSessionValidationStatus::InProgress) {
+        assert(buffered.step_validation(256U));
+    }
+    assert(buffered.finalize_validation());
+
+    // Abandon path: shutdown must flush the short tail so the staged file
+    // keeps every byte that was acknowledged.
+    g_file.clear();
+    g_cursor = 0U;
+    exo::MasterNodeSessionStager abandoned(&kSeqOps);
+    assert(abandoned.begin(big_done, 3U));
+    assert(abandoned.accept_chunk(2U, 77U, 0U, big_session.data(), 200U));
+    assert(abandoned.shutdown());
+    assert(g_file.size() == 200U);
+    assert(memcmp(g_file.data(), big_session.data(), 200U) == 0);
+
     std::cout << "master node stager sequential read tests passed\n";
     return 0;
 }
