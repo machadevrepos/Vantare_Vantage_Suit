@@ -186,6 +186,11 @@ int main()
     assert(buffered.accept_chunk(2U, 77U, straddle_offset,
             big_session.data() + straddle_offset, 100U));
 
+    // Duplicate entirely inside the flushed prefix while the RAM tail holds
+    // data: read-back must compare exactly the caller's length, no more.
+    assert(buffered.accept_chunk(2U, 77U, 4000U,
+            big_session.data() + 4000U, 180U));
+
     // A gap beyond the staged end must still be rejected.
     assert(!buffered.accept_chunk(2U, 77U,
             static_cast<uint32_t>(big_session.size()) + 1U,

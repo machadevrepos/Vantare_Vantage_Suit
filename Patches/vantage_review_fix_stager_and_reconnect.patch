@@ -1,0 +1,127 @@
+diff --git a/Firmware/HostTests/test_master_node_session_stager_sequential.cpp b/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
+index 9798716..c40d476 100644
+--- a/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
++++ b/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
+@@ -186,6 +186,11 @@ int main()
+     assert(buffered.accept_chunk(2U, 77U, straddle_offset,
+             big_session.data() + straddle_offset, 100U));
+ 
++    // Duplicate entirely inside the flushed prefix while the RAM tail holds
++    // data: read-back must compare exactly the caller's length, no more.
++    assert(buffered.accept_chunk(2U, 77U, 4000U,
++            big_session.data() + 4000U, 180U));
++
+     // A gap beyond the staged end must still be rejected.
+     assert(!buffered.accept_chunk(2U, 77U,
+             static_cast<uint32_t>(big_session.size()) + 1U,
+diff --git a/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h b/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
+index 55e4de8..41cc3b1 100644
+--- a/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
++++ b/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
+@@ -139,7 +139,9 @@ public:
+         /* Append path (byte_offset == staged_size_): accumulate in RAM and
+          * write larger blocks. accept_chunk runs in BLE event context, so a
+          * per-chunk f_lseek+f_write serializes every radio event behind SD
+-         * latency; buffering amortizes one write across many chunks. */
++         * latency; buffering amortizes one write across many chunks.
++         * staged_size_ advances per copy so a flush triggered mid-chunk sees
++         * the invariant "buffer holds [staged_size_ - len, staged_size_)". */
+         uint16_t pending = size;
+         const uint8_t *cursor = data;
+         while (pending > 0U) {
+@@ -153,10 +155,10 @@ public:
+             const uint16_t take = pending < space ? pending : space;
+             memcpy(&write_buffer_[write_buffer_len_], cursor, take);
+             write_buffer_len_ = static_cast<uint16_t>(write_buffer_len_ + take);
++            staged_size_ += take;
+             cursor += take;
+             pending = static_cast<uint16_t>(pending - take);
+         }
+-        staged_size_ = end;
+         clear_error();
+         return true;
+     }
+@@ -439,6 +441,11 @@ private:
+                         seek);
+             }
+             uint32_t flushed_bytes = buffer_start - cursor;
++            /* Never read past the caller's buffer: a duplicate that ends
++             * before the flush point only compares its own length. */
++            if (flushed_bytes > remaining) {
++                flushed_bytes = remaining;
++            }
+             while (flushed_bytes > 0U) {
+                 const UINT request = flushed_bytes < sizeof(io_buffer_) ?
+                         static_cast<UINT>(flushed_bytes) : static_cast<UINT>(sizeof(io_buffer_));
+diff --git a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+index 4ab5053..703fad1 100644
+--- a/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
++++ b/Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c
+@@ -1280,26 +1280,32 @@ void exo_hub_central_client_process(void)
+     if (g_targeted_reconnect_node_id != 0U &&
+         (int32_t)(now - g_targeted_reconnect_after_ms) >= 0)
+     {
+-      exo_leaf_slot_t *const slot = exo_find_slot_by_node(g_targeted_reconnect_node_id);
+-      g_targeted_reconnect_node_id = 0U;
+-      if (slot != 0 &&
+-          (slot->state == EXO_LEAF_SLOT_BACKOFF ||
+-           slot->state == EXO_LEAF_SLOT_DISCOVERED) &&
+-          g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS &&
+-          g_connect_busy == 0U &&
+-          g_discovery_active == 0U &&
+-          g_scan_active == 0U)
++      if (g_connect_busy != 0U || g_discovery_active != 0U || g_scan_active != 0U)
+       {
+-        ++g_targeted_reconnect_attempts;
+-        slot->retry_after_ms = now;
+-        slot->state = EXO_LEAF_SLOT_DISCOVERED;
+-        g_connect_after_scan_slot = (uint8_t)(slot - &g_leaf_slots[0]);
+-        g_connect_after_scan_ms = now;
+-        EXO_LOG("[BLE][HUB][DISC] targeted reconnect arm slot=%u node=%u attempt=%u\r\n",
+-                (unsigned)(slot - &g_leaf_slots[0]),
+-                (unsigned)exo_leaf_slot_node_id(slot),
+-                (unsigned)g_targeted_reconnect_attempts);
+-        exo_start_pending_connection();
++        /* Radio still busy (e.g., a scan window opened before the hold):
++         * keep the request armed and retry shortly rather than dropping it. */
++        g_targeted_reconnect_after_ms = now + EXO_HUB_TARGETED_RECONNECT_DELAY_MS;
++      }
++      else
++      {
++        exo_leaf_slot_t *const slot = exo_find_slot_by_node(g_targeted_reconnect_node_id);
++        g_targeted_reconnect_node_id = 0U;
++        if (slot != 0 &&
++            (slot->state == EXO_LEAF_SLOT_BACKOFF ||
++             slot->state == EXO_LEAF_SLOT_DISCOVERED) &&
++            g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
++        {
++          ++g_targeted_reconnect_attempts;
++          slot->retry_after_ms = now;
++          slot->state = EXO_LEAF_SLOT_DISCOVERED;
++          g_connect_after_scan_slot = (uint8_t)(slot - &g_leaf_slots[0]);
++          g_connect_after_scan_ms = now;
++          EXO_LOG("[BLE][HUB][DISC] targeted reconnect arm slot=%u node=%u attempt=%u\r\n",
++                  (unsigned)(slot - &g_leaf_slots[0]),
++                  (unsigned)exo_leaf_slot_node_id(slot),
++                  (unsigned)g_targeted_reconnect_attempts);
++          exo_start_pending_connection();
++        }
+       }
+     }
+     return;
+@@ -1517,6 +1523,15 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
+                          slot_index,
+                          status,
+                          (uint16_t)EXO_HUB_BACKOFF_MS);
++    if (g_discovery_hold != 0U &&
++        g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
++    {
++      /* Asynchronous establishment failure (e.g., 0x3E failed-to-establish):
++       * keep direct-address recovery alive across the backoff instead of
++       * wedging the source until the hold lifts. */
++      g_targeted_reconnect_node_id = exo_leaf_slot_node_id(slot);
++      g_targeted_reconnect_after_ms = HAL_GetTick() + EXO_HUB_BACKOFF_MS;
++    }
+     return;
+   }
+   if (peer_address != 0)

@@ -139,7 +139,9 @@ public:
         /* Append path (byte_offset == staged_size_): accumulate in RAM and
          * write larger blocks. accept_chunk runs in BLE event context, so a
          * per-chunk f_lseek+f_write serializes every radio event behind SD
-         * latency; buffering amortizes one write across many chunks. */
+         * latency; buffering amortizes one write across many chunks.
+         * staged_size_ advances per copy so a flush triggered mid-chunk sees
+         * the invariant "buffer holds [staged_size_ - len, staged_size_)". */
         uint16_t pending = size;
         const uint8_t *cursor = data;
         while (pending > 0U) {
@@ -153,10 +155,10 @@ public:
             const uint16_t take = pending < space ? pending : space;
             memcpy(&write_buffer_[write_buffer_len_], cursor, take);
             write_buffer_len_ = static_cast<uint16_t>(write_buffer_len_ + take);
+            staged_size_ += take;
             cursor += take;
             pending = static_cast<uint16_t>(pending - take);
         }
-        staged_size_ = end;
         clear_error();
         return true;
     }
@@ -439,6 +441,11 @@ private:
                         seek);
             }
             uint32_t flushed_bytes = buffer_start - cursor;
+            /* Never read past the caller's buffer: a duplicate that ends
+             * before the flush point only compares its own length. */
+            if (flushed_bytes > remaining) {
+                flushed_bytes = remaining;
+            }
             while (flushed_bytes > 0U) {
                 const UINT request = flushed_bytes < sizeof(io_buffer_) ?
                         static_cast<UINT>(flushed_bytes) : static_cast<UINT>(sizeof(io_buffer_));

@@ -1280,26 +1280,32 @@ void exo_hub_central_client_process(void)
     if (g_targeted_reconnect_node_id != 0U &&
         (int32_t)(now - g_targeted_reconnect_after_ms) >= 0)
     {
-      exo_leaf_slot_t *const slot = exo_find_slot_by_node(g_targeted_reconnect_node_id);
-      g_targeted_reconnect_node_id = 0U;
-      if (slot != 0 &&
-          (slot->state == EXO_LEAF_SLOT_BACKOFF ||
-           slot->state == EXO_LEAF_SLOT_DISCOVERED) &&
-          g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS &&
-          g_connect_busy == 0U &&
-          g_discovery_active == 0U &&
-          g_scan_active == 0U)
+      if (g_connect_busy != 0U || g_discovery_active != 0U || g_scan_active != 0U)
       {
-        ++g_targeted_reconnect_attempts;
-        slot->retry_after_ms = now;
-        slot->state = EXO_LEAF_SLOT_DISCOVERED;
-        g_connect_after_scan_slot = (uint8_t)(slot - &g_leaf_slots[0]);
-        g_connect_after_scan_ms = now;
-        EXO_LOG("[BLE][HUB][DISC] targeted reconnect arm slot=%u node=%u attempt=%u\r\n",
-                (unsigned)(slot - &g_leaf_slots[0]),
-                (unsigned)exo_leaf_slot_node_id(slot),
-                (unsigned)g_targeted_reconnect_attempts);
-        exo_start_pending_connection();
+        /* Radio still busy (e.g., a scan window opened before the hold):
+         * keep the request armed and retry shortly rather than dropping it. */
+        g_targeted_reconnect_after_ms = now + EXO_HUB_TARGETED_RECONNECT_DELAY_MS;
+      }
+      else
+      {
+        exo_leaf_slot_t *const slot = exo_find_slot_by_node(g_targeted_reconnect_node_id);
+        g_targeted_reconnect_node_id = 0U;
+        if (slot != 0 &&
+            (slot->state == EXO_LEAF_SLOT_BACKOFF ||
+             slot->state == EXO_LEAF_SLOT_DISCOVERED) &&
+            g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
+        {
+          ++g_targeted_reconnect_attempts;
+          slot->retry_after_ms = now;
+          slot->state = EXO_LEAF_SLOT_DISCOVERED;
+          g_connect_after_scan_slot = (uint8_t)(slot - &g_leaf_slots[0]);
+          g_connect_after_scan_ms = now;
+          EXO_LOG("[BLE][HUB][DISC] targeted reconnect arm slot=%u node=%u attempt=%u\r\n",
+                  (unsigned)(slot - &g_leaf_slots[0]),
+                  (unsigned)exo_leaf_slot_node_id(slot),
+                  (unsigned)g_targeted_reconnect_attempts);
+          exo_start_pending_connection();
+        }
       }
     }
     return;
@@ -1517,6 +1523,15 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
                          slot_index,
                          status,
                          (uint16_t)EXO_HUB_BACKOFF_MS);
+    if (g_discovery_hold != 0U &&
+        g_targeted_reconnect_attempts < EXO_HUB_TARGETED_RECONNECT_MAX_ATTEMPTS)
+    {
+      /* Asynchronous establishment failure (e.g., 0x3E failed-to-establish):
+       * keep direct-address recovery alive across the backoff instead of
+       * wedging the source until the hold lifts. */
+      g_targeted_reconnect_node_id = exo_leaf_slot_node_id(slot);
+      g_targeted_reconnect_after_ms = HAL_GetTick() + EXO_HUB_BACKOFF_MS;
+    }
     return;
   }
   if (peer_address != 0)
