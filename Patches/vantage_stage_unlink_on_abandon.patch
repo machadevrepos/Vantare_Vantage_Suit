@@ -1,0 +1,190 @@
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index 9bc32a8..61c6156 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -122,6 +122,9 @@ checks = [
+      reliable.index("if (ack_pending_) return send_ack_window(now_ms);") and
+      reliable.index("nack_pending_ = true;") < reliable.index("bool send_nack(uint32_t now_ms)"),
+      "Gap/corrupt NACKs must own a dedicated slot outranking ACK windows so a queued ManifestAck can never drop recovery"),
++    ("abandon_and_unlink" in stager and "stage_started_" in stager and
++     coordinator.count("stager_.abandon_and_unlink();") >= 3,
++     "Abandoned/failed node stages must be unlinked so run indexes stay reusable and no truncated R####N#.BIN survives"),
+ ]
+ 
+ failures = [message for ok, message in checks if not ok]
+diff --git a/Firmware/HostTests/test_master_node_session_stager_sequential.cpp b/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
+index c40d476..e7cd007 100644
+--- a/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
++++ b/Firmware/HostTests/test_master_node_session_stager_sequential.cpp
+@@ -10,6 +10,7 @@ namespace {
+ std::vector<uint8_t> g_file;
+ uint32_t g_cursor = 0U;
+ uint32_t g_lseek_count = 0U;
++uint32_t g_unlink_count = 0U;
+ 
+ FRESULT seq_open(FIL *, const TCHAR *, BYTE mode)
+ {
+@@ -60,6 +61,7 @@ FRESULT seq_close(FIL *)
+ 
+ FRESULT seq_unlink(const TCHAR *)
+ {
++    ++g_unlink_count;
+     return FR_OK;
+ }
+ 
+@@ -214,6 +216,44 @@ int main()
+     assert(g_file.size() == 200U);
+     assert(memcmp(g_file.data(), big_session.data(), 200U) == 0);
+ 
++    // Abandon-and-unlink path: a truncated stage must be removed so the run
++    // index stays reusable, while the node's flash copy stays retained.
++    g_unlink_count = 0U;
++    g_file.clear();
++    g_cursor = 0U;
++    exo::MasterNodeSessionStager discarded_early(&kSeqOps);
++    assert(discarded_early.begin(big_done, 4U));
++    assert(discarded_early.accept_chunk(2U, 77U, 0U, big_session.data(), 200U));
++    assert(discarded_early.abandon_and_unlink());
++    assert(g_unlink_count == 1U);
++    assert(!discarded_early.node_flash_may_be_erased());
++
++    // A validated stage is the durable archive: even after the coordinator
++    // shuts down (e.g. session reset), abandon_and_unlink must not remove it.
++    g_unlink_count = 0U;
++    g_file.clear();
++    g_cursor = 0U;
++    exo::MasterNodeSessionStager validated_stage(&kSeqOps);
++    assert(validated_stage.begin(done, 5U));
++    assert(validated_stage.accept_chunk(1U, 42U, 0U, session.data(),
++            static_cast<uint16_t>(session.size())));
++    assert(validated_stage.begin_validation());
++    while (validated_stage.validation_status() ==
++            exo::node_session_staging::NodeSessionValidationStatus::InProgress) {
++        assert(validated_stage.step_validation(256U));
++    }
++    assert(validated_stage.finalize_validation());
++    assert(validated_stage.discard_after_success());
++    assert(validated_stage.node_flash_may_be_erased());
++    assert(validated_stage.abandon_and_unlink());
++    assert(g_unlink_count == 0U);
++
++    // A stager that never staged anything must not unlink stray files.
++    g_unlink_count = 0U;
++    exo::MasterNodeSessionStager idle(&kSeqOps);
++    assert(idle.abandon_and_unlink());
++    assert(g_unlink_count == 0U);
++
+     std::cout << "master node stager sequential read tests passed\n";
+     return 0;
+ }
+diff --git a/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h b/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
+index 41cc3b1..bb5f3d3 100644
+--- a/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
++++ b/Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h
+@@ -99,6 +99,7 @@ public:
+         file_open_ = true;
+         writable_ = true;
+         active_ = true;
++        stage_started_ = true;
+         read_cursor_ = kInvalidCursor;
+         return true;
+     }
+@@ -314,6 +315,7 @@ public:
+             file_open_ = false;
+         }
+         discarded_ = true;
++        stage_started_ = false;
+         active_ = false;
+         clear_error();
+         return true;
+@@ -344,6 +346,33 @@ public:
+         return true;
+     }
+ 
++    /* Abandon the stage and remove the truncated file. An abandoned or failed
++     * upload must leave no R####N#.BIN artifact: the run index stays reusable
++     * and no partial file can be mistaken for a completed archive. A validated
++     * stage is never unlinked (it is the durable archive), and the node's own
++     * flash copy is unaffected because discarded_ stays clear — the session can
++     * still be re-pulled later. */
++    bool abandon_and_unlink()
++    {
++        /* shutdown() clears validated_, so capture it first: a validated stage
++         * is the durable archive and must never be unlinked. */
++        const bool was_validated = validated_;
++        const bool close_ok = shutdown();
++        if (!stage_started_ || was_validated) {
++            return close_ok;
++        }
++        stage_started_ = false;
++        if (!close_ok && file_open_) {
++            (void)ops_->close_fn(&file_);
++            file_open_ = false;
++        }
++        const FRESULT result = ops_->unlink_fn(staging_path_);
++        if (result != FR_OK) {
++            return set_error(node_session_staging::NodeSessionStageOperation::Unlink, result);
++        }
++        return close_ok;
++    }
++
+     bool active() const { return active_; }
+     bool validated() const { return validated_; }
+     bool node_flash_may_be_erased() const { return discarded_; }
+@@ -393,6 +422,7 @@ private:
+         file_open_ = false;
+         validated_ = false;
+         discarded_ = false;
++        stage_started_ = false;
+         validation_remaining_ = 0U;
+         validation_crc_ = 0U;
+         read_cursor_ = kInvalidCursor;
+@@ -557,6 +587,10 @@ private:
+     bool file_open_ = false;
+     bool validated_ = false;
+     bool discarded_ = false;
++    /* True from a successful begin() until the stage is either validated (the
++     * file becomes the durable archive) or unlinked. Guards abandon_and_unlink
++     * against touching files it does not own. */
++    bool stage_started_ = false;
+     node_session_staging::NodeSessionValidationStatus validation_status_ =
+             node_session_staging::NodeSessionValidationStatus::Idle;
+     node_session_staging::NodeSessionStageOperation last_operation_ =
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+index 8ff1b3c..0c428b6 100644
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -298,7 +298,9 @@ void finalize_partial(uint32_t now_ms)
+ if (partial_finalized_) return;
+ partial_finalized_ = true;
+ if (!binary_only_) (void)logger_.shutdown(now_ms);
+-(void)stager_.shutdown();
++/* A failed stage must not leave a truncated R####N#.BIN that consumes the run
++ * index forever; the node's flash copy is the retry source. */
++(void)stager_.abandon_and_unlink();
+ transfer_window_.reset();
+ reliable_control_.reset();
+ active_node_id_ = 0U;
+@@ -406,7 +408,7 @@ break;
+ void shutdown(uint32_t now_ms)
+ {
+ if (!binary_only_) (void)logger_.shutdown(now_ms);
+-(void)stager_.shutdown();
++(void)stager_.abandon_and_unlink();
+ reliable_control_.reset();
+ transfer_window_.reset();
+ if (!binary_only_ && logger_.has_open_file()) {
+@@ -609,9 +611,10 @@ failure_stager_operation_ = stager_.last_operation();
+ failure_stager_result_ = stager_.last_result();
+ }
+ }
+-/* shutdown() leaves discarded_ clear, so the node keeps its flash copy and the
+- * session can be re-pulled later instead of being lost. */
+-(void)stager_.shutdown();
++/* abandon_and_unlink() removes the truncated stage file but leaves discarded_
++ * clear, so the node keeps its flash copy and the session can be re-pulled
++ * later instead of being lost. */
++(void)stager_.abandon_and_unlink();
+ transfer_window_.reset();
+ reliable_control_.reset();
+ active_node_id_ = 0U;

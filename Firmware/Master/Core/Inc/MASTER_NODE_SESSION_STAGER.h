@@ -99,6 +99,7 @@ public:
         file_open_ = true;
         writable_ = true;
         active_ = true;
+        stage_started_ = true;
         read_cursor_ = kInvalidCursor;
         return true;
     }
@@ -314,6 +315,7 @@ public:
             file_open_ = false;
         }
         discarded_ = true;
+        stage_started_ = false;
         active_ = false;
         clear_error();
         return true;
@@ -342,6 +344,33 @@ public:
         read_cursor_ = kInvalidCursor;
         clear_error();
         return true;
+    }
+
+    /* Abandon the stage and remove the truncated file. An abandoned or failed
+     * upload must leave no R####N#.BIN artifact: the run index stays reusable
+     * and no partial file can be mistaken for a completed archive. A validated
+     * stage is never unlinked (it is the durable archive), and the node's own
+     * flash copy is unaffected because discarded_ stays clear — the session can
+     * still be re-pulled later. */
+    bool abandon_and_unlink()
+    {
+        /* shutdown() clears validated_, so capture it first: a validated stage
+         * is the durable archive and must never be unlinked. */
+        const bool was_validated = validated_;
+        const bool close_ok = shutdown();
+        if (!stage_started_ || was_validated) {
+            return close_ok;
+        }
+        stage_started_ = false;
+        if (!close_ok && file_open_) {
+            (void)ops_->close_fn(&file_);
+            file_open_ = false;
+        }
+        const FRESULT result = ops_->unlink_fn(staging_path_);
+        if (result != FR_OK) {
+            return set_error(node_session_staging::NodeSessionStageOperation::Unlink, result);
+        }
+        return close_ok;
     }
 
     bool active() const { return active_; }
@@ -393,6 +422,7 @@ private:
         file_open_ = false;
         validated_ = false;
         discarded_ = false;
+        stage_started_ = false;
         validation_remaining_ = 0U;
         validation_crc_ = 0U;
         read_cursor_ = kInvalidCursor;
@@ -557,6 +587,10 @@ private:
     bool file_open_ = false;
     bool validated_ = false;
     bool discarded_ = false;
+    /* True from a successful begin() until the stage is either validated (the
+     * file becomes the durable archive) or unlinked. Guards abandon_and_unlink
+     * against touching files it does not own. */
+    bool stage_started_ = false;
     node_session_staging::NodeSessionValidationStatus validation_status_ =
             node_session_staging::NodeSessionValidationStatus::Idle;
     node_session_staging::NodeSessionStageOperation last_operation_ =

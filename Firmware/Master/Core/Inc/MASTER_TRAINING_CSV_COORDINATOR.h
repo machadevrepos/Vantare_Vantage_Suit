@@ -298,7 +298,9 @@ void finalize_partial(uint32_t now_ms)
 if (partial_finalized_) return;
 partial_finalized_ = true;
 if (!binary_only_) (void)logger_.shutdown(now_ms);
-(void)stager_.shutdown();
+/* A failed stage must not leave a truncated R####N#.BIN that consumes the run
+ * index forever; the node's flash copy is the retry source. */
+(void)stager_.abandon_and_unlink();
 transfer_window_.reset();
 reliable_control_.reset();
 active_node_id_ = 0U;
@@ -406,7 +408,7 @@ break;
 void shutdown(uint32_t now_ms)
 {
 if (!binary_only_) (void)logger_.shutdown(now_ms);
-(void)stager_.shutdown();
+(void)stager_.abandon_and_unlink();
 reliable_control_.reset();
 transfer_window_.reset();
 if (!binary_only_ && logger_.has_open_file()) {
@@ -609,9 +611,10 @@ failure_stager_operation_ = stager_.last_operation();
 failure_stager_result_ = stager_.last_result();
 }
 }
-/* shutdown() leaves discarded_ clear, so the node keeps its flash copy and the
- * session can be re-pulled later instead of being lost. */
-(void)stager_.shutdown();
+/* abandon_and_unlink() removes the truncated stage file but leaves discarded_
+ * clear, so the node keeps its flash copy and the session can be re-pulled
+ * later instead of being lost. */
+(void)stager_.abandon_and_unlink();
 transfer_window_.reset();
 reliable_control_.reset();
 active_node_id_ = 0U;

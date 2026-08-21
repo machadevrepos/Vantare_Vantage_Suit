@@ -122,6 +122,9 @@ checks = [
      reliable.index("if (ack_pending_) return send_ack_window(now_ms);") and
      reliable.index("nack_pending_ = true;") < reliable.index("bool send_nack(uint32_t now_ms)"),
      "Gap/corrupt NACKs must own a dedicated slot outranking ACK windows so a queued ManifestAck can never drop recovery"),
+    ("abandon_and_unlink" in stager and "stage_started_" in stager and
+     coordinator.count("stager_.abandon_and_unlink();") >= 3,
+     "Abandoned/failed node stages must be unlinked so run indexes stay reusable and no truncated R####N#.BIN survives"),
 ]
 
 failures = [message for ok, message in checks if not ok]

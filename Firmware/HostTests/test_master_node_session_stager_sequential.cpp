@@ -10,6 +10,7 @@ namespace {
 std::vector<uint8_t> g_file;
 uint32_t g_cursor = 0U;
 uint32_t g_lseek_count = 0U;
+uint32_t g_unlink_count = 0U;
 
 FRESULT seq_open(FIL *, const TCHAR *, BYTE mode)
 {
@@ -60,6 +61,7 @@ FRESULT seq_close(FIL *)
 
 FRESULT seq_unlink(const TCHAR *)
 {
+    ++g_unlink_count;
     return FR_OK;
 }
 
@@ -213,6 +215,44 @@ int main()
     assert(abandoned.shutdown());
     assert(g_file.size() == 200U);
     assert(memcmp(g_file.data(), big_session.data(), 200U) == 0);
+
+    // Abandon-and-unlink path: a truncated stage must be removed so the run
+    // index stays reusable, while the node's flash copy stays retained.
+    g_unlink_count = 0U;
+    g_file.clear();
+    g_cursor = 0U;
+    exo::MasterNodeSessionStager discarded_early(&kSeqOps);
+    assert(discarded_early.begin(big_done, 4U));
+    assert(discarded_early.accept_chunk(2U, 77U, 0U, big_session.data(), 200U));
+    assert(discarded_early.abandon_and_unlink());
+    assert(g_unlink_count == 1U);
+    assert(!discarded_early.node_flash_may_be_erased());
+
+    // A validated stage is the durable archive: even after the coordinator
+    // shuts down (e.g. session reset), abandon_and_unlink must not remove it.
+    g_unlink_count = 0U;
+    g_file.clear();
+    g_cursor = 0U;
+    exo::MasterNodeSessionStager validated_stage(&kSeqOps);
+    assert(validated_stage.begin(done, 5U));
+    assert(validated_stage.accept_chunk(1U, 42U, 0U, session.data(),
+            static_cast<uint16_t>(session.size())));
+    assert(validated_stage.begin_validation());
+    while (validated_stage.validation_status() ==
+            exo::node_session_staging::NodeSessionValidationStatus::InProgress) {
+        assert(validated_stage.step_validation(256U));
+    }
+    assert(validated_stage.finalize_validation());
+    assert(validated_stage.discard_after_success());
+    assert(validated_stage.node_flash_may_be_erased());
+    assert(validated_stage.abandon_and_unlink());
+    assert(g_unlink_count == 0U);
+
+    // A stager that never staged anything must not unlink stray files.
+    g_unlink_count = 0U;
+    exo::MasterNodeSessionStager idle(&kSeqOps);
+    assert(idle.abandon_and_unlink());
+    assert(g_unlink_count == 0U);
 
     std::cout << "master node stager sequential read tests passed\n";
     return 0;
