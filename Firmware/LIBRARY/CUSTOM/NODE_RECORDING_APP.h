@@ -288,6 +288,9 @@ namespace exo {
 					if (icm45686_.read_sample(now_us, icm_sample)) {
 						++data_rate_icm_count_;
 					}
+				} else if (finalize_failed_) {
+					/* Capture is over and finalize gave up: stop sampling into a
+					 * dead flash so the node stays quiet but fully responsive. */
 				} else {
 					process_recording_ticks();
 					process_writer_budget();
@@ -657,13 +660,14 @@ namespace exo {
 			}
 
 			if (elapsed_us >= duration_us &&
-					(record_icm_fifo_active_ || record_next_icm_us_ >= duration_us)) {
-					finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
-					bno85_.set_capture_queue_enabled(false);
-					record_finalize_pending_ = true;
-					set_live_stream_enabled(false);
-				}
+					(record_icm_fifo_active_ || record_next_icm_us_ >= duration_us) &&
+					!finalize_failed_) {
+				finalize_duration_ms_ = HAL_GetTick() - recording_started_ms_;
+				bno85_.set_capture_queue_enabled(false);
+				record_finalize_pending_ = true;
+				set_live_stream_enabled(false);
 			}
+		}
 
 			bool flush_one_bno_pending() {
 				uint8_t idx = bno_flush_rr_;
@@ -671,8 +675,9 @@ namespace exo {
 					if (bno_record_buf_.pending[idx] && bno_record_buf_.count[idx] > 0U) {
 						const uint32_t count = bno_record_buf_.count[idx];
 						if (!recorder_.append_bno85_batch(bno_record_buf_.data[idx], count)) {
-							bno_append_fail_count_ += count;
-							loss_flags_ |= kSessionLossBnoWrite;
+							/* Counted once if the retry budget gives up (see
+							 * drop_pending_batches_), never per failed attempt. */
+							last_flush_write_failed_ = true;
 							return false;
 						}
 						bno_record_buf_.pending[idx] = false;
@@ -691,8 +696,7 @@ namespace exo {
 					if (icm_record_buf_.pending[idx] && icm_record_buf_.count[idx] > 0U) {
 						const uint32_t count = icm_record_buf_.count[idx];
 						if (!recorder_.append_icm45686_batch(icm_record_buf_.data[idx], count)) {
-							icm_append_fail_count_ += count;
-							loss_flags_ |= kSessionLossIcmWrite;
+							last_flush_write_failed_ = true;
 							return false;
 						}
 						icm_record_buf_.pending[idx] = false;
@@ -705,28 +709,72 @@ namespace exo {
 				return false;
 			}
 
+			/* Give up on batches the flash refuses to take after the retry
+			 * budget: count them once as write losses (they were never stored)
+			 * and let finalization complete with the data that IS durable. */
+			void drop_pending_batches() {
+				bool dropped_bno = false;
+				bool dropped_icm = false;
+				for (uint8_t idx = 0U; idx < 2U; ++idx) {
+					if (bno_record_buf_.pending[idx] && bno_record_buf_.count[idx] > 0U) {
+						bno_append_fail_count_ += bno_record_buf_.count[idx];
+						bno_record_buf_.pending[idx] = false;
+						bno_record_buf_.count[idx] = 0U;
+						dropped_bno = true;
+					}
+					if (icm_record_buf_.pending[idx] && icm_record_buf_.count[idx] > 0U) {
+						icm_append_fail_count_ += icm_record_buf_.count[idx];
+						icm_record_buf_.pending[idx] = false;
+						icm_record_buf_.count[idx] = 0U;
+						dropped_icm = true;
+					}
+				}
+				if (dropped_bno) {
+					loss_flags_ |= kSessionLossBnoWrite;
+				}
+				if (dropped_icm) {
+					loss_flags_ |= kSessionLossIcmWrite;
+				}
+				write_fail_streak_ = 0U;
+				EXO_LOG("[RECORD][NODE%u] flash writes kept failing; dropped pending batches bno_fail=%lu icm_fail=%lu\r\n",
+						static_cast<unsigned>(config_.node_id),
+						static_cast<unsigned long>(bno_append_fail_count_),
+						static_cast<unsigned long>(icm_append_fail_count_));
+			}
+
 			void process_writer_budget() {
 				/* The loop exits as soon as no batch is pending, so the cap only
 				 * bounds the catch-up burst after a stall; at 400 Hz the double
 				 * buffer holds ~40 ms of samples and one flush moves 8. */
 				for (uint8_t flushes = 0U; flushes < kFlushBatchesPerTick; ++flushes) {
+					last_flush_write_failed_ = false;
 					bool wrote = false;
 					if (prefer_bno_flush_) {
 						wrote = flush_one_bno_pending();
-						if (!wrote) {
+						if (!wrote && !last_flush_write_failed_) {
 							wrote = flush_one_icm_pending();
 						}
 					} else {
 						wrote = flush_one_icm_pending();
-						if (!wrote) {
+						if (!wrote && !last_flush_write_failed_) {
 							wrote = flush_one_bno_pending();
 						}
+					}
+					if (last_flush_write_failed_) {
+						/* A dead flash must fail the session cleanly instead of
+						 * wedging the node in Recording forever. */
+						++write_fail_streak_;
+						if (write_fail_streak_ >= kMaxConsecutiveWriteFails) {
+							drop_pending_batches();
+						}
+						return;
 					}
 					if (!wrote) {
 						break;
 					}
 					prefer_bno_flush_ = !prefer_bno_flush_;
 				}
+				write_fail_streak_ = 0U;
 			}
 
 			void try_finalize_recording() {
@@ -832,6 +880,19 @@ namespace exo {
 							static_cast<unsigned long>(recorder_.total_size()),
 							static_cast<unsigned long>(recorder_.header().bno85_sample_count),
 							static_cast<unsigned long>(recorder_.header().icm45686_sample_count));
+					finalize_fail_count_ = 0U;
+				} else {
+					/* A finalize that keeps failing (flash CRC read or header
+					 * write) must not retry forever: after the attempt budget,
+					 * latch the failure so the node stays responsive (BLE,
+					 * Cancel, reboot) instead of silently wedging in Recording. */
+					++finalize_fail_count_;
+					if (finalize_fail_count_ >= kMaxFinalizeAttempts) {
+						finalize_failed_ = true;
+						EXO_LOG("[RECORD][NODE%u] finalize failed %u times; giving up (data retained on flash, node remains responsive)\r\n",
+								static_cast<unsigned>(config_.node_id),
+								static_cast<unsigned>(finalize_fail_count_));
+					}
 				}
 				bno85_.clear_capture_queue();
 				record_finalize_pending_ = false;
@@ -858,6 +919,10 @@ namespace exo {
 				bno_captured_count_ = 0U;
 				icm_captured_count_ = 0U;
 				loss_flags_ = 0U;
+				last_flush_write_failed_ = false;
+				write_fail_streak_ = 0U;
+				finalize_fail_count_ = 0U;
+				finalize_failed_ = false;
 				finalize_duration_ms_ = 0U;
 				record_finalize_pending_ = false;
 			}
@@ -866,6 +931,11 @@ namespace exo {
 			static constexpr uint32_t kIcmBatchSamples = 8U;
 			static constexpr uint8_t kFlushBatchesPerTick = 4U;
 			static constexpr uint8_t kMaxIcmDrainPerTick = 16U;
+			/* Retry budgets: a persistently failing flash must fail the session
+			 * cleanly (data retained, node responsive) instead of wedging the
+			 * node in Recording forever. */
+			static constexpr uint8_t kMaxConsecutiveWriteFails = 8U;
+			static constexpr uint8_t kMaxFinalizeAttempts = 3U;
 
 			NodeRecordingConfig config_;
 			Bno85Stm32 bno85_;
@@ -895,6 +965,10 @@ namespace exo {
 			uint32_t loss_flags_ = 0U;
 			uint32_t finalize_duration_ms_ = 0U;
 			bool record_finalize_pending_ = false;
+			bool last_flush_write_failed_ = false;
+			uint8_t write_fail_streak_ = 0U;
+			uint8_t finalize_fail_count_ = 0U;
+			bool finalize_failed_ = false;
 			uint32_t bno_append_fail_count_ = 0U;
 			uint32_t icm_append_fail_count_ = 0U;
 			bool armed_ = false;

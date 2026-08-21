@@ -130,6 +130,9 @@ checks = [
      "retry_failed_source" in coordinator and
      "master_retry_failed_source(message.node_id)" in master,
      "A source written off after a stall must be re-pullable from the retained RecordDone (RetrySource 0x10)"),
+    ("kMaxConsecutiveWriteFails" in node and "drop_pending_batches" in node and
+     "kMaxFinalizeAttempts" in node and "finalize_failed_" in node,
+     "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
 ]
 
 failures = [message for ok, message in checks if not ok]
