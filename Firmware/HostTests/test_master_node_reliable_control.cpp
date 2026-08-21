@@ -80,9 +80,11 @@ int main()
                     reinterpret_cast<const uint8_t *>(&manifest_ack),
                     sizeof(manifest_ack)));
 
+    /* The NACK owns its own slot: gap/corrupt recovery outranks credit refresh
+     * and must never be rejected by a queued control frame. */
     assert(control.ack_window(5U, 9U));
     assert(control.nack_range(4U, 2U));
-    assert(control.pending_type() == exo::RecordReliableType::NackRange);
+    assert(control.pending());
     assert(control.service(200U));
     header = header_of(transport.frame);
     assert(header.frame_type ==
@@ -90,6 +92,7 @@ int main()
     auto nack = body_of<exo::RecordReliableNackRangePayload>(transport.frame);
     assert(nack.first_chunk_index == 4U);
     assert(nack.chunk_count == 2U);
+    assert(control.pending()); /* the ACK_WINDOW is still queued behind it */
 
     assert(control.ack_window(6U, 8U));
     assert(control.ack_window(7U, 8U));
@@ -97,6 +100,20 @@ int main()
     auto ack = body_of<exo::RecordReliableAckWindowPayload>(transport.frame);
     assert(ack.next_chunk_index == 7U);
     assert(ack.credit == 8U);
+
+    /* Regression: a NACK arriving while the ManifestAck is still queued must
+     * not be dropped, and the ManifestAck still transmits first. */
+    assert(control.begin(done));
+    assert(control.nack_range(4U, 1U));
+    assert(control.service(300U));
+    header = header_of(transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::ManifestAck));
+    assert(control.service(310U));
+    header = header_of(transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::NackRange));
+    assert(!control.pending());
 
     assert(!control.verify_ok(0xDEADBEEFU));
     assert(control.verify_ok(done.payload_crc32));

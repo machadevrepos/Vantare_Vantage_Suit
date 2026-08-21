@@ -43,6 +43,12 @@ public:
         pending_type_ = RecordReliableType::ManifestAck;
         last_attempt_ms_ = 0U;
         attempt_count_ = 0U;
+        nack_pending_ = false;
+        nack_first_chunk_ = 0U;
+        nack_count_ = 1U;
+        nack_flags_ = 0U;
+        nack_last_attempt_ms_ = 0U;
+        nack_attempt_count_ = 0U;
         ack_pending_ = false;
         ack_valid_ = false;
         ack_next_chunk_ = 0U;
@@ -95,15 +101,19 @@ public:
     {
         if (!active()) return false;
         if (!chunk_offset_valid_(first_chunk, chunk_size_)) return false;
-        RecordReliableNackRangePayload body{};
-        body.source_id = node_id_;
-        body.session_id = session_id_;
-        body.first_chunk_index = first_chunk;
-        body.chunk_count = count == 0U ? 1U : count;
-        body.flags = flags;
-        return queue_frame(RecordReliableType::NackRange, first_chunk,
-                chunk_byte_offset_(first_chunk, chunk_size_),
-                reinterpret_cast<const uint8_t*>(&body), sizeof(body), 3U);
+        /* Gap/corrupt recovery must never be lost, so the NACK gets its own slot
+         * instead of competing with ManifestAck/VerifyOk for the single pending
+         * buffer. A rejected NACK used to leave the node idle until the stall
+         * timeout because an ACK_WINDOW alone cannot rewind the node cursor. A
+         * newer NACK overwrites an unsent older one: the window is strictly
+         * sequential, so both would request the same recovery chunk anyway. */
+        nack_first_chunk_ = first_chunk;
+        nack_count_ = count == 0U ? 1U : count;
+        nack_flags_ = flags;
+        nack_pending_ = true;
+        nack_last_attempt_ms_ = 0U;
+        nack_attempt_count_ = 0U;
+        return true;
     }
 
     bool verify_ok(uint32_t crc32)
@@ -133,6 +143,10 @@ public:
             pending_priority_ = 0U;
             return true;
         }
+        /* One frame per call keeps BLE-context work bounded. Recovery (NACK)
+         * outranks credit refresh (ACK): an ACK_WINDOW is skip-ahead-only on the
+         * node, so it cannot substitute for a pending gap retransmit request. */
+        if (nack_pending_) return send_nack(now_ms);
         if (ack_pending_) return send_ack_window(now_ms);
         return true;
     }
@@ -155,7 +169,7 @@ public:
     {
         return node_id_ >= 1U && node_id_ <= 4U && session_id_ != 0U;
     }
-    bool pending() const { return pending_length_ != 0U || ack_pending_; }
+    bool pending() const { return pending_length_ != 0U || nack_pending_ || ack_pending_; }
     uint8_t node_id() const { return node_id_; }
     uint32_t session_id() const { return session_id_; }
     RecordReliableType pending_type() const { return pending_type_; }
@@ -246,6 +260,30 @@ private:
         return true;
     }
 
+    bool send_nack(uint32_t now_ms)
+    {
+        if (nack_attempt_count_ != 0U &&
+                static_cast<uint32_t>(now_ms - nack_last_attempt_ms_) < kRetryIntervalMs) {
+            return false;
+        }
+        nack_last_attempt_ms_ = now_ms;
+        if (nack_attempt_count_ < 0xFFFFFFFFU) ++nack_attempt_count_;
+        RecordReliableNackRangePayload body{};
+        body.source_id = node_id_;
+        body.session_id = session_id_;
+        body.first_chunk_index = nack_first_chunk_;
+        body.chunk_count = nack_count_;
+        body.flags = nack_flags_;
+        uint8_t frame[kMaxFrameBytes];
+        const uint16_t length = build_frame(frame, RecordReliableType::NackRange,
+                nack_first_chunk_, chunk_byte_offset_(nack_first_chunk_, chunk_size_),
+                reinterpret_cast<const uint8_t*>(&body), sizeof(body));
+        if (length == 0U || !transmit(frame, length)) return false;
+        nack_pending_ = false;
+        nack_attempt_count_ = 0U;
+        return true;
+    }
+
     bool send_ack_window(uint32_t now_ms)
     {
         RecordReliableAckWindowPayload body{};
@@ -295,6 +333,12 @@ private:
     uint32_t ack_next_chunk_ = 0U;
     uint8_t ack_credit_ = kDefaultCredit;
     uint32_t ack_last_sent_ms_ = 0U;
+    bool nack_pending_ = false;
+    uint32_t nack_first_chunk_ = 0U;
+    uint16_t nack_count_ = 1U;
+    uint16_t nack_flags_ = 0U;
+    uint32_t nack_last_attempt_ms_ = 0U;
+    uint32_t nack_attempt_count_ = 0U;
 };
 
 } // namespace exo

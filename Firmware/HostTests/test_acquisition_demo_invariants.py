@@ -14,6 +14,7 @@ central_h = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h").r
 node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
 stager = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h").read_text()
 coordinator = (ROOT / "Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h").read_text()
+reliable = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h").read_text()
 
 checks = [
     ("void service_pending(uint8_t max_packets)" in bno,
@@ -116,6 +117,11 @@ checks = [
     ("exo_hub_central_client_request_targeted_reconnect(exo_leaf_slot_node_id(slot));" in central and
      "targeted reconnect arm slot=" in central,
      "A Node drop during discovery hold must arm direct-address recovery instead of waiting"),
+    ("nack_pending_" in reliable and
+     reliable.index("if (nack_pending_) return send_nack(now_ms);") <
+     reliable.index("if (ack_pending_) return send_ack_window(now_ms);") and
+     reliable.index("nack_pending_ = true;") < reliable.index("bool send_nack(uint32_t now_ms)"),
+     "Gap/corrupt NACKs must own a dedicated slot outranking ACK windows so a queued ManifestAck can never drop recovery"),
 ]
 
 failures = [message for ok, message in checks if not ok]
