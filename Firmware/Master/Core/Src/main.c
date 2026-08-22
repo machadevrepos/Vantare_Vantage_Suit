@@ -1265,6 +1265,8 @@ namespace {
 						static_cast<unsigned long>(g_pending_node_done.session_id),
 						static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 						static_cast<unsigned long>(g_pending_node_done.total_size));
+				/* Chunk bursts own the link: switch to fast connection events. */
+				exo_hub_central_client_set_transfer_timing(g_pending_node_done.node_id, 1U);
 				g_have_pending_node_done = false;
 				g_pending_node_manifest_last_tick = 0U;
 				memset(&g_pending_node_done, 0, sizeof(g_pending_node_done));
@@ -3223,6 +3225,8 @@ int main(void)
 						static_cast<unsigned>(training_completed_mask),
 						static_cast<unsigned>((master_training_csv_coordinator.cleanup_pending_mask() & cleanup_bit) != 0U ? 1U : 0U),
 						static_cast<unsigned>(released ? 1U : 0U));
+				/* Upload finished: hand the link back to multi-link timing. */
+				exo_hub_central_client_set_transfer_timing(source_id, 0U);
 			} else {
 				EXO_LOG("[TRAIN][CSV] source complete source=%u bno=%lu icm=%lu completed=0x%02X\r\n",
 						static_cast<unsigned>(source_id),
@@ -3233,6 +3237,10 @@ int main(void)
 		}
 		if (training_state != master_training_csv_reported_state) {
 			if (training_state == exo::TrainingCsvState::StageError) {
+				const uint8_t failed_node = master_training_csv_coordinator.failure_node_id();
+				if (failed_node >= 1U && failed_node <= 4U) {
+					exo_hub_central_client_set_transfer_timing(failed_node, 0U);
+				}
 				EXO_LOG("[TRN] inv s=%lu c=%u st=%u so=%u sf=%d co=%u cf=%d\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 						static_cast<unsigned>(master_training_csv_coordinator.failure_node_id()),

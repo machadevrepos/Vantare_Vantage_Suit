@@ -8,6 +8,7 @@
 #include "dbg_trace.h"
 #include "ble_gap_aci.h"
 #include "ble_gatt_aci.h"
+#include "ble_hci_le.h"
 #include "ble_events.h"
 #include "ble_std.h"
 #include "ble_types.h"
@@ -1256,6 +1257,40 @@ void exo_hub_central_client_init(void)
           (unsigned)EXO_HUB_LEAF_MAX,
           (unsigned)CFG_BLE_NUM_LINK);
 }
+
+/* Session uploads own the node link: request 7.5-15 ms events while chunks
+ * flow (the 30-50 ms multi-link interval caps throughput at a few KB/s), and
+ * restore the multi-link timing afterwards so idle links stay scheduler- and
+ * power-friendly. Central-only HCI update; failure is non-fatal — the
+ * transfer simply keeps the old timing. */
+void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast)
+{
+  uint8_t i;
+  const uint16_t interval_min = fast != 0U ? 0x0006U : EXO_HUB_CONN_INTERVAL_MIN_MULTI;
+  const uint16_t interval_max = fast != 0U ? 0x000CU : EXO_HUB_CONN_INTERVAL_MAX_MULTI;
+  for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+  {
+    if (g_leaf_slots[i].node_id == node_id &&
+        g_leaf_slots[i].connection_handle != 0xFFFFU)
+    {
+      const tBleStatus status = hci_le_connection_update(
+          g_leaf_slots[i].connection_handle,
+          interval_min, interval_max,
+          EXO_HUB_CONN_LATENCY,
+          EXO_HUB_SUPERVISION_TIMEOUT,
+          EXO_HUB_MIN_CE_LENGTH,
+          EXO_HUB_MAX_CE_LENGTH);
+      EXO_LOG("[BLE][HUB][XFER] timing node=%u fast=%u ci=%u-%u st=0x%02X\r\n",
+              (unsigned)node_id,
+              (unsigned)(fast != 0U ? 1U : 0U),
+              (unsigned)interval_min,
+              (unsigned)interval_max,
+              (unsigned)status);
+      return;
+    }
+  }
+}
+
 
 void exo_hub_central_client_set_ble_ready(void)
 {

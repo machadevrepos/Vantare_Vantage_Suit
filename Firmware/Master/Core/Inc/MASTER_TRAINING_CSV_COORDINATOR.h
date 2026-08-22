@@ -72,6 +72,9 @@ static constexpr uint32_t kNodeAckRearmMs = 300U;
  * duplicate read-back never run inside a radio event handler. Depth 8 matches
  * receiver_credit_: the node never has more in flight than this. */
 static constexpr uint8_t kPendingChunkDepth = 8U;
+/* ACK batching: fewer credit-refresh transmissions on the data link. Must
+ * stay below the granted credit or the node starves mid-batch. */
+static constexpr uint8_t kAckBatchChunks = 8U;
 struct PendingChunk {
 uint8_t node_id;
 uint32_t session_id;
@@ -298,7 +301,8 @@ case NodeTransferDecision::Ignore:
 return;
 case NodeTransferDecision::Duplicate:
 (void)reliable_control_.ack_window(transfer_window_.next_chunk(),
-receiver_credit_);
+	receiver_credit_);
+chunks_since_ack_ = 0U; /* the re-ACK already refreshed credit */
 return;
 case NodeTransferDecision::NackGap:
 (void)reliable_control_.nack_range(inspection.request_chunk, 1U);
@@ -332,11 +336,19 @@ if (pending_count_ < kPendingChunkDepth) {
 	/* Queue full: fall back to the synchronous stage so no chunk is lost. */
 	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
 	return;
-} else if (inspection.decision == NodeTransferDecision::Complete) {
-	state_ = TrainingCsvState::ValidateNode;
+	} else if (inspection.decision == NodeTransferDecision::Complete) {
+		state_ = TrainingCsvState::ValidateNode;
 }
 ++progress_seq_;
-(void)reliable_control_.ack_window(inspection.next_chunk, receiver_credit_);
+/* ACK every kAckBatchChunks accepted chunks instead of every chunk: each ACK
+ * is a radio transmission competing with data on the same link. Batch stays
+ * below receiver_credit_ so the node always has granted chunks in flight;
+ * duplicates/gaps re-ACK immediately and the queue drain flushes the tail. */
+if (++chunks_since_ack_ >= kAckBatchChunks ||
+		inspection.decision == NodeTransferDecision::Complete) {
+	chunks_since_ack_ = 0U;
+	(void)reliable_control_.ack_window(inspection.next_chunk, receiver_credit_);
+}
 }
 /* Flush queued reliable-control frames (ACK windows, NACKs) without the
 full state-machine pass. Called straight after BLE event dispatch so an
@@ -558,8 +570,14 @@ if (!stager_.accept_chunk(slot.node_id, slot.session_id,
 	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
 	return;
 }
-pending_head_ = static_cast<uint8_t>((pending_head_ + 1U) % kPendingChunkDepth);
---pending_count_;
+	pending_head_ = static_cast<uint8_t>((pending_head_ + 1U) % kPendingChunkDepth);
+	--pending_count_;
+}
+/* Flush a trailing partial ACK batch so the node never idles waiting for
+ * credit it has already earned (covers stream pauses and the last chunk). */
+if (chunks_since_ack_ > 0U) {
+	chunks_since_ack_ = 0U;
+	(void)reliable_control_.ack_window(transfer_window_.next_chunk(), receiver_credit_);
 }
 if (pending_final_) {
 pending_final_ = false;
@@ -571,6 +589,7 @@ void pending_reset()
 {
 pending_head_ = 0U;
 pending_count_ = 0U;
+chunks_since_ack_ = 0U;
 pending_final_ = false;
 }
 void clear_failure()
@@ -770,6 +789,7 @@ MasterSessionTimestampLedger ledger_;
 PendingChunk pending_chunks_[kPendingChunkDepth]{};
 uint8_t pending_head_ = 0U;
 uint8_t pending_count_ = 0U;
+uint8_t chunks_since_ack_ = 0U;
 bool pending_final_ = false;
 const training_csv_coordinator::MasterRecordingOps *master_ops_;
 SessionHeader master_header_{};
