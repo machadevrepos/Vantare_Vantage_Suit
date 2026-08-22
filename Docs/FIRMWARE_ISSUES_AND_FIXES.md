@@ -20,6 +20,8 @@ Issues #3/#4/#5 were fixed in code on 2026-08-21; the sections below retain the 
 
 A full-codebase review on 2026-08-21 (branch `fix/Firmware_Fixes`) re-verified all four fixes in code (see [Verified-fix audit](#verified-fix-audit)) and opened a new register: **#6–#13 (P1)**, #14–#29 (P2), plus minor items — see the [last section](#full-codebase-review--open-issue-register-6) for evidence (`file:line`), impact, and the staged fix roadmap. **Three of the new P1s gate the 10-minute-session goal** (#6 node erase time, #7 Master archive block, #13 pacing ceiling).
 
+**2026-08-22: the entire register was fixed in code** — 11 commits, one patch per issue cluster, all Python invariant tests green after each step; adversarial review findings fixed (`77b7927`). See [Fix campaign applied 2026-08-22](#fix-campaign-applied-2026-08-22-branch-fixfirmware_fixes) for the commit map, deferred items, and the hardware verification checklist. **Everything now awaits CubeIDE compilation + hardware verification.**
+
 ---
 
 ## System context
@@ -327,3 +329,42 @@ Power loss mid-record leaves `completion_flag = 0` and the header is never exami
 8. **#7** — Master chunked archive (largest Master change).
 9. **#11** — node crash recovery / atomic finalize header (design spike first).
 10. **P2 batch (#14-#29)** after the P1s, cheapest first (#14, #20, #22, #26 are near-trivial).
+
+---
+
+# Fix campaign applied 2026-08-22 (branch `fix/Firmware_Fixes`)
+
+The roadmap above was executed end-to-end. Every fix is in code with Python invariant guards (all 9 test files re-run green after each commit); C++ host tests updated in sync but **not compiled anywhere yet** — build in CubeIDE and run them before hardware bring-up.
+
+## Commit map
+
+| Commit | Issues fixed |
+|---|---|
+| `9cd8783` nack_slot_fix | #8 — NACK owns a dedicated slot in `MasterNodeReliableControl`, serviced before ACK windows; can never be rejected by a queued ManifestAck/VerifyOk |
+| `4d5f228` stage_unlink_on_abandon | #9 — `abandon_and_unlink()` (guarded by `stage_started_`/validated) wired into coordinator abandon/finalize/shutdown; validated archives are never unlinked |
+| `b47381f` failed_source_repull | Issue-#4 follow-up — `RetrySource 0x10` browser→Master command, `coordinator.retry_failed_source()`, retained-RecordDone requeue, node resumes from its flash copy; "Retry Failed Nodes" button in the browser (Error/Incomplete states) |
+| `66a1d6f` chunked_archive_and_recovery | #7 + #10 — Master finalize (payload CRC) and archive (copy/validate/rename/re-validate) advance in 512 B superloop steps (`Finalizing`/`Archiving` phases); latched `archive_required_` self-heals via `service_archive_recovery()` with 5 s backoff, also from the `Finished` phase |
+| `ca6cc38` node_finalize_bounded_retry | #12 — 8-failure write streak drops pending batches (counted once); 3 failed finalize attempts latch `finalize_failed_` and leave the node responsive instead of wedging in Recording |
+| `557e343` node_upload_burst_tune | #13 — `kNodeRecordBurstLimit` 1→4 (ceiling ~22 → ~90 KB/s; credit-8 round-trips remain the effective limiter). **Measure on hardware; tune credit/gap next if short of ≥10×** |
+| `3b298ad` node_background_erase | #6 — chunked 4 KB-sector eraser serviced from `process()` (2 sectors/tick), prepare/start/commit buffered behind it, post-ack erase runs in background, pre-erased regions skip the erase entirely. First-boot/long-layout sessions start once the erase covers the region (delayed start, not a blocked node) |
+| `2adf6ab` recovery_sector_header | #11 — session headers live in the reserved recovery sector (slot A in-progress, slot B finalized via single page program — the payload erase window is gone); `recover_after_boot()` boots a finalized session straight to ReadyForUpload (survives crashes incl. mid-upload) |
+| `3ca45ab` node_p2_robustness | #14 (validated inbound chunk indices), #15 (TMST wrap → nominal-period substitution), #16 (I²C-error ≠ empty-FIFO at the tail, 5-retry budget), #17 (plain StartRecord can no longer wipe a retained ReadyForUpload session), #19 (DIAG self-test moved to the recovery sector), #18-half (SPI1 /16→/4 = 8 MHz), P3 node-id lane alignment + legacy-ACK retx release |
+| `2fb2218` master_protocol_p2 | #20 (stale-ACK escape now reachable), #21 (bounded 8-retry SD read failures instead of instant dead-end), #22 (live-stream switch latched and restored at collection end), #23 (ValidateNode stall coverage), #25 (browser NACK packs the 14-B flags field), #26 (protocol default credit = 8, matches the grant), #28 (resolved sources no longer re-granted ManifestAck credit), #29 (CRC-mismatch StageError marks the source failed and is re-pullable in binary-only runs), P3 dead opcodes removed + transfer-window chunk-size bound enforced |
+| `77b7927` review_repull_wedge_fix | Review finding P1: retained-done `valid` flag must survive replay or the re-pull wedges the scheduler; review P3: `start_erase_pending_` cleared on abort |
+
+## Deferred with rationale
+
+- **#24 (run-index allocation)** — the O(index×5) `f_stat` scan still runs in the BLE write handler. Designed fix (boot-cached last index + persisted 8-byte marker file, occupancy fallback) deferred: contained but touches boot ordering; revisit if commissioning logs show allocation stalls.
+- **#27 (SD I/O inside BLE dispatch)** — mitigated, not removed: the 4 KB stager buffer amortizes flushes to ~1 per 22 chunks; the duplicate read-back and phone-handler shutdown flush remain in BLE context. Decide after hardware measurement whether a RAM-queue + superloop-flush refactor is warranted.
+- **#18 (driver RMW re-read)** — SPI doubled to 8 MHz (this campaign); the remaining half (skip the 4 KB re-read per write via a public no-check page program) needs a vendored-driver API addition — do it with the throughput tuning after hardware measurement.
+- **P3 `start_timestamp_us` naming** — wontfix: pure naming (relative lead, not a timestamp); a rename touches browser + firmware + tests for zero behavior change.
+- **P3 latent EXTI config** — wontfix: pins are CubeMX-generated (`gpio.c`), NVIC is not enabled, and the BNO INT is polled; documented here as a hazard for anyone enabling the IRQ.
+
+## Verification checklist (unchanged gates, now with the new code)
+
+1. **CubeIDE build** — Master + Node compile clean; run the C++ host tests (`test_master_node_reliable_control`, `test_master_node_session_stager_sequential`, `test_master_node_transfer_window`, `master_sd_session_recorder_test`, `ble_session_control_test`).
+2. **Hardware throughput** — confirm collection ≥10× the ~1.8 KB/s baseline (burst-4 + same-iteration ACKs should land ~15-40 KB/s; if short, raise credit toward 16-24 next).
+3. **Erase timing** — first-boot 10-min session: node prepare accepts in <100 ms, RecordDone/prepared status flows during the background erase, capture starts when it completes; second session on the same node starts instantly (pre-erased region).
+4. **Crash recovery** — power-cycle a node after finalize (mid-upload): on boot it logs the salvaged session and re-advertises RecordDone.
+5. **Re-pull** — stall a node mid-collection (shield it), let the run finish, press "Retry Failed Nodes" in the browser: the session re-uploads and the run completes.
+6. **SD-full** — fill the card, confirm the archive failure is reported, free space, and confirm the next session starts without a reboot.
