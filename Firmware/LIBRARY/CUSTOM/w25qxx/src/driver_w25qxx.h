@@ -551,6 +551,22 @@ uint8_t w25qxx_read(w25qxx_handle_t *handle, uint32_t addr, uint8_t *data, uint3
 uint8_t w25qxx_write(w25qxx_handle_t *handle, uint32_t addr, uint8_t *data, uint32_t len);
 
 /**
+ * @brief      write data into a pre-erased region without the 4 KB read-modify-write
+ * @param[in]  *handle pointer to a w25qxx handle structure
+ * @param[in]  addr written address
+ * @param[in]  *data pointer to a data buffer
+ * @param[in]  len data length
+ * @return     status code
+ *             - 0 success
+ *             - 1 write failed
+ *             - 2 handle is NULL
+ *             - 3 handle is not initialized
+ * @note       caller guarantees the target range is erased (0xFF); no sector
+ *             read-back, erase, or rewrite is performed
+ */
+uint8_t w25qxx_write_no_check(w25qxx_handle_t *handle, uint32_t addr, uint8_t *data, uint32_t len);
+
+/**
  * @brief      read only in the spi interface
  * @param[in]  *handle pointer to a w25qxx handle structure
  * @param[in]  addr read address

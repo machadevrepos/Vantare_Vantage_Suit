@@ -14,6 +14,9 @@ public:
     /* Single 4 KB sector erase, the chunk unit of the background eraser. */
     virtual bool erase_4k(uint32_t address) { return erase_region(address, 4096U); }
     virtual bool write(uint32_t address, const void *data, uint32_t size) = 0;
+    /* Fast path for regions the caller guarantees pre-erased: skips the
+     * driver's 4 KB sector read-modify-write. Default falls back to write(). */
+    virtual bool write_pre_erased(uint32_t address, const void *data, uint32_t size) { return write(address, data, size); }
     virtual bool read(uint32_t address, void *data, uint32_t size) = 0;
 };
 
@@ -380,7 +383,9 @@ private:
         if ((cursor + bytes) < cursor || (cursor + bytes) > limit) {
             return false;
         }
-        if (!flash_.write(cursor, samples, bytes)) {
+        /* Payload regions are pre-erased by the background eraser before the
+         * header is written, so use the no-RMW fast path. */
+        if (!flash_.write_pre_erased(cursor, samples, bytes)) {
             return false;
         }
         cursor += bytes;

@@ -146,6 +146,31 @@ public:
         return w25qxx_write(&handle_, address, const_cast<uint8_t *>(static_cast<const uint8_t *>(data)), size) == 0;
     }
 
+    /* Pre-erased fast path: verify the target range is still 0xFF (a read of
+     * just the written span, not a 4 KB sector RMW), then page-program it
+     * directly. Falls back to the safe write if the region is not blank. */
+    bool write_pre_erased(uint32_t address, const void *data, uint32_t size) override {
+        const uint8_t *bytes = static_cast<const uint8_t *>(data);
+        if (bytes == nullptr || size == 0U) {
+            return false;
+        }
+        uint8_t verify[64] = {0};
+        uint32_t offset = 0U;
+        while (offset < size) {
+            const uint32_t chunk = (size - offset) > sizeof(verify) ? sizeof(verify) : (size - offset);
+            if (w25qxx_read(&handle_, address + offset, verify, chunk) != 0) {
+                return false;
+            }
+            for (uint32_t i = 0U; i < chunk; ++i) {
+                if (verify[i] != 0xFFU) {
+                    return write(address, data, size);
+                }
+            }
+            offset += chunk;
+        }
+        return w25qxx_write_no_check(&handle_, address, const_cast<uint8_t *>(bytes), size) == 0;
+    }
+
     bool read(uint32_t address, void *data, uint32_t size) override {
         if (data == nullptr || size == 0U) {
             return false;
