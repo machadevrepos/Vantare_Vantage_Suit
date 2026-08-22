@@ -722,6 +722,7 @@ input[type="checkbox"] {
         <button id="startBtn" disabled>Start Stream</button>
         <button id="stopBtn" disabled>Stop Stream</button>
         <button id="retryFailedBtn" disabled title="Re-pull Node sessions the Master wrote off after a stall (Node flash copies are retained)">Retry Failed Nodes</button>
+        <button id="resetRecordBtn" disabled title="Erase retained un-uploaded Node sessions (0xB3). Use when a Node is stuck in ready-for-upload and blocks Start Stream; the data is discarded.">Reset Retained Sessions</button>
       </div>
       <div class="row">
         <label for="intervalInput">Interval (ms)</label>
@@ -1239,6 +1240,7 @@ input[type="checkbox"] {
     connectBtn: el("connectBtn"), disconnectBtn: el("disconnectBtn"),
     startBtn: el("startBtn"), stopBtn: el("stopBtn"), setIntervalBtn: el("setIntervalBtn"),
     retryFailedBtn: el("retryFailedBtn"),
+    resetRecordBtn: el("resetRecordBtn"),
     intervalInput: el("intervalInput"),
     sessionIdInput: el("sessionIdInput"), durationInput: el("durationInput"), leadTimeInput: el("leadTimeInput"), startRecordBtn: el("startRecordBtn"),
     sessionState: el("sessionState"), sessionNodes: el("sessionNodes"),
@@ -1376,6 +1378,7 @@ input[type="checkbox"] {
   ui.startBtn.addEventListener("click", sendStartSessionCmd);
   ui.stopBtn.addEventListener("click", sendStopSessionCmd);
   ui.retryFailedBtn.addEventListener("click", sendRetryFailedSourcesCmd);
+  ui.resetRecordBtn.addEventListener("click", sendResetRecordStateCmd);
   ui.setIntervalBtn.addEventListener("click", () => {
     const ms = clamp(parseInt(ui.intervalInput.value, 10) || 20, 10, 100);
     ui.intervalInput.value = String(ms);
@@ -2257,6 +2260,44 @@ input[type="checkbox"] {
       : "Retry Failed Nodes";
   }
 
+  /* Nodes holding a finalized but never-collected retained session (the
+   * boot-salvage state). They block Start Stream by design — this is the only
+   * sanctioned way out when no failed-collection re-pull applies. */
+  function retainedSessionNodeIds() {
+    const nodes = [];
+    state.nodeRecorderReady.forEach((info, id) => {
+      if (!info.ready && info.recorderState === 4) nodes.push(id);
+    });
+    return nodes.sort((a, b) => a - b);
+  }
+
+  function refreshResetRecordAvailability() {
+    if (!ui.resetRecordBtn) return;
+    const nodes = retainedSessionNodeIds();
+    const busy = ["Preparing", "Streaming", "Stopping", "Collecting", "Transferring", "FinalizingCsv"].includes(state.sessionState);
+    ui.resetRecordBtn.disabled = !state.cmdChar || busy || nodes.length === 0;
+    ui.resetRecordBtn.textContent = nodes.length > 0
+      ? `Reset Retained Sessions (${nodes.length})`
+      : "Reset Retained Sessions";
+  }
+
+  async function sendResetRecordStateCmd() {
+    const nodes = retainedSessionNodeIds();
+    if (nodes.length === 0) {
+      log("Reset ignored: no Node is holding a retained un-uploaded session.");
+      return;
+    }
+    const names = nodes.map((n) => sourceLabel(n)).join(", ");
+    if (!confirm(`Erase the retained un-uploaded session data on ${names}? This discards that data and cannot be undone.`)) {
+      return;
+    }
+    const ok = await sendBlePipeCommand([CMD.RESET_RECORD_STATE], BLEPIPE.MSG_COMMAND);
+    log(ok
+      ? `Reset record state (0xB3) sent — ${names} will erase and return to idle.`
+      : "Reset record state command rejected by the Master.");
+    refreshResetRecordAvailability();
+  }
+
   async function sendRetryFailedSourcesCmd() {
     const nodes = failedRetryNodeIds();
     if (nodes.length === 0) {
@@ -2303,6 +2344,7 @@ input[type="checkbox"] {
     }
     refreshStartRecordAvailability();
     refreshRetryFailedAvailability();
+    refreshResetRecordAvailability();
     renderDevices();
   }
 
@@ -3928,6 +3970,7 @@ input[type="checkbox"] {
       timestamp: performance.now()
     });
     updateStartStreamAvailability();
+    refreshResetRecordAvailability();
     renderDiscoveredNodes(); // Update UI with readiness indicators
     renderDevices();
     return true;
