@@ -1,0 +1,234 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h b/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
+index e545967..ea75329 100644
+--- a/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
++++ b/Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h
+@@ -207,13 +207,21 @@ public:
+                 fifo_last_timestamp_ = timestamp;
+                 fifo_elapsed_us_ = 0U;
+             } else {
+-                const uint32_t delta_us = static_cast<uint32_t>(
++                uint32_t delta_us = static_cast<uint32_t>(
+                         static_cast<uint16_t>(timestamp - fifo_last_timestamp_)) * 16U;
+                 fifo_last_timestamp_ = timestamp;
+                 /* At 200 Hz a valid delta is close to 5000 us. A zero timestamp
+                  * cannot provide ordering, so reject that frame rather than
+                  * inventing a duplicate time. */
+                 if (delta_us == 0U) continue;
++                /* The 16-bit TMST wraps every 1.049 s: a stall at or beyond one
++                 * wrap yields a garbage (small) delta that would silently
++                 * compress offset_us. Substitute the nominal period so the
++                 * timeline stays monotonic; the sequence gap already exposes
++                 * the lost frames. */
++                if (delta_us > kFifoMaxPlausibleDeltaUs) {
++                    delta_us = kFifoNominalPeriodUs;
++                }
+                 fifo_elapsed_us_ += delta_us;
+             }
+ 
+@@ -249,6 +257,10 @@ public:
+     bool fifo_active() const { return fifo_active_; }
+ 
+ private:
++    /* TMST wrap guard: at 200 Hz a frame delta is ~5000 us; anything beyond
++     * 100 ms means the 16-bit timer wrapped during a stall. */
++    static constexpr uint32_t kFifoNominalPeriodUs = 5000U;
++    static constexpr uint32_t kFifoMaxPlausibleDeltaUs = 100000U;
+     void recover_i2c_bus() {
+         if (HAL_I2C_GetState(&bus_) == HAL_I2C_STATE_READY) {
+             return;
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+index 46ffe4a..6fc8447 100644
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+@@ -372,7 +372,12 @@ namespace exo {
+ 
+ 			bool can_start_recording() const {
+ 				const RecorderState state = recorder_.state();
+-				return ready_ && !armed_ && !prepared_ && (state == RecorderState::Idle || state == RecorderState::ReadyForUpload);
++				/* ReadyForUpload is deliberately excluded: the node's flash copy
++				 * is the only durable record until the Master has validated the
++				 * upload, so a plain StartRecord must never wipe it. The
++				 * sanctioned wipe is the explicit reset/erase (0xB3) the Master
++				 * sends before arming a new session, or the post-ack erase. */
++				return ready_ && !armed_ && !prepared_ && state == RecorderState::Idle;
+ 			}
+ 
+ 			bool reset_to_idle_and_erase() {
+@@ -459,6 +464,16 @@ namespace exo {
+ 			bool flash_erase_raw(uint32_t address, uint32_t size) {
+ 				return flash_.erase_region(address, size);
+ 			}
++			/* Reserved recovery-sector base (0 before begin()). Safe for the
++			 * DIAG boot self-test: it is below the settings sector and is always
++			 * re-erased by the background eraser before the next session's
++			 * headers are written, so the test can never corrupt a session. */
++			uint32_t recovery_sector_address() const {
++				if (detected_flash_capacity_ == 0U) {
++					return 0U;
++				}
++				return detected_flash_capacity_ - kReservedFlashBytes;
++			}
+ 			bool flash_write_raw(uint32_t address, const void *data, uint32_t size) {
+ 				return flash_.write(address, data, size);
+ 			}
+@@ -944,6 +959,18 @@ namespace exo {
+ 				if (record_icm_fifo_active_) {
+ 					const uint8_t icm_tail =
+ 							icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
++					if (icm_tail == 0U && icm45686_.last_read_status_ != 0) {
++						/* An I2C error and an empty FIFO both read as zero frames.
++						 * Only the empty FIFO means "caught the tail": retry a
++						 * transient error so a bus glitch cannot silently drop
++						 * the ICM tail, but bounded so a dead bus cannot stall
++						 * finalization forever. */
++						if (icm_tail_read_fail_count_ < kMaxIcmTailReadFails) {
++							++icm_tail_read_fail_count_;
++							return;
++						}
++						loss_flags_ |= kSessionLossIcmRead;
++					}
+ 					for (uint8_t i = 0U; i < icm_tail; ++i) {
+ 						++icm_captured_count_;
+ 						++data_rate_icm_count_;
+@@ -1067,6 +1094,7 @@ namespace exo {
+ 				write_fail_streak_ = 0U;
+ 				finalize_fail_count_ = 0U;
+ 				finalize_failed_ = false;
++				icm_tail_read_fail_count_ = 0U;
+ 				finalize_duration_ms_ = 0U;
+ 				record_finalize_pending_ = false;
+ 			}
+@@ -1080,6 +1108,7 @@ namespace exo {
+ 			 * node in Recording forever. */
+ 			static constexpr uint8_t kMaxConsecutiveWriteFails = 8U;
+ 			static constexpr uint8_t kMaxFinalizeAttempts = 3U;
++			static constexpr uint8_t kMaxIcmTailReadFails = 5U;
+ 			/* Background erase chunk: 2 sectors (~90 ms typ) per process tick.
+ 			 * Large enough that a 10-min layout erases in ~1 minute of ticks,
+ 			 * small enough that BLE dispatch and heartbeats keep flowing. */
+@@ -1117,6 +1146,7 @@ namespace exo {
+ 			uint8_t write_fail_streak_ = 0U;
+ 			uint8_t finalize_fail_count_ = 0U;
+ 			bool finalize_failed_ = false;
++			uint8_t icm_tail_read_fail_count_ = 0U;
+ 			/* Background-erase sequencing: prepare/start/commit deferred while
+ 			 * the region eraser is still covering the session region. */
+ 			bool prepare_erase_pending_ = false;
+diff --git a/Firmware/Node/Core/Src/main.c b/Firmware/Node/Core/Src/main.c
+index bff1ca9..9b4db15 100644
+--- a/Firmware/Node/Core/Src/main.c
++++ b/Firmware/Node/Core/Src/main.c
+@@ -578,6 +578,17 @@ static void node_blepipe_reset_upload_state()
+ 	g_node_record_done_retry_count = 0U;
+ }
+ 
++/* An inbound control frame must never move the send cursor beyond the file:
++ * the sender treats offset >= total as "upload complete" and goes mute, so an
++ * unvalidated index from a malformed frame silently terminates the transfer. */
++static bool node_upload_chunk_index_valid(uint32_t chunk_index)
++{
++	if (g_node_upload_total_size == 0U || kNodeRecordChunkPayloadBytes == 0U) {
++		return false;
++	}
++	return chunk_index <= (g_node_upload_total_size - 1U) / static_cast<uint32_t>(kNodeRecordChunkPayloadBytes);
++}
++
+ static bool node_blepipe_apply_legacy_chunk_ack(const uint8_t *payload, uint8_t length)
+ {
+ 	if (payload == nullptr || length < sizeof(exo::ChunkAckMessage)) {
+@@ -635,9 +646,19 @@ static bool node_blepipe_apply_legacy_chunk_ack(const uint8_t *payload, uint8_t
+ 		g_node_upload_total_size = node_recording_app.make_upload_reader().total_size();
+ 		g_node_upload_crc32 = node_recording_app.make_record_done().payload_crc32;
+ 	}
++	if (next_offset >= g_node_upload_total_size ||
++	    !node_upload_chunk_index_valid(next_offset / static_cast<uint32_t>(kNodeRecordChunkPayloadBytes))) {
++		EXO_LOG("[BLE][NODE][REC] legacy ChunkAck rejected out-of-range offset=%lu total=%lu\r\n",
++				static_cast<unsigned long>(next_offset),
++				static_cast<unsigned long>(g_node_upload_total_size));
++		return false;
++	}
+ 	g_node_upload_active = true;
+ 	g_node_upload_next_chunk = next_offset / static_cast<uint32_t>(kNodeRecordChunkPayloadBytes);
+ 	g_node_upload_credit = exo::kRecordReliableDefaultCredit;
++	/* A legacy ACK also releases a pending retransmit cursor, exactly like an
++	 * ACK_WINDOW would, so stale NackRange state cannot outlive its recovery. */
++	g_node_upload_retx_remaining = 0U;
+ 	return true;
+ }
+ 
+@@ -1153,7 +1174,9 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
+ 	case 0xB0U:
+ 		if (length >= 2U) {
+ 			const uint8_t requested_id = payload[1];
+-			const uint8_t new_id = payload[length - 1U];
++			/* Decode payload[1] exactly like the legacy lane: a frame with
++			 * trailing bytes must not set a different id depending on lane. */
++			const uint8_t new_id = payload[1];
+ 			if (!exo::node_runtime_config::is_valid_node_id(new_id) ||
+ 			    !exo::node_runtime_config::store_node_id(new_id)) {
+ 				node_blepipe_send_ack(hdr, 0U, payload[0]);
+@@ -1282,6 +1305,15 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
+ 					const uint16_t chunk_count = static_cast<uint16_t>(body[10] | (static_cast<uint16_t>(body[11]) << 8U));
+ 					if (source_id == node_blepipe_current_id() &&
+ 					    session_id == g_node_upload_session_id) {
++						if (!node_upload_chunk_index_valid(first_chunk)) {
++							/* A malformed/hostile index must not silently end the
++							 * upload (out-of-range cursor makes the sender mute). */
++							EXO_LOG("[BLE][NODE][REC] NackRange rejected out-of-range chunk=%lu total=%lu\r\n",
++									static_cast<unsigned long>(first_chunk),
++									static_cast<unsigned long>(g_node_upload_total_size));
++							node_blepipe_send_ack(hdr, 0U, payload[0]);
++							return true;
++						}
+ 						g_node_upload_active = true;
+ 						g_node_upload_next_chunk = first_chunk;
+ 						g_node_upload_credit = chunk_count == 0U ? 1U :
+@@ -1346,6 +1378,13 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
+ 			case exo::RecordReliableType::VerifyFail:
+ 				if (rel.source_id == node_blepipe_current_id() &&
+ 				    rel.session_id == g_node_upload_session_id) {
++					if (!node_upload_chunk_index_valid(rel.chunk_index)) {
++						EXO_LOG("[BLE][NODE][REC] VerifyFail rejected out-of-range chunk=%lu total=%lu\r\n",
++								static_cast<unsigned long>(rel.chunk_index),
++								static_cast<unsigned long>(g_node_upload_total_size));
++						node_blepipe_send_ack(hdr, 0U, payload[0]);
++						return true;
++					}
+ 					g_node_upload_active = true;
+ 					g_node_upload_next_chunk = rel.chunk_index;
+ 					g_node_upload_credit = 1U;
+@@ -1489,7 +1528,15 @@ static void PrintHexBlock(const char *label, const uint8_t *data, uint32_t len)
+ 
+ static uint8_t RunFlashTest128()
+ {
+-	const uint32_t test_address = 0x0007F000U;
++	/* The self-test erases its target sector, so it must never run inside the
++	 * session region: use the reserved recovery sector, which the background
++	 * eraser always re-erases before the next session's headers are written. */
++	const uint32_t test_address = node_recording_app.recovery_sector_address();
++	if (test_address == 0U)
++	{
++		EXO_LOG("W25Q 128B test skipped: flash not initialised\r\n");
++		return 0U;
++	}
+ 	const uint32_t seed = HAL_GetTick() ^ 0x1A2B3C4DU;
+ 	uint16_t mismatch_count = 0U;
+ 	uint16_t first_mismatch_index = 0xFFFFU;
+@@ -1590,10 +1637,15 @@ int main(void)
+   MX_SPI1_Init();
+   MX_TIM1_Init();
+   MX_RF_Init();
+-  /* USER CODE BEGIN 2 */
++	/* USER CODE BEGIN 2 */
+ 	{
+ 		const uint32_t old_prescaler = hspi1.Init.BaudRatePrescaler;
+-		const uint32_t new_prescaler = SpiNextFasterPrescaler(old_prescaler);
++		/* Two steps above the Cube default: /16 -> /4 = 8 MHz. The W25Q256
++		 * normal-mode SPI rating is far higher, and every recorded batch pays
++		 * a full 4 KB sector read in the driver's read-modify-write path, so
++		 * the flash bus is the node's write-throughput bottleneck. */
++		const uint32_t new_prescaler = SpiNextFasterPrescaler(
++				SpiNextFasterPrescaler(old_prescaler));
+ 		if (new_prescaler != old_prescaler) {
+ 			hspi1.Init.BaudRatePrescaler = new_prescaler;
+ 			if (HAL_SPI_Init(&hspi1) != HAL_OK) {

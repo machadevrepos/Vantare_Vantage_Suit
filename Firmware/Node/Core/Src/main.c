@@ -578,6 +578,17 @@ static void node_blepipe_reset_upload_state()
 	g_node_record_done_retry_count = 0U;
 }
 
+/* An inbound control frame must never move the send cursor beyond the file:
+ * the sender treats offset >= total as "upload complete" and goes mute, so an
+ * unvalidated index from a malformed frame silently terminates the transfer. */
+static bool node_upload_chunk_index_valid(uint32_t chunk_index)
+{
+	if (g_node_upload_total_size == 0U || kNodeRecordChunkPayloadBytes == 0U) {
+		return false;
+	}
+	return chunk_index <= (g_node_upload_total_size - 1U) / static_cast<uint32_t>(kNodeRecordChunkPayloadBytes);
+}
+
 static bool node_blepipe_apply_legacy_chunk_ack(const uint8_t *payload, uint8_t length)
 {
 	if (payload == nullptr || length < sizeof(exo::ChunkAckMessage)) {
@@ -635,9 +646,19 @@ static bool node_blepipe_apply_legacy_chunk_ack(const uint8_t *payload, uint8_t 
 		g_node_upload_total_size = node_recording_app.make_upload_reader().total_size();
 		g_node_upload_crc32 = node_recording_app.make_record_done().payload_crc32;
 	}
+	if (next_offset >= g_node_upload_total_size ||
+	    !node_upload_chunk_index_valid(next_offset / static_cast<uint32_t>(kNodeRecordChunkPayloadBytes))) {
+		EXO_LOG("[BLE][NODE][REC] legacy ChunkAck rejected out-of-range offset=%lu total=%lu\r\n",
+				static_cast<unsigned long>(next_offset),
+				static_cast<unsigned long>(g_node_upload_total_size));
+		return false;
+	}
 	g_node_upload_active = true;
 	g_node_upload_next_chunk = next_offset / static_cast<uint32_t>(kNodeRecordChunkPayloadBytes);
 	g_node_upload_credit = exo::kRecordReliableDefaultCredit;
+	/* A legacy ACK also releases a pending retransmit cursor, exactly like an
+	 * ACK_WINDOW would, so stale NackRange state cannot outlive its recovery. */
+	g_node_upload_retx_remaining = 0U;
 	return true;
 }
 
@@ -1153,7 +1174,9 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 	case 0xB0U:
 		if (length >= 2U) {
 			const uint8_t requested_id = payload[1];
-			const uint8_t new_id = payload[length - 1U];
+			/* Decode payload[1] exactly like the legacy lane: a frame with
+			 * trailing bytes must not set a different id depending on lane. */
+			const uint8_t new_id = payload[1];
 			if (!exo::node_runtime_config::is_valid_node_id(new_id) ||
 			    !exo::node_runtime_config::store_node_id(new_id)) {
 				node_blepipe_send_ack(hdr, 0U, payload[0]);
@@ -1282,6 +1305,15 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 					const uint16_t chunk_count = static_cast<uint16_t>(body[10] | (static_cast<uint16_t>(body[11]) << 8U));
 					if (source_id == node_blepipe_current_id() &&
 					    session_id == g_node_upload_session_id) {
+						if (!node_upload_chunk_index_valid(first_chunk)) {
+							/* A malformed/hostile index must not silently end the
+							 * upload (out-of-range cursor makes the sender mute). */
+							EXO_LOG("[BLE][NODE][REC] NackRange rejected out-of-range chunk=%lu total=%lu\r\n",
+									static_cast<unsigned long>(first_chunk),
+									static_cast<unsigned long>(g_node_upload_total_size));
+							node_blepipe_send_ack(hdr, 0U, payload[0]);
+							return true;
+						}
 						g_node_upload_active = true;
 						g_node_upload_next_chunk = first_chunk;
 						g_node_upload_credit = chunk_count == 0U ? 1U :
@@ -1346,6 +1378,13 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 			case exo::RecordReliableType::VerifyFail:
 				if (rel.source_id == node_blepipe_current_id() &&
 				    rel.session_id == g_node_upload_session_id) {
+					if (!node_upload_chunk_index_valid(rel.chunk_index)) {
+						EXO_LOG("[BLE][NODE][REC] VerifyFail rejected out-of-range chunk=%lu total=%lu\r\n",
+								static_cast<unsigned long>(rel.chunk_index),
+								static_cast<unsigned long>(g_node_upload_total_size));
+						node_blepipe_send_ack(hdr, 0U, payload[0]);
+						return true;
+					}
 					g_node_upload_active = true;
 					g_node_upload_next_chunk = rel.chunk_index;
 					g_node_upload_credit = 1U;
@@ -1489,7 +1528,15 @@ static void PrintHexBlock(const char *label, const uint8_t *data, uint32_t len)
 
 static uint8_t RunFlashTest128()
 {
-	const uint32_t test_address = 0x0007F000U;
+	/* The self-test erases its target sector, so it must never run inside the
+	 * session region: use the reserved recovery sector, which the background
+	 * eraser always re-erases before the next session's headers are written. */
+	const uint32_t test_address = node_recording_app.recovery_sector_address();
+	if (test_address == 0U)
+	{
+		EXO_LOG("W25Q 128B test skipped: flash not initialised\r\n");
+		return 0U;
+	}
 	const uint32_t seed = HAL_GetTick() ^ 0x1A2B3C4DU;
 	uint16_t mismatch_count = 0U;
 	uint16_t first_mismatch_index = 0xFFFFU;
@@ -1590,10 +1637,15 @@ int main(void)
   MX_SPI1_Init();
   MX_TIM1_Init();
   MX_RF_Init();
-  /* USER CODE BEGIN 2 */
+	/* USER CODE BEGIN 2 */
 	{
 		const uint32_t old_prescaler = hspi1.Init.BaudRatePrescaler;
-		const uint32_t new_prescaler = SpiNextFasterPrescaler(old_prescaler);
+		/* Two steps above the Cube default: /16 -> /4 = 8 MHz. The W25Q256
+		 * normal-mode SPI rating is far higher, and every recorded batch pays
+		 * a full 4 KB sector read in the driver's read-modify-write path, so
+		 * the flash bus is the node's write-throughput bottleneck. */
+		const uint32_t new_prescaler = SpiNextFasterPrescaler(
+				SpiNextFasterPrescaler(old_prescaler));
 		if (new_prescaler != old_prescaler) {
 			hspi1.Init.BaudRatePrescaler = new_prescaler;
 			if (HAL_SPI_Init(&hspi1) != HAL_OK) {

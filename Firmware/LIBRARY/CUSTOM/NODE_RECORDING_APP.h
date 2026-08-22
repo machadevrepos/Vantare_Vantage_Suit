@@ -372,7 +372,12 @@ namespace exo {
 
 			bool can_start_recording() const {
 				const RecorderState state = recorder_.state();
-				return ready_ && !armed_ && !prepared_ && (state == RecorderState::Idle || state == RecorderState::ReadyForUpload);
+				/* ReadyForUpload is deliberately excluded: the node's flash copy
+				 * is the only durable record until the Master has validated the
+				 * upload, so a plain StartRecord must never wipe it. The
+				 * sanctioned wipe is the explicit reset/erase (0xB3) the Master
+				 * sends before arming a new session, or the post-ack erase. */
+				return ready_ && !armed_ && !prepared_ && state == RecorderState::Idle;
 			}
 
 			bool reset_to_idle_and_erase() {
@@ -458,6 +463,16 @@ namespace exo {
 			}
 			bool flash_erase_raw(uint32_t address, uint32_t size) {
 				return flash_.erase_region(address, size);
+			}
+			/* Reserved recovery-sector base (0 before begin()). Safe for the
+			 * DIAG boot self-test: it is below the settings sector and is always
+			 * re-erased by the background eraser before the next session's
+			 * headers are written, so the test can never corrupt a session. */
+			uint32_t recovery_sector_address() const {
+				if (detected_flash_capacity_ == 0U) {
+					return 0U;
+				}
+				return detected_flash_capacity_ - kReservedFlashBytes;
 			}
 			bool flash_write_raw(uint32_t address, const void *data, uint32_t size) {
 				return flash_.write(address, data, size);
@@ -944,6 +959,18 @@ namespace exo {
 				if (record_icm_fifo_active_) {
 					const uint8_t icm_tail =
 							icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
+					if (icm_tail == 0U && icm45686_.last_read_status_ != 0) {
+						/* An I2C error and an empty FIFO both read as zero frames.
+						 * Only the empty FIFO means "caught the tail": retry a
+						 * transient error so a bus glitch cannot silently drop
+						 * the ICM tail, but bounded so a dead bus cannot stall
+						 * finalization forever. */
+						if (icm_tail_read_fail_count_ < kMaxIcmTailReadFails) {
+							++icm_tail_read_fail_count_;
+							return;
+						}
+						loss_flags_ |= kSessionLossIcmRead;
+					}
 					for (uint8_t i = 0U; i < icm_tail; ++i) {
 						++icm_captured_count_;
 						++data_rate_icm_count_;
@@ -1067,6 +1094,7 @@ namespace exo {
 				write_fail_streak_ = 0U;
 				finalize_fail_count_ = 0U;
 				finalize_failed_ = false;
+				icm_tail_read_fail_count_ = 0U;
 				finalize_duration_ms_ = 0U;
 				record_finalize_pending_ = false;
 			}
@@ -1080,6 +1108,7 @@ namespace exo {
 			 * node in Recording forever. */
 			static constexpr uint8_t kMaxConsecutiveWriteFails = 8U;
 			static constexpr uint8_t kMaxFinalizeAttempts = 3U;
+			static constexpr uint8_t kMaxIcmTailReadFails = 5U;
 			/* Background erase chunk: 2 sectors (~90 ms typ) per process tick.
 			 * Large enough that a 10-min layout erases in ~1 minute of ticks,
 			 * small enough that BLE dispatch and heartbeats keep flowing. */
@@ -1117,6 +1146,7 @@ namespace exo {
 			uint8_t write_fail_streak_ = 0U;
 			uint8_t finalize_fail_count_ = 0U;
 			bool finalize_failed_ = false;
+			uint8_t icm_tail_read_fail_count_ = 0U;
 			/* Background-erase sequencing: prepare/start/commit deferred while
 			 * the region eraser is still covering the session region. */
 			bool prepare_erase_pending_ = false;

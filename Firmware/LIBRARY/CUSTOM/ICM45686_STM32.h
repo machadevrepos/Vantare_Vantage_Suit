@@ -207,13 +207,21 @@ public:
                 fifo_last_timestamp_ = timestamp;
                 fifo_elapsed_us_ = 0U;
             } else {
-                const uint32_t delta_us = static_cast<uint32_t>(
+                uint32_t delta_us = static_cast<uint32_t>(
                         static_cast<uint16_t>(timestamp - fifo_last_timestamp_)) * 16U;
                 fifo_last_timestamp_ = timestamp;
                 /* At 200 Hz a valid delta is close to 5000 us. A zero timestamp
                  * cannot provide ordering, so reject that frame rather than
                  * inventing a duplicate time. */
                 if (delta_us == 0U) continue;
+                /* The 16-bit TMST wraps every 1.049 s: a stall at or beyond one
+                 * wrap yields a garbage (small) delta that would silently
+                 * compress offset_us. Substitute the nominal period so the
+                 * timeline stays monotonic; the sequence gap already exposes
+                 * the lost frames. */
+                if (delta_us > kFifoMaxPlausibleDeltaUs) {
+                    delta_us = kFifoNominalPeriodUs;
+                }
                 fifo_elapsed_us_ += delta_us;
             }
 
@@ -249,6 +257,10 @@ public:
     bool fifo_active() const { return fifo_active_; }
 
 private:
+    /* TMST wrap guard: at 200 Hz a frame delta is ~5000 us; anything beyond
+     * 100 ms means the 16-bit timer wrapped during a stall. */
+    static constexpr uint32_t kFifoNominalPeriodUs = 5000U;
+    static constexpr uint32_t kFifoMaxPlausibleDeltaUs = 100000U;
     void recover_i2c_bus() {
         if (HAL_I2C_GetState(&bus_) == HAL_I2C_STATE_READY) {
             return;
