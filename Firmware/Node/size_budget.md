@@ -4,6 +4,8 @@
 - `FLASH_BUDGET_BYTES = 126976` (124 KB)
 - Warning threshold: `124928` bytes (122 KB)
 - Source of truth: `Node/STM32WB55CCUX_FLASH.ld` (`FLASH LENGTH = 124K`)
+- RAM: SRAM1 fully available (`RAM LENGTH = 0x1FFF8`, 128K - 8; mirrors the Master
+  `52e547b` fix — CPU2-shared areas live in SRAM2 @ `0x20030000`).
 
 ## Required Build Profile
 - Use size-safe debug flags for recurring development builds:
