@@ -469,7 +469,7 @@ namespace {
 				static_cast<unsigned long>(d.loop.over_10ms),
 				static_cast<unsigned long>(d.loop.over_20ms),
 				static_cast<unsigned long>(d.loop.over_100ms));
-		EXO_LOG("[ACQ][DIAG] bno svc=%lu ok=%lu hz=%lu gap_us=%lu svc_max=%lu svc_tot=%lu i2c_err=%lu\r\n",
+		EXO_LOG("[ACQ] bno svc=%lu ok=%lu hz=%lu gap=%lu smax=%lu stot=%lu i2ce=%lu\r\n",
 				static_cast<unsigned long>(d.bno_service_calls),
 				static_cast<unsigned long>(d.bno_take_latest_ok),
 				static_cast<unsigned long>(d.rate_centihz(d.bno_take_latest_ok)),
@@ -492,7 +492,7 @@ namespace {
 				static_cast<unsigned long>(d.icm_gap.max_gap_us),
 				static_cast<unsigned long>(d.icm_read.max_us),
 				static_cast<unsigned long>(d.icm_read.total_us));
-		EXO_LOG("[ACQ][DIAG] sd bno ok/fail=%lu/%lu icm ok/fail=%lu/%lu flush=%lu wmax_us=%lu gt5/10/20/100=%lu/%lu/%lu/%lu\r\n",
+		EXO_LOG("[ACQ] sd b=%lu/%lu i=%lu/%lu fl=%lu wmax=%lu gt=%lu/%lu/%lu/%lu\r\n",
 				static_cast<unsigned long>(d.sd_bno_append_ok),
 				static_cast<unsigned long>(d.sd_bno_append_fail),
 				static_cast<unsigned long>(d.sd_icm_append_ok),
@@ -704,7 +704,7 @@ namespace {
 		g_record_transfer_runtime.master_burst_limit = clamp_u8(payload[9], 1U, 8U);
 		g_record_transfer_runtime.master_chunk_gap_ms = clamp_u8(payload[10], 0U, 5U);
 		g_record_transfer_runtime.flags = payload[11];
-		EXO_LOG("[BLE][REC][CFG] credit=%u ack_chunks=%u ack_ms=%u heartbeat_ms=%u nack_burst=%u master_burst=%u master_gap_ms=%u flags=0x%02X\r\n",
+		EXO_LOG("[REC][CFG] cr=%u ackc=%u ackms=%u hbms=%u nckb=%u mb=%u mgms=%u fl=0x%02X\r\n",
 				static_cast<unsigned>(g_record_transfer_runtime.credit),
 				static_cast<unsigned>(g_record_transfer_runtime.ack_every_chunks),
 				static_cast<unsigned>(g_record_transfer_runtime.ack_every_ms),
@@ -1309,7 +1309,7 @@ namespace {
 		if (!master_training_csv_node_manifest_ready(g_pending_node_done)) {
 			return;
 		}
-		EXO_LOG("[BLE][REC][REL][NODEQ] start node manifest immediate source=%u session=%lu size=%lu queue=%u\r\n",
+				EXO_LOG("[REL] start manifest now src=%u sess=%lu sz=%lu q=%u\r\n",
 				static_cast<unsigned>(g_pending_node_done.node_id),
 				static_cast<unsigned long>(g_pending_node_done.session_id),
 				static_cast<unsigned long>(g_pending_node_done.total_size),
@@ -1593,7 +1593,7 @@ namespace {
 		g_record_stop_sync.last_send_ms = now_ms;
 		++g_record_stop_sync.send_attempts;
 		g_record_stop_sync.ever_sent_mask = static_cast<uint8_t>(g_record_stop_sync.ever_sent_mask | sent_mask);
-		EXO_LOG("[BLE][HUB][STOP][TX] session=%lu attempt=%u pending=0x%02X sent=0x%02X ack=0x%02X\r\n",
+		EXO_LOG("[STOP][TX] s=%lu at=%u p=%02X sn=%02X a=%02X\r\n",
 				static_cast<unsigned long>(g_record_stop_sync.message.session_id),
 				static_cast<unsigned>(g_record_stop_sync.send_attempts),
 				static_cast<unsigned>(pending_mask), static_cast<unsigned>(sent_mask),
@@ -1642,7 +1642,7 @@ namespace {
 				g_local_stop_waiting_for_nodes = false;
 				g_local_stop_requested = true;
 			}
-			EXO_LOG("[BLE][HUB][STOP] timeout sess=%lu tgt=0x%02X ack=0x%02X miss=0x%02X sent=0x%02X att=%u\r\n",
+			EXO_LOG("[STOP] tmo s=%lu t=%02X a=%02X m=%02X sn=%02X at=%u\r\n",
 					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
 					static_cast<unsigned>(g_record_stop_sync.target_mask),
 					static_cast<unsigned>(g_record_stop_sync.ack_mask),
@@ -1772,7 +1772,7 @@ namespace {
 		const uint8_t prepared_target_mask = static_cast<uint8_t>(g_record_sync.prepared_mask & g_record_sync.target_mask);
 		if (g_record_sync.target_mask != 0U && prepared_target_mask != g_record_sync.target_mask) {
 			g_record_sync.failed_mask = static_cast<uint8_t>(g_record_sync.target_mask & ~prepared_target_mask);
-			EXO_LOG("[BLE][HUB][SYNC] commit blocked no_prepare sess=%lu tgt=0x%02X prep=0x%02X miss=0x%02X\r\n",
+			EXO_LOG("[SYNC] commit blk no_prep s=%lu t=%02X p=%02X m=%02X\r\n",
 					static_cast<unsigned long>(g_record_sync.message.session_id),
 					static_cast<unsigned>(g_record_sync.target_mask),
 					static_cast<unsigned>(g_record_sync.prepared_mask),
@@ -1836,7 +1836,7 @@ namespace {
 				static_cast<uint16_t>(sizeof(start_stream_command)));
 		const uint32_t master_start_ms = HAL_GetTick();
 		mark_start_record_accepted(g_record_sync.message);
-		EXO_LOG("[BLE][HUB][SYNC] commit session=%lu target=0x%02X commit=0x%02X prepared=0x%02X\r\n",
+		EXO_LOG("[SYNC] commit s=%lu t=%02X c=%02X p=%02X\r\n",
 				static_cast<unsigned long>(g_record_sync.message.session_id),
 				static_cast<unsigned>(g_record_sync.target_mask),
 				static_cast<unsigned>(commit_mask),
@@ -2987,7 +2987,7 @@ int main(void)
 	}
 #endif
 #if EXO_MASTER_VERBOSE_DIAG
-	EXO_LOG("Hub sensor test: %s, BNO85=%s, ICM45686=%s, SD log=%s, BNO_begin_status=%d, SD fr[mnt=%d mk=%d op=%d wr=%d bw=%u sy=%d]\r\n",
+	EXO_LOG("Sns test:%s B=%s I=%s SD=%s bst=%d fr[m=%d k=%d o=%d w=%d bw=%u s=%d]\r\n",
 			hub_sensor_test_ready ? "ready" : "not ready",
 			hub_sensor_test_app.bno_ready() ? "ready" : "not ready",
 			hub_sensor_test_app.icm_ready() ? "ready" : "not ready",
@@ -3251,7 +3251,7 @@ int main(void)
 						static_cast<unsigned>(training_completed_mask));
 			} else if (training_state == exo::TrainingCsvState::Complete) {
 				if (master_training_csv_coordinator.binary_only()) {
-					EXO_LOG("[RECORD][BIN] complete sess=%lu idx=%u exp=0x%02X done=0x%02X fail=0x%02X cln=0x%02X\r\n",
+					EXO_LOG("[BIN] done s=%lu i=%u e=%02X d=%02X f=%02X c=%02X\r\n",
 							static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 							static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 							static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
@@ -4525,7 +4525,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								const bool overlaps_active = (active_start < req_end_exclusive) && (req_start < active_end_exclusive);
 								if (overlaps_active) {
 									deferred_active_retx = true;
-									EXO_LOG("[BLE][REL] NACK_RANGE def active_retx sess=%lu first=%lu cnt=%u act=%lu rem=%u trig=q_after_act\r\n",
+									EXO_LOG("[REL] NACK def retx s=%lu f=%lu c=%u a=%lu r=%lu t=q\r\n",
 											static_cast<unsigned long>(nack.session_id),
 											static_cast<unsigned long>(nack.first_chunk_index),
 											static_cast<unsigned>(nack_count),
