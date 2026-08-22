@@ -2926,10 +2926,6 @@ int main(void)
 	}
 	MX_RF_Init();
 	/* USER CODE BEGIN 2 */
-	/* BOOT DIAG: RED = peripherals + FATFS init done. Frozen color pinpoints
-	 * the dead boot phase: RED->YELLOW card/power, YELLOW->GREEN hub SD/I2C
-	 * begin, GREEN->CYAN BLE init, CYAN->BLUE WPAN init. Strip when resolved. */
-	RGB.SET(true, false, false);
 	{
 		const uint32_t old_prescaler = hspi1.Init.BaudRatePrescaler;
 		const uint32_t new_prescaler = SpiNextFasterPrescaler(old_prescaler);
@@ -2947,12 +2943,9 @@ int main(void)
 	HAL_GPIO_WritePin(PWR_EN_GPIO_Port, PWR_EN_Pin, GPIO_PIN_SET);
 	prepare_touch_wakeup_before_poweroff();
 	HAL_Delay(200);
-	/* Warm the run-index cache after SD power-up and the SPI speed-up: reads
-	 * the RUNIDX.BIN marker (one enumeration pass on first boot) so the BLE
-	 * allocation path never scans the card. BOOT DIAG: disabled while tracing
-	 * the with-SD boot hang. */
-	/* master_binary_session_index.init_cache(); */
-	RGB.SET(true, true, false);
+	HAL_GPIO_WritePin(PWR_EN_GPIO_Port, PWR_EN_Pin, GPIO_PIN_SET);
+	prepare_touch_wakeup_before_poweroff();
+	HAL_Delay(200);
 #if EXO_MASTER_VERBOSE_DIAG
 	EXO_LOG(
 			"I2C setup: I2C1[timing=0x%08lX,addrMode=%lu,noStretch=%lu] I2C3[timing=0x%08lX,addrMode=%lu,noStretch=%lu]\r\n",
@@ -3023,7 +3016,6 @@ int main(void)
 #else
 	EXO_LOG("Hub sensor test: %s\r\n", hub_sensor_test_ready ? "ready" : "not ready");
 #endif
-	RGB.SET(false, true, false); /* BOOT DIAG: hub begin (incl. SD test) done */
 //#endif
 
 #if 0
@@ -3053,11 +3045,9 @@ int main(void)
 		}
 	}
 	/* USER CODE END 2 */
-	RGB.SET(false, true, true); /* BOOT DIAG: app-level BLE init done */
 
 	/* Init code for STM32_WPAN */
 	MX_APPE_Init();
-	RGB.SET(false, false, true); /* BOOT DIAG: WPAN init done, superloop next */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
