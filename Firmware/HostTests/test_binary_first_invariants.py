@@ -21,8 +21,14 @@ def main() -> int:
         allocator = allocator_path.read_text(encoding="utf-8")
         for suffix in ("M.BIN", "N1.BIN", "N2.BIN", "N3.BIN", "N4.BIN"):
             require(suffix in allocator, f"allocator must reserve {suffix} names", failures)
-        require("FA_CREATE_ALWAYS" not in allocator,
-                "allocator must never create/truncate session payload files", failures)
+        # The allocator may create/truncate only the 8-byte RUNIDX.BIN marker
+        # (crash-safe cached last index); it must never touch payload files.
+        create_always = allocator.count("FA_CREATE_ALWAYS")
+        require(create_always == allocator.count("FA_CREATE_ALWAYS | FA_WRITE") and
+                allocator.count("kMarkerPath, FA_CREATE_ALWAYS | FA_WRITE") == create_always and
+                "RUNIDX.BIN" in allocator,
+                "allocator must never create/truncate session payload files "
+                "(only the RUNIDX.BIN marker)", failures)
         require("USERFatFs.fs_type == 0U" in allocator,
                 "allocator must not remount an already-mounted FatFs volume", failures)
 

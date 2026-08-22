@@ -2925,6 +2925,9 @@ int main(void)
 	}
 	MX_RF_Init();
 	/* USER CODE BEGIN 2 */
+	/* Warm the run-index cache (marker read or one full scan) at boot so the
+	 * BLE allocation path never runs the O(index*8) occupancy scan. */
+	master_binary_session_index.init_cache();
 	{
 		const uint32_t old_prescaler = hspi1.Init.BaudRatePrescaler;
 		const uint32_t new_prescaler = SpiNextFasterPrescaler(old_prescaler);
