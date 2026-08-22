@@ -352,6 +352,7 @@ The roadmap above was executed end-to-end. Every fix is in code with Python inva
 | `2fb2218` master_protocol_p2 | #20 (stale-ACK escape now reachable), #21 (bounded 8-retry SD read failures instead of instant dead-end), #22 (live-stream switch latched and restored at collection end), #23 (ValidateNode stall coverage), #25 (browser NACK packs the 14-B flags field), #26 (protocol default credit = 8, matches the grant), #28 (resolved sources no longer re-granted ManifestAck credit), #29 (CRC-mismatch StageError marks the source failed and is re-pullable in binary-only runs), P3 dead opcodes removed + transfer-window chunk-size bound enforced |
 | `77b7927` review_repull_wedge_fix | Review finding P1: retained-done `valid` flag must survive replay or the re-pull wedges the scheduler; review P3: `start_erase_pending_` cleared on abort |
 | `52e547b` master_link_overflow_patch | Master stopped linking: `.bss` +1880 B and FLASH +497 B over region caps. RAM region restored to full 128K SRAM1 (`0xFFF8 → 0x1FFF8`); 4 unused statics dropped from `main.c`; ~50 `EXO_LOG` literals compressed (every field kept) → links clean with 539 B flash margin. Details below |
+| `200bad5` node_build_fix_patch | First Node compile of the campaign exposed that #16 accessed private `Icm45686Stm32::last_read_status_`; added a public `last_read_status()` getter and switched the call site. Also dropped an unused `node_blepipe_send_record_payload` and fixed a narrowing warning in Node `main.c`. Node links clean (79.3 KB flash / 17.9 KB RAM used — no memory pressure); Master rebuild byte-identical |
 
 ## Linker memory budget (Master, after `52e547b`)
 
@@ -365,7 +366,7 @@ Both project linker scripts have carried undersized MEMORY caps since the repo's
 | FLASH (cap kept at 124K) | 126,976 B | 126,437 B | **539 B** |
 | RAM (`.data`+`.bss`, now 128K−8) | 131,064 B | 65,872 B | **~65 KB** |
 
-**Watch items:** (1) `Firmware/Node/*.ld` still carries the same undersized caps — Node links today, but apply the same RAM correction before its next feature lands. (2) The 539 B flash margin is thin; if it shrinks again, verify the true free window above the app with STM32CubeProgrammer (find where the installed FUS/stack begins) and raise the 124K cap deliberately rather than trimming more logs.
+**Watch items:** (1) `Firmware/Node/*.ld` still carries the same undersized caps — measured 2026-08-22: Node uses only 79.3 KB flash / 17.9 KB RAM, so nothing is at risk today; apply the same one-line RAM correction before its next feature lands anyway. (2) The 539 B Master flash margin is thin; if it shrinks again, verify the true free window above the app with STM32CubeProgrammer (find where the installed FUS/stack begins) and raise the 124K cap deliberately rather than trimming more logs.
 
 ## Deferred with rationale
 
