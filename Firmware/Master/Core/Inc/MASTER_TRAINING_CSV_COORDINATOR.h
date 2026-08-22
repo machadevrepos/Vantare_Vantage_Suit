@@ -73,8 +73,10 @@ static constexpr uint32_t kNodeAckRearmMs = 300U;
  * receiver_credit_: the node never has more in flight than this. */
 static constexpr uint8_t kPendingChunkDepth = 8U;
 /* ACK batching: fewer credit-refresh transmissions on the data link. Must
- * stay below the granted credit or the node starves mid-batch. */
-static constexpr uint8_t kAckBatchChunks = 8U;
+ * stay below the granted credit or the node starves mid-batch. 1 = per-chunk
+ * ACK (last-known-good; batch >1 pending hardware A/B — suspected in the
+ * 2026-08-22 zero-progress stall alongside the fast-timing lever). */
+static constexpr uint8_t kAckBatchChunks = 1U;
 struct PendingChunk {
 uint8_t node_id;
 uint32_t session_id;

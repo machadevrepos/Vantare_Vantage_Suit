@@ -1265,8 +1265,13 @@ namespace {
 						static_cast<unsigned long>(g_pending_node_done.session_id),
 						static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 						static_cast<unsigned long>(g_pending_node_done.total_size));
-				/* Chunk bursts own the link: switch to fast connection events. */
-				exo_hub_central_client_set_transfer_timing(g_pending_node_done.node_id, 1U);
+				/* Chunk bursts own the link: switch to fast connection events.
+				 * Opt-in (tuning flags bit 0): the mid-transfer LL update is a
+				 * suspect in the 2026-08-22 zero-progress stalls — A/B it on
+				 * hardware before enabling by default. */
+				if ((g_record_transfer_runtime.flags & 0x01U) != 0U) {
+					exo_hub_central_client_set_transfer_timing(g_pending_node_done.node_id, 1U);
+				}
 				g_have_pending_node_done = false;
 				g_pending_node_manifest_last_tick = 0U;
 				memset(&g_pending_node_done, 0, sizeof(g_pending_node_done));
@@ -3172,6 +3177,30 @@ int main(void)
 		drain_leaf_stream_passthrough();
 		master_training_csv_coordinator.service(g_local_session_recorder, HAL_GetTick());
 		master_training_csv_release_completed_verify_ok();
+		/* Transfer progress telemetry: proves whether chunks actually move
+		 * during ReceiveNode (5 s cadence, bytes staged + delta). */
+		{
+			static uint32_t s_xfer_log_ms = 0U;
+			static uint32_t s_xfer_log_bytes = 0U;
+			const exo::TrainingCsvState xfer_state = master_training_csv_coordinator.state();
+			if (xfer_state == exo::TrainingCsvState::ReceiveNode ||
+					xfer_state == exo::TrainingCsvState::ValidateNode) {
+				const uint32_t now_ms = HAL_GetTick();
+				if (s_xfer_log_ms == 0U || (now_ms - s_xfer_log_ms) >= 5000U) {
+					const uint32_t staged = master_training_csv_coordinator.stager().staged_size();
+					EXO_LOG("[XFER] node=%u staged=%luB d=%luB/5s st=%u\r\n",
+							static_cast<unsigned>(master_training_csv_coordinator.active_node_id()),
+							static_cast<unsigned long>(staged),
+							static_cast<unsigned long>(staged - s_xfer_log_bytes),
+							static_cast<unsigned>(xfer_state));
+					s_xfer_log_ms = now_ms;
+					s_xfer_log_bytes = staged;
+				}
+			} else {
+				s_xfer_log_ms = 0U;
+				s_xfer_log_bytes = 0U;
+			}
+		}
 		const exo::TrainingCsvState training_state = master_training_csv_coordinator.state();
 		const exo::MasterTrainingCsvLogger &training_logger = master_training_csv_coordinator.logger();
 		if (master_training_csv_coordinator.binary_only()) {
