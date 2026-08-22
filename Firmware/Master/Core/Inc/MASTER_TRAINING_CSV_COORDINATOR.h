@@ -67,6 +67,18 @@ static constexpr uint8_t kNodeReceiverCredit = 8U;
 /* Re-advertise the receive window when the active node stops sending, so a lost
  * ACK does not idle the link until the stall timeout expires. */
 static constexpr uint32_t kNodeAckRearmMs = 300U;
+/* Accepted chunks are copied here from the BLE ingest context and staged to SD
+ * from the superloop (drain_pending_chunks), so the every-4KB stager flush and
+ * duplicate read-back never run inside a radio event handler. Depth 8 matches
+ * kNodeReceiverCredit: the node never has more in flight than this. */
+static constexpr uint8_t kPendingChunkDepth = 8U;
+struct PendingChunk {
+uint8_t node_id;
+uint32_t session_id;
+uint32_t byte_offset;
+uint16_t len;
+uint8_t data[kRecordReliableDefaultChunkSize];
+};
 explicit MasterTrainingCsvCoordinator(
 const training_csv::TrainingCsvFatFsOps *logger_ops = nullptr,
 const node_session_staging::NodeSessionFatFsOps *stager_ops = nullptr,
@@ -99,6 +111,7 @@ if ((expected_source_mask & 0x01U) == 0U ||
 clear_failure();
 reliable_control_.reset();
 transfer_window_.reset();
+pending_reset();
 reliable_defer_services_ = 0U;
 last_progress_ms_ = 0U;
 progress_seq_ = 0U;
@@ -155,6 +168,7 @@ ledger_.reset(0U);
 reliable_control_.reset();
 transfer_window_.reset();
 reliable_defer_services_ = 0U;
+pending_reset();
 last_progress_ms_ = progress_seq_ = last_progress_seq_ = 0U;
 partial_finalized_ = false;
 #if !EXO_MASTER_BINARY_ONLY_BUILD
@@ -284,16 +298,32 @@ case NodeTransferDecision::Accept:
 case NodeTransferDecision::Complete:
 break;
 }
-if (!stager_.accept_chunk(node_id, header.session_id, header.byte_offset,
-payload, header.payload_len) || !transfer_window_.commit(inspection)) {
-fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
-return;
+	if (!transfer_window_.commit(inspection)) {
+	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
+	return;
+}
+if (pending_count_ < kPendingChunkDepth) {
+	/* Deferred path: copy the payload to RAM, commit the window and ACK here;
+	 * the SD staging happens in drain_pending_chunks() from the superloop. */
+	PendingChunk &slot =
+	pending_chunks_[(pending_head_ + pending_count_) % kPendingChunkDepth];
+	slot.node_id = node_id;
+	slot.session_id = header.session_id;
+	slot.byte_offset = header.byte_offset;
+	slot.len = header.payload_len;
+	memcpy(slot.data, payload, header.payload_len);
+	++pending_count_;
+	if (inspection.decision == NodeTransferDecision::Complete) pending_final_ = true;
+} else if (!stager_.accept_chunk(node_id, header.session_id, header.byte_offset,
+	payload, header.payload_len)) {
+	/* Queue full: fall back to the synchronous stage so no chunk is lost. */
+	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
+	return;
+} else if (inspection.decision == NodeTransferDecision::Complete) {
+	state_ = TrainingCsvState::ValidateNode;
 }
 ++progress_seq_;
 (void)reliable_control_.ack_window(inspection.next_chunk, kNodeReceiverCredit);
-if (inspection.decision == NodeTransferDecision::Complete) {
-state_ = TrainingCsvState::ValidateNode;
-}
 }
 /* Flush queued reliable-control frames (ACK windows, NACKs) without the
 full state-machine pass. Called straight after BLE event dispatch so an
@@ -315,6 +345,7 @@ if (reliable_defer_services_ != 0U) {
 } else {
 (void)reliable_control_.service(now_ms);
 }
+drain_pending_chunks();
 const TrainingCsvState entry_state = state_;
 service_state(recorder, now_ms);
 if (state_ != entry_state) ++progress_seq_;
@@ -334,9 +365,10 @@ if (active_node_id_ >= 1U && active_node_id_ <= 4U) {
 failed_source_mask_ |= static_cast<uint8_t>(1U << active_node_id_);
 }
 if (!binary_only_) (void)logger_.shutdown(now_ms);
-/* A failed stage must not leave a truncated R####N#.BIN that consumes the run
- * index forever; the node's flash copy is the retry source. */
-(void)stager_.abandon_and_unlink();
+	/* A failed stage must not leave a truncated R####N#.BIN that consumes the run
+	 * index forever; the node's flash copy is the retry source. */
+	pending_reset();
+	(void)stager_.abandon_and_unlink();
 transfer_window_.reset();
 reliable_control_.reset();
 active_node_id_ = 0U;
@@ -454,6 +486,7 @@ break;
 	}
 void shutdown(uint32_t now_ms)
 {
+pending_reset();
 if (!binary_only_) (void)logger_.shutdown(now_ms);
 (void)stager_.abandon_and_unlink();
 reliable_control_.reset();
@@ -500,6 +533,33 @@ training_csv::TrainingCsvLogOperation failure_csv_operation() const
 FRESULT failure_csv_result() const { return failure_csv_result_; }
 void fail_durability() { fail(binary_only_ ? TrainingCsvState::StageError : TrainingCsvState::CsvError, TrainingFailSite::Site20); }
 private:
+/* Stage accepted chunks to SD outside the BLE ingest context. FIFO order
+ * preserves the transfer window's byte-offset sequence. */
+void drain_pending_chunks()
+{
+while (pending_count_ > 0U) {
+PendingChunk &slot = pending_chunks_[pending_head_];
+if (!stager_.accept_chunk(slot.node_id, slot.session_id,
+	slot.byte_offset, slot.data, slot.len)) {
+	pending_reset();
+	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
+	return;
+}
+pending_head_ = static_cast<uint8_t>((pending_head_ + 1U) % kPendingChunkDepth);
+--pending_count_;
+}
+if (pending_final_) {
+pending_final_ = false;
+if (state_ == TrainingCsvState::ReceiveNode)
+	state_ = TrainingCsvState::ValidateNode;
+}
+}
+void pending_reset()
+{
+pending_head_ = 0U;
+pending_count_ = 0U;
+pending_final_ = false;
+}
 void clear_failure()
 {
 failure_site_ = TrainingFailSite::None;
@@ -658,10 +718,11 @@ failure_stager_operation_ = stager_.last_operation();
 failure_stager_result_ = stager_.last_result();
 }
 }
-/* abandon_and_unlink() removes the truncated stage file but leaves discarded_
- * clear, so the node keeps its flash copy and the session can be re-pulled
- * later instead of being lost. */
-(void)stager_.abandon_and_unlink();
+	/* abandon_and_unlink() removes the truncated stage file but leaves discarded_
+	 * clear, so the node keeps its flash copy and the session can be re-pulled
+	 * later instead of being lost. */
+	pending_reset();
+	(void)stager_.abandon_and_unlink();
 transfer_window_.reset();
 reliable_control_.reset();
 active_node_id_ = 0U;
@@ -688,6 +749,10 @@ MasterNodeSessionStager stager_;
 MasterNodeTransferWindow transfer_window_;
 MasterNodeReliableControl reliable_control_;
 MasterSessionTimestampLedger ledger_;
+PendingChunk pending_chunks_[kPendingChunkDepth]{};
+uint8_t pending_head_ = 0U;
+uint8_t pending_count_ = 0U;
+bool pending_final_ = false;
 const training_csv_coordinator::MasterRecordingOps *master_ops_;
 SessionHeader master_header_{};
 uint32_t active_session_id_ = 0U;
