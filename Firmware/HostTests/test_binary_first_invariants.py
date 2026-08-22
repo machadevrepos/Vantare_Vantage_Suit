@@ -71,7 +71,7 @@ def main() -> int:
     require(archive >= 0 and finalized > archive,
             "Master binary must be archived before the coordinator accepts it as durable", failures)
     require("g_local_archive_attempt >= kLocalArchiveMaxAttempts" in main_src and
-            "master archive retry" in main_src,
+            "master archive attempt=" in main_src,
             "Master must retry transient canonical archive failures before declaring durability failure", failures)
     require("begin_finalize(g_local_finalize_duration_ms)" in main_src and
             "service_finalize(kLocalRecordArchiveChunkBytes)" in main_src and

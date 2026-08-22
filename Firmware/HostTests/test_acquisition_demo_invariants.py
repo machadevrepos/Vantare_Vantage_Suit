@@ -31,7 +31,7 @@ checks = [
      "BNO record offsets must use the monotonic local capture clock"),
     ("exo_hub_central_client_set_discovery_hold" in central_h and
      "g_discovery_hold" in central and
-     "duplicate logical node ignored" in central,
+     "dup logical node ign" in central,
      "central client must protect active sessions and enforce one slot per logical Node ID"),
     ("next_read_len_" not in bno,
      "BNO HAL must not expose physical I2C chunking as SHTP fragments"),
@@ -58,7 +58,7 @@ checks = [
     ("g_local_stop_waiting_for_nodes" in master and
      "local stop released after node ACKs" in master,
      "manual Master stop must wait for Node StopRecord ACKs"),
-    ("automatic capacity guard" in master and
+    ("capacity guard sess=" in master and
      "g_local_stop_waiting_for_nodes = false;" in master,
      "automatic duration guard must remain a hard local stop boundary"),
     ("hub_sensor_test_app.begin_record_capture()" in master and
@@ -79,7 +79,7 @@ checks = [
      "record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();" in node,
      "Node recording must arm the real 200 Hz ICM FIFO instead of synthetic catch-up reads"),
     ("kLocalRecordFinalizeIcmDrainPasses" in master and
-     "WARN ICM FIFO tail drain reached safety bound" in master,
+     "WARN ICM tail drain bound hit" in master,
      "Master stop must drain the ICM FIFO tail before ending capture"),
     (node_main.index("node_blepipe_process_recording_upload();") <
      node_main.index("node_recording_app.process();"),
@@ -134,7 +134,7 @@ checks = [
     ("kMaxConsecutiveWriteFails" in node and "drop_pending_batches" in node and
      "kMaxFinalizeAttempts" in node and "finalize_failed_" in node,
      "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
-    ("kNodeRecordBurstLimit = 4U" in node_main,
+    ("kNodeRecordBurstLimit = 8U" in node_main,
      "Node upload pacing must not cap the link at ~22 KB/s (one chunk per 8 ms gap) — the 10-min offload target needs headroom"),
     ("service_region_erase" in node_recorder and
      "kEraseSectorsPerTick" in node and
@@ -154,7 +154,7 @@ checks = [
      "Inbound chunk indices must be validated: an out-of-range cursor must never silently terminate an upload"),
     ("kFifoMaxPlausibleDeltaUs" in icm and "kFifoNominalPeriodUs" in icm,
      "ICM FIFO timestamps must survive a 16-bit TMST wrap (stall >= 1.05 s) without compressing offset_us"),
-    ("kMaxIcmTailReadFails" in node and "last_read_status_ != 0" in node,
+    ("kMaxIcmTailReadFails" in node and "last_read_status() != 0" in node,
      "A transient I2C error at the finalize tail must be retried, not treated as an empty FIFO"),
     ("ReadyForUpload is deliberately excluded" in node,
      "A plain StartRecord must never wipe a retained ReadyForUpload session (the node flash copy is the only durable record until validated)"),
