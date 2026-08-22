@@ -28,8 +28,47 @@ public:
     static constexpr uint32_t kSectorSize = 4096U;
 
     NodeRecorder(SessionFlash &flash, uint32_t base_address, uint32_t capacity, uint32_t bno85_region_size)
-        : flash_(flash), base_address_(base_address), capacity_(capacity), bno85_region_size_(bno85_region_size) {
+        : flash_(flash), base_address_(base_address), capacity_(capacity), bno85_region_size_(bno85_region_size),
+          header_address_(base_address) {
         reset_runtime();
+    }
+
+    /* Crash-consistent session header: the header lives in the reserved
+     * recovery sector instead of sector 0, so the finalize rewrite can never
+     * erase already-stored payload. Two 88 B slots are used: slot A (offset 0)
+     * carries the in-progress header from session start; slot B (offset 256,
+     * still 0xFF after the region erase) receives the finalized header as a
+     * single page program — no erase window. Boot salvage adopts a valid
+     * slot B as ReadyForUpload, so a crash after finalize (including one
+     * mid-upload) recovers instead of orphaning the session. */
+    static constexpr uint32_t kHeaderSlotStride = 256U;
+    uint32_t finalized_header_address() const { return header_address_ + kHeaderSlotStride; }
+
+    void set_header_address(uint32_t address) {
+        header_address_ = address;
+    }
+    uint32_t header_address() const { return header_address_; }
+
+    /* Adopt a finalized session found in recovery slot B at boot. Returns
+     * true when the node boots straight into ReadyForUpload. */
+    bool recover_after_boot() {
+        SessionHeader candidate { };
+        if (!flash_.read(finalized_header_address(), &candidate, sizeof(candidate))) {
+            return false;
+        }
+        if (candidate.magic != kSessionMagic ||
+                candidate.version != kSessionFormatVersion ||
+                candidate.completion_flag != kSessionComplete ||
+                candidate.header_crc32 != session_header_crc(candidate) ||
+                candidate.bno85_payload_size == 0U) {
+            return false;
+        }
+        header_ = candidate;
+        bno85_cursor_ = bno85_payload_address();
+        icm45686_cursor_ = icm45686_payload_address() + header_.icm45686_payload_size;
+        state_ = RecorderState::ReadyForUpload;
+        region_erased_ = false;
+        return true;
     }
 
     RecorderState state() const { return state_; }
@@ -91,7 +130,8 @@ public:
         if (state_ == RecorderState::Uploading) {
             return EraseStep::InProgress;
         }
-        for (uint8_t n = 0U; n < max_sectors && erase_cursor_ < capacity_; ++n) {
+        const uint32_t erase_span = erase_span_end() - base_address_;
+        for (uint8_t n = 0U; n < max_sectors && (erase_cursor_ + kSectorSize) <= erase_span; ++n) {
             if (!flash_.erase_4k(base_address_ + erase_cursor_)) {
                 if (++erase_fail_streak_ < kEraseSectorRetries) {
                     return EraseStep::InProgress;
@@ -103,12 +143,22 @@ public:
             erase_fail_streak_ = 0U;
             erase_cursor_ += kSectorSize;
         }
-        if (erase_cursor_ >= capacity_) {
+        if (erase_cursor_ >= erase_span) {
             erase_active_ = false;
             region_erased_ = true;
             return EraseStep::Complete;
         }
         return EraseStep::InProgress;
+    }
+
+    /* The eraser covers the session region plus the recovery sector when the
+     * header lives there, so both header slots are 0xFF for the next session. */
+    uint32_t erase_span_end() const {
+        if (header_address_ >= base_address_ + capacity_ &&
+                header_address_ < base_address_ + capacity_ + kSectorSize) {
+            return base_address_ + capacity_ + kSectorSize;
+        }
+        return base_address_ + capacity_;
     }
 
     bool erase_in_progress() const { return erase_active_; }
@@ -127,7 +177,7 @@ public:
         reset_runtime();
         configure_header(node_id, session_id, start_timestamp_us, duration_ms);
         state_ = RecorderState::Recording;
-        return flash_.write(base_address_, &header_, sizeof(header_));
+        return flash_.write(header_address_, &header_, sizeof(header_));
     }
 
     /* Prepare entry: RAM-arms the session without touching flash. The header
@@ -151,7 +201,7 @@ public:
         if (erase_active_ || !region_erased_) {
             return false;
         }
-        if (!flash_.write(base_address_, &header_, sizeof(header_))) {
+        if (!flash_.write(header_address_, &header_, sizeof(header_))) {
             return false;
         }
         header_write_pending_ = false;
@@ -170,7 +220,7 @@ public:
             configure_header(node_id, session_id, start_timestamp_us, duration_ms);
         }
         state_ = RecorderState::Recording;
-        return flash_.write(base_address_, &header_, sizeof(header_));
+        return flash_.write(header_address_, &header_, sizeof(header_));
     }
 
     void cancel_prepared() {
@@ -216,7 +266,12 @@ public:
         }
         header_.payload_crc32 = ordered_payload_crc;
         header_.header_crc32 = session_header_crc(header_);
-        if (!flash_.write(base_address_, &header_, sizeof(header_))) {
+        /* Slot B is still 0xFF after the session-start region erase, so this
+         * is a single page program: no erase window, and the payload sectors
+         * are never touched by finalization. A crash before this write leaves
+         * the incomplete slot A header; a crash after it is recoverable at
+         * boot via recover_after_boot(). */
+        if (!flash_.write(finalized_header_address(), &header_, sizeof(header_))) {
             return false;
         }
         state_ = RecorderState::ReadyForUpload;
@@ -351,6 +406,7 @@ private:
     const uint32_t base_address_;
     uint32_t capacity_;
     uint32_t bno85_region_size_;
+    uint32_t header_address_;
     RecorderState state_;
     SessionHeader header_;
     uint32_t bno85_cursor_;

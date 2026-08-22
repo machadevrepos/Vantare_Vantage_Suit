@@ -15,6 +15,7 @@ node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
 stager = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h").read_text()
 coordinator = (ROOT / "Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h").read_text()
 reliable = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h").read_text()
+node_recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDER.h").read_text()
 
 checks = [
     ("void service_pending(uint8_t max_packets)" in bno,
@@ -135,12 +136,17 @@ checks = [
      "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
     ("kNodeRecordBurstLimit = 4U" in node_main,
      "Node upload pacing must not cap the link at ~22 KB/s (one chunk per 8 ms gap) — the 10-min offload target needs headroom"),
-    ("service_region_erase" in (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDER.h").read_text() and
+    ("service_region_erase" in node_recorder and
      "kEraseSectorsPerTick" in node and
      "service_background_erase();" in node and
      "prepare_erase_pending_" in node and "commit_pending_" in node and
-     "region_pre_erased" in (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDER.h").read_text(),
+     "region_pre_erased" in node_recorder,
      "Node region erases must run as background chunks (never blocking the BLE handler or capture window), with commits buffered and pre-erased regions reused"),
+    ("finalized_header_address" in node_recorder and "recover_after_boot" in node_recorder and
+     "kHeaderSlotStride" in node_recorder and
+     "recorder_.set_header_address(detected_flash_capacity_ - kReservedFlashBytes)" in node and
+     "recorder_.finalized_header_address()" in node,
+     "Session headers must live in the recovery sector (slot-B finalize kills the payload erase window) with boot salvage into ReadyForUpload"),
 ]
 
 failures = [message for ok, message in checks if not ok]

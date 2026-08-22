@@ -70,6 +70,15 @@ namespace exo {
 					ready_ = false;
 					return false;
 				}
+				/* Session headers live in the reserved recovery sector (the
+				 * settings sector occupies the top of flash). */
+				recorder_.set_header_address(detected_flash_capacity_ - kReservedFlashBytes);
+				if (recorder_.recover_after_boot()) {
+					EXO_LOG("[RECORD][NODE%u] salvaged finalized session=%lu size=%lu after reboot; ReadyForUpload\r\n",
+							static_cast<unsigned>(config_.node_id),
+							static_cast<unsigned long>(recorder_.header().session_id),
+							static_cast<unsigned long>(recorder_.total_size()));
+				}
 				ready_ = bno85_.begin() && icm45686_.begin();
 				return ready_;
 			}
@@ -414,7 +423,9 @@ namespace exo {
 			}
 
 			SessionUploadReader make_upload_reader() {
-				return SessionUploadReader(flash_, recorder_.header(), config_.flash_base_address,
+				/* The finalized header lives in recovery slot B; the logical
+				 * [header|BNO|ICM] stream maps it from there. */
+				return SessionUploadReader(flash_, recorder_.header(), recorder_.finalized_header_address(),
 						recorder_.bno85_payload_address(), recorder_.icm45686_payload_address());
 			}
 
