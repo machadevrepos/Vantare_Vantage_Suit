@@ -11,12 +11,22 @@ class SessionFlash {
 public:
     virtual ~SessionFlash() = default;
     virtual bool erase_region(uint32_t address, uint32_t size) = 0;
+    /* Single 4 KB sector erase, the chunk unit of the background eraser. */
+    virtual bool erase_4k(uint32_t address) { return erase_region(address, 4096U); }
     virtual bool write(uint32_t address, const void *data, uint32_t size) = 0;
     virtual bool read(uint32_t address, void *data, uint32_t size) = 0;
 };
 
 class NodeRecorder {
 public:
+    /* Background region eraser. A whole-region erase takes seconds (a 10-min
+     * layout is ~1400 sectors, ~45 ms each), far too long to run inside a BLE
+     * command handler or the capture window, so the erase advances in bounded
+     * chunks from the node superloop. Completion is remembered so a follow-up
+     * session after a successful upload skips the erase entirely. */
+    enum class EraseStep : uint8_t { Idle, InProgress, Complete, Failed };
+    static constexpr uint32_t kSectorSize = 4096U;
+
     NodeRecorder(SessionFlash &flash, uint32_t base_address, uint32_t capacity, uint32_t bno85_region_size)
         : flash_(flash), base_address_(base_address), capacity_(capacity), bno85_region_size_(bno85_region_size) {
         reset_runtime();
@@ -30,9 +40,14 @@ public:
             capacity == 0U || bno85_region_size > capacity) {
             return false;
         }
+        const bool layout_changed = capacity_ != capacity || bno85_region_size_ != bno85_region_size;
+        const bool was_erased = region_erased_;
         capacity_ = capacity;
         bno85_region_size_ = bno85_region_size;
         reset_runtime();
+        /* An unchanged layout keeps the pre-erased state, so back-to-back
+         * sessions of the same duration do not re-erase the region. */
+        region_erased_ = layout_changed ? false : was_erased;
         return true;
     }
 
@@ -52,34 +67,100 @@ public:
         header_.loss_flags = loss_flags;
     }
 
+    /* Region-erase machine. begin_region_erase() completes immediately when
+     * the region is already known-erased; otherwise service_region_erase()
+     * erases up to max_sectors 4 KB sectors per call. Never erases under an
+     * active upload of the same region. */
+    EraseStep begin_region_erase() {
+        if (erase_active_) {
+            return EraseStep::InProgress;
+        }
+        if (region_erased_) {
+            return EraseStep::Complete;
+        }
+        erase_cursor_ = 0U;
+        erase_fail_streak_ = 0U;
+        erase_active_ = true;
+        return EraseStep::InProgress;
+    }
+
+    EraseStep service_region_erase(uint8_t max_sectors) {
+        if (!erase_active_) {
+            return region_erased_ ? EraseStep::Complete : EraseStep::Idle;
+        }
+        if (state_ == RecorderState::Uploading) {
+            return EraseStep::InProgress;
+        }
+        for (uint8_t n = 0U; n < max_sectors && erase_cursor_ < capacity_; ++n) {
+            if (!flash_.erase_4k(base_address_ + erase_cursor_)) {
+                if (++erase_fail_streak_ < kEraseSectorRetries) {
+                    return EraseStep::InProgress;
+                }
+                erase_active_ = false;
+                region_erased_ = false;
+                return EraseStep::Failed;
+            }
+            erase_fail_streak_ = 0U;
+            erase_cursor_ += kSectorSize;
+        }
+        if (erase_cursor_ >= capacity_) {
+            erase_active_ = false;
+            region_erased_ = true;
+            return EraseStep::Complete;
+        }
+        return EraseStep::InProgress;
+    }
+
+    bool erase_in_progress() const { return erase_active_; }
+    bool region_pre_erased() const { return region_erased_; }
+
+    /* Delayed-start entry. The caller must have let the background eraser
+     * cover the region first: writing a header into unerased flash would trip
+     * the driver's read-modify-write path for every batch. */
     bool start(uint16_t node_id, uint32_t session_id, uint64_t start_timestamp_us, uint32_t duration_ms) {
         if (state_ != RecorderState::Idle && state_ != RecorderState::ReadyForUpload) {
             return false;
         }
-        reset_runtime();
-        if (!flash_.erase_region(base_address_, capacity_)) {
+        if (!region_erased_ || erase_active_) {
             return false;
         }
+        reset_runtime();
         configure_header(node_id, session_id, start_timestamp_us, duration_ms);
         state_ = RecorderState::Recording;
         return flash_.write(base_address_, &header_, sizeof(header_));
     }
 
+    /* Prepare entry: RAM-arms the session without touching flash. The header
+     * is written by finish_prepare_header() once the eraser reports the region
+     * ready, so the multi-second erase never blocks the BLE handler. */
     bool prepare(uint16_t node_id, uint32_t session_id, uint64_t start_timestamp_us, uint32_t duration_ms) {
         if (state_ != RecorderState::Idle && state_ != RecorderState::ReadyForUpload) {
             return false;
         }
         reset_runtime();
-        if (!flash_.erase_region(base_address_, capacity_)) {
-            return false;
-        }
         configure_header(node_id, session_id, start_timestamp_us, duration_ms);
         state_ = RecorderState::Armed;
+        header_write_pending_ = true;
+        return true;
+    }
+
+    bool finish_prepare_header() {
+        if (state_ != RecorderState::Armed || !header_write_pending_) {
+            return false;
+        }
+        if (erase_active_ || !region_erased_) {
+            return false;
+        }
+        if (!flash_.write(base_address_, &header_, sizeof(header_))) {
+            return false;
+        }
+        header_write_pending_ = false;
+        region_erased_ = false;
         return true;
     }
 
     bool start_prepared(uint16_t node_id, uint32_t session_id, uint64_t start_timestamp_us, uint32_t duration_ms) {
-        if (state_ != RecorderState::Armed) {
+        if (state_ != RecorderState::Armed || header_write_pending_) {
             return false;
         }
         if (header_.node_id != node_id ||
@@ -158,24 +239,37 @@ public:
         return true;
     }
 
-    bool acknowledge_and_erase() {
+    /* Post-upload erase: state advances immediately (the caller ACKs at once)
+     * and the erase itself runs chunked from the node superloop, leaving the
+     * region pre-erased for the next session. */
+    bool acknowledge_and_begin_erase() {
         if (state_ != RecorderState::AwaitingAck) {
             return false;
         }
         state_ = RecorderState::EraseAfterAck;
-        if (!flash_.erase_region(base_address_, capacity_)) {
+        return begin_region_erase() != EraseStep::Failed;
+    }
+
+    bool erase_after_ack_done() {
+        if (state_ != RecorderState::EraseAfterAck) {
+            return false;
+        }
+        reset_runtime();
+        region_erased_ = true;
+        return true;
+    }
+
+    bool erase_after_ack_failed() {
+        if (state_ != RecorderState::EraseAfterAck) {
             return false;
         }
         reset_runtime();
         return true;
     }
 
-    bool force_reset_and_erase() {
-        if (!flash_.erase_region(base_address_, capacity_)) {
-            return false;
-        }
+    bool force_reset_and_background_erase() {
         reset_runtime();
-        return true;
+        return begin_region_erase() != EraseStep::Failed;
     }
 
     uint32_t total_size() const {
@@ -245,6 +339,8 @@ private:
         state_ = RecorderState::Idle;
         bno85_cursor_ = base_address_ + sizeof(SessionHeader);
         icm45686_cursor_ = bno85_cursor_ + bno85_region_size_;
+        header_write_pending_ = false;
+        region_erased_ = false;
     }
 
     uint32_t bno85_limit() const {
@@ -259,6 +355,12 @@ private:
     SessionHeader header_;
     uint32_t bno85_cursor_;
     uint32_t icm45686_cursor_;
+    static constexpr uint8_t kEraseSectorRetries = 3U;
+    bool erase_active_ = false;
+    bool region_erased_ = false;
+    bool header_write_pending_ = false;
+    uint32_t erase_cursor_ = 0U;
+    uint8_t erase_fail_streak_ = 0U;
 };
 
 } // namespace exo

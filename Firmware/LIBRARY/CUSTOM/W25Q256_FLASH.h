@@ -135,6 +135,10 @@ public:
         return true;
     }
 
+    bool erase_4k(uint32_t address) override {
+        return w25qxx_sector_erase_4k(&handle_, address) == 0;
+    }
+
     bool write(uint32_t address, const void *data, uint32_t size) override {
         if (data == nullptr || size == 0U) {
             return false;

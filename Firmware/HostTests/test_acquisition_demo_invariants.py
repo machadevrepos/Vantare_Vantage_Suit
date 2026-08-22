@@ -135,6 +135,12 @@ checks = [
      "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
     ("kNodeRecordBurstLimit = 4U" in node_main,
      "Node upload pacing must not cap the link at ~22 KB/s (one chunk per 8 ms gap) — the 10-min offload target needs headroom"),
+    ("service_region_erase" in (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDER.h").read_text() and
+     "kEraseSectorsPerTick" in node and
+     "service_background_erase();" in node and
+     "prepare_erase_pending_" in node and "commit_pending_" in node and
+     "region_pre_erased" in (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDER.h").read_text(),
+     "Node region erases must run as background chunks (never blocking the BLE handler or capture window), with commits buffered and pre-erased regions reused"),
 ]
 
 failures = [message for ok, message in checks if not ok]

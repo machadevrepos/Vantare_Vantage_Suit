@@ -103,6 +103,9 @@ namespace exo {
 				reset_record_buffers();
 				bno_append_fail_count_ = 0U;
 				icm_append_fail_count_ = 0U;
+				/* RAM-arm the session, then cover the region with the background
+				 * eraser: a whole-region erase takes seconds-to-minutes and must
+				 * never block the BLE command handler. */
 				if (!recorder_.prepare(config_.node_id,
 						prepared_start_.session_id,
 						prepared_start_.start_timestamp_us,
@@ -114,6 +117,23 @@ namespace exo {
 							static_cast<unsigned long>(message.session_id),
 							static_cast<unsigned long>(HAL_GetTick() - prepare_start_ms),
 							static_cast<unsigned>(recorder_.state()));
+					return false;
+				}
+				const NodeRecorder::EraseStep prepare_erase =
+						recorder_.begin_region_erase();
+				if (prepare_erase == NodeRecorder::EraseStep::Failed) {
+					memset(&prepared_start_, 0, sizeof(prepared_start_));
+					prepared_ = false;
+					EXO_LOG("[RECORD][NODE%u] PREPARE erase failed session=%lu\r\n",
+							static_cast<unsigned>(config_.node_id),
+							static_cast<unsigned long>(message.session_id));
+					return false;
+				}
+				prepare_erase_pending_ =
+						prepare_erase == NodeRecorder::EraseStep::InProgress;
+				if (!prepare_erase_pending_ && !recorder_.finish_prepare_header()) {
+					memset(&prepared_start_, 0, sizeof(prepared_start_));
+					prepared_ = false;
 					return false;
 				}
 				prepared_ = true;
@@ -138,6 +158,15 @@ namespace exo {
 				}
 				if ((message.session_id != 0U) && (message.session_id != prepared_start_.session_id)) {
 					return false;
+				}
+				if (prepare_erase_pending_) {
+					/* Commit arrived while the prepare erase is still covering
+					 * the region (first boot or a retained previous session:
+					 * long layouts erase for ~a minute). Accept it; capture
+					 * starts the moment the header is armed. */
+					pending_commit_ = message;
+					commit_pending_ = true;
+					return true;
 				}
 				StartRecordMessage effective = prepared_start_;
 				if (message.start_timestamp_us != 0ULL) {
@@ -210,6 +239,8 @@ namespace exo {
 
 			void abort_prepared_recording() {
 				prepared_ = false;
+				prepare_erase_pending_ = false;
+				commit_pending_ = false;
 				memset(&prepared_start_, 0, sizeof(prepared_start_));
 				recorder_.cancel_prepared();
 				if (armed_ && recorder_.state() != RecorderState::Recording) {
@@ -224,6 +255,10 @@ namespace exo {
 				if (!ready_) {
 					return;
 				}
+				/* Advance the background region eraser first: a completed erase
+				 * may arm a deferred prepare/start, and the post-ack erase only
+				 * progresses from here. */
+				service_background_erase();
 				const RecorderState current_state = recorder_.state();
 				const bool transfer_priority =
 						current_state == RecorderState::ReadyForUpload ||
@@ -240,35 +275,19 @@ namespace exo {
 					const uint32_t lead_time_ms = static_cast<uint32_t>(pending_start_.start_timestamp_us / 1000ULL);
 					const uint32_t elapsed_from_cmd_ms = HAL_GetTick() - armed_tick_ms_;
 					if (elapsed_from_cmd_ms >= lead_time_ms) {
-						recording_started_ms_ = HAL_GetTick();
-						const bool started = recorder_.start(config_.node_id, pending_start_.session_id, pending_start_.start_timestamp_us,
-								pending_start_.requested_duration_ms);
-						armed_ = false;
-						if (!started) {
-							EXO_LOG("NODE%u record start failed: session=%lu duration_ms=%lu state=%u\r\n",
-									static_cast<unsigned>(config_.node_id),
-									static_cast<unsigned long>(pending_start_.session_id),
-									static_cast<unsigned long>(pending_start_.requested_duration_ms),
-									static_cast<unsigned>(recorder_.state()));
+						if (!recorder_.region_pre_erased()) {
+							/* The region is not erased yet (first boot, retained
+							 * previous session, or a layout change). Erase in
+							 * background chunks and start capture the moment it
+							 * completes — never block the loop with a whole-region
+							 * erase inside the capture window. */
+							if (!start_erase_pending_) {
+								(void)recorder_.begin_region_erase();
+								start_erase_pending_ = true;
+							}
 							return;
 						}
-						bno85_.set_capture_queue_enabled(true);
-						/* Node ICM records through the documented 200 Hz hardware FIFO
-						 * (real per-frame timestamps, no polled duplicates). If the
-						 * FIFO cannot be armed, record_icm_fifo_active_ stays false and
-						 * the 5 ms direct-register path runs as an automatic fallback. */
-						record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
-						reset_capture_schedule();
-						record_finalize_pending_ = false;
-						reset_data_rate_log();
-						EXO_LOG("NODE%u record started: session=%lu duration_ms=%lu\r\n",
-								static_cast<unsigned>(config_.node_id),
-								static_cast<unsigned long>(pending_start_.session_id),
-								static_cast<unsigned long>(pending_start_.requested_duration_ms));
-						EXO_LOG("[RECORD][NODE%u] START session=%lu duration_ms=%lu mode=delayed\r\n",
-								static_cast<unsigned>(config_.node_id),
-								static_cast<unsigned long>(pending_start_.session_id),
-								static_cast<unsigned long>(pending_start_.requested_duration_ms));
+						start_delayed_capture_now();
 					} else {
 						return;
 					}
@@ -351,7 +370,9 @@ namespace exo {
 				if (!ready_) {
 					return false;
 				}
-				const bool ok = recorder_.force_reset_and_erase();
+				/* Returns to Idle immediately; the region erase continues in
+				 * background chunks from process(). */
+				const bool ok = recorder_.force_reset_and_background_erase();
 				if (!ok) {
 					return false;
 				}
@@ -363,6 +384,9 @@ namespace exo {
 				}
 				armed_ = false;
 				prepared_ = false;
+				prepare_erase_pending_ = false;
+				start_erase_pending_ = false;
+				commit_pending_ = false;
 				armed_tick_ms_ = 0U;
 				recording_started_ms_ = 0U;
 				reset_capture_schedule();
@@ -371,6 +395,8 @@ namespace exo {
 				icm_append_fail_count_ = 0U;
 				memset(&pending_start_, 0, sizeof(pending_start_));
 				memset(&prepared_start_, 0, sizeof(prepared_start_));
+				memset(&pending_commit_, 0, sizeof(pending_commit_));
+				memset(&pending_capture_start_, 0, sizeof(pending_capture_start_));
 				reset_record_buffers();
 				reset_data_rate_log();
 				return true;
@@ -399,7 +425,9 @@ namespace exo {
 				return recorder_.mark_transfer_complete();
 			}
 			bool acknowledge_and_erase() {
-				return recorder_.acknowledge_and_erase();
+				/* Non-blocking: flips to EraseAfterAck and starts the chunked
+				 * background erase; completes from process(). */
+				return recorder_.acknowledge_and_begin_erase();
 			}
 			RecorderState state() const {
 				return recorder_.state();
@@ -469,6 +497,15 @@ namespace exo {
 				}
 				if (state != RecorderState::Armed && !configure_session_layout(message.requested_duration_ms)) {
 					return false;
+				}
+				if (state == RecorderState::Idle && !recorder_.region_pre_erased() &&
+						recorder_.erase_in_progress()) {
+					/* Immediate start requested while the background erase is
+					 * still covering the region: accept and start the moment it
+					 * completes. */
+					pending_capture_start_ = message;
+					start_erase_pending_ = true;
+					return true;
 				}
 				reset_record_buffers();
 				bno_append_fail_count_ = 0U;
@@ -668,6 +705,102 @@ namespace exo {
 				set_live_stream_enabled(false);
 			}
 		}
+
+			/* Delayed-path capture start, called once the lead time has elapsed
+			 * AND the region erase has completed. */
+			void start_delayed_capture_now() {
+				recording_started_ms_ = HAL_GetTick();
+				const bool started = recorder_.start(config_.node_id, pending_start_.session_id, pending_start_.start_timestamp_us,
+						pending_start_.requested_duration_ms);
+				armed_ = false;
+				if (!started) {
+					EXO_LOG("NODE%u record start failed: session=%lu duration_ms=%lu state=%u\r\n",
+							static_cast<unsigned>(config_.node_id),
+							static_cast<unsigned long>(pending_start_.session_id),
+							static_cast<unsigned long>(pending_start_.requested_duration_ms),
+							static_cast<unsigned>(recorder_.state()));
+					return;
+				}
+				bno85_.set_capture_queue_enabled(true);
+				/* Node ICM records through the documented 200 Hz hardware FIFO
+				 * (real per-frame timestamps, no polled duplicates). If the
+				 * FIFO cannot be armed, record_icm_fifo_active_ stays false and
+				 * the 5 ms direct-register path runs as an automatic fallback. */
+				record_icm_fifo_active_ = icm45686_.begin_fifo_capture_200hz();
+				reset_capture_schedule();
+				record_finalize_pending_ = false;
+				reset_data_rate_log();
+				EXO_LOG("NODE%u record started: session=%lu duration_ms=%lu\r\n",
+						static_cast<unsigned>(config_.node_id),
+						static_cast<unsigned long>(pending_start_.session_id),
+						static_cast<unsigned long>(pending_start_.requested_duration_ms));
+				EXO_LOG("[RECORD][NODE%u] START session=%lu duration_ms=%lu mode=delayed\r\n",
+						static_cast<unsigned>(config_.node_id),
+						static_cast<unsigned long>(pending_start_.session_id),
+						static_cast<unsigned long>(pending_start_.requested_duration_ms));
+			}
+
+			/* Advance the background region eraser by a bounded number of
+			 * sectors per tick. A 10-minute layout erases for ~a minute; the
+			 * chunking keeps BLE dispatch, heartbeats and the radio alive
+			 * throughout instead of blocking the whole node. */
+			void service_background_erase() {
+				if (!recorder_.erase_in_progress()) {
+					return;
+				}
+				const NodeRecorder::EraseStep step =
+						recorder_.service_region_erase(kEraseSectorsPerTick);
+				if (step != NodeRecorder::EraseStep::Complete &&
+						step != NodeRecorder::EraseStep::Failed) {
+					return;
+				}
+				if (step == NodeRecorder::EraseStep::Complete) {
+					if (recorder_.state() == RecorderState::EraseAfterAck) {
+						(void)recorder_.erase_after_ack_done();
+						EXO_LOG("[RECORD][NODE%u] post-ack erase complete; region pre-erased for next session\r\n",
+								static_cast<unsigned>(config_.node_id));
+						return;
+					}
+					if (prepare_erase_pending_) {
+						prepare_erase_pending_ = false;
+						if (recorder_.finish_prepare_header()) {
+							EXO_LOG("[RECORD][NODE%u] PREPARE erase complete session=%lu state=%u\r\n",
+									static_cast<unsigned>(config_.node_id),
+									static_cast<unsigned long>(prepared_start_.session_id),
+									static_cast<unsigned>(recorder_.state()));
+							if (commit_pending_) {
+								commit_pending_ = false;
+								(void)commit_prepared_recording(pending_commit_);
+							}
+						} else {
+							prepared_ = false;
+							memset(&prepared_start_, 0, sizeof(prepared_start_));
+							EXO_LOG("[RECORD][NODE%u] PREPARE header write failed\r\n",
+									static_cast<unsigned>(config_.node_id));
+						}
+						return;
+					}
+					if (start_erase_pending_) {
+						start_erase_pending_ = false;
+						if (armed_) {
+							start_delayed_capture_now();
+						} else {
+							(void)start_recording_now(pending_capture_start_);
+						}
+					}
+					return;
+				}
+				/* Erase failed: clear the pending intents so the node stays
+				 * responsive; the failure is visible via status and logs. */
+				prepare_erase_pending_ = false;
+				start_erase_pending_ = false;
+				commit_pending_ = false;
+				if (recorder_.state() == RecorderState::EraseAfterAck) {
+					(void)recorder_.erase_after_ack_failed();
+				}
+				EXO_LOG("[RECORD][NODE%u] region erase failed; recording unavailable until flash recovers\r\n",
+						static_cast<unsigned>(config_.node_id));
+			}
 
 			bool flush_one_bno_pending() {
 				uint8_t idx = bno_flush_rr_;
@@ -936,6 +1069,10 @@ namespace exo {
 			 * node in Recording forever. */
 			static constexpr uint8_t kMaxConsecutiveWriteFails = 8U;
 			static constexpr uint8_t kMaxFinalizeAttempts = 3U;
+			/* Background erase chunk: 2 sectors (~90 ms typ) per process tick.
+			 * Large enough that a 10-min layout erases in ~1 minute of ticks,
+			 * small enough that BLE dispatch and heartbeats keep flowing. */
+			static constexpr uint8_t kEraseSectorsPerTick = 2U;
 
 			NodeRecordingConfig config_;
 			Bno85Stm32 bno85_;
@@ -969,6 +1106,13 @@ namespace exo {
 			uint8_t write_fail_streak_ = 0U;
 			uint8_t finalize_fail_count_ = 0U;
 			bool finalize_failed_ = false;
+			/* Background-erase sequencing: prepare/start/commit deferred while
+			 * the region eraser is still covering the session region. */
+			bool prepare_erase_pending_ = false;
+			bool start_erase_pending_ = false;
+			bool commit_pending_ = false;
+			StartRecordMessage pending_commit_ { };
+			StartRecordMessage pending_capture_start_ { };
 			uint32_t bno_append_fail_count_ = 0U;
 			uint32_t icm_append_fail_count_ = 0U;
 			bool armed_ = false;
