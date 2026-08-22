@@ -3155,12 +3155,15 @@ input[type="checkbox"] {
         transfer.awaitingTimeouts = (transfer.awaitingTimeouts || 0) + 1;
         logDebug(`RECORD control recovery retry: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} first=${missing.first} count=${missing.count} awaiting_ms=${Math.round(awaitingAgeMs)}`);
       }
-      const payload = new Uint8Array(12);
+      // 14 bytes: matches RecordReliableNackRangePayload including the
+      // trailing flags field the C struct carries.
+      const payload = new Uint8Array(14);
       const dv = new DataView(payload.buffer);
       dv.setUint16(0, transfer.nodeId >>> 0, true);
       dv.setUint32(2, transfer.sessionId >>> 0, true);
       dv.setUint32(6, missing.first >>> 0, true);
       dv.setUint16(10, missing.count, true);
+      dv.setUint16(12, 0, true);
       queueReliableControl(transfer, RECORD_REL.NACK_RANGE, payload, missing.first);
       transfer.nackRequests = (transfer.nackRequests || 0) + 1;
       transfer.lastNackQueuedMs = now;

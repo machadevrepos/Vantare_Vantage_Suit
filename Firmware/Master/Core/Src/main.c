@@ -389,6 +389,12 @@ namespace {
 	static constexpr uint32_t kLocalRecordArchiveChunkBytes = 512U;
 	static constexpr uint8_t kLocalArchiveMaxAttempts = 3U;
 	static uint8_t g_local_archive_attempt = 0U;
+	/* Bounded retries for transient SD failures while reading local chunks. */
+	static constexpr uint8_t kLocalChunkReadRetryBudget = 8U;
+	static uint8_t g_local_chunk_read_fail_count = 0U;
+	/* Live-stream master switch latched across a session so preview resumes
+	 * automatically when the run finishes. */
+	static bool g_ble_stream_restore_after_session = false;
 	static exo::StartRecordMessage g_local_start_msg { };
 	static bool g_local_record_armed = false;
 	static uint32_t g_local_arm_tick_ms = 0U;
@@ -1065,6 +1071,7 @@ namespace {
 		g_local_record_armed = false;
 		g_local_arm_tick_ms = 0U;
 		g_local_capture_start_ms = 0U;
+		g_local_chunk_read_fail_count = 0U;
 		g_local_chunk_seq = 1U;
 		g_local_chunk_offset = 0U;
 		g_local_last_chunk_tick = 0U;
@@ -1384,6 +1391,7 @@ namespace {
 		}
 		g_ble_record_transfer_mode = false;
 		g_ble_start_or_record_in_progress = false;
+		g_ble_stream_restore_after_session = false;
 		g_have_last_chunk_ack = false;
 		g_last_chunk_ack_session_id = 0U;
 		g_last_chunk_ack_source_id = 0U;
@@ -2058,6 +2066,7 @@ namespace {
 				return false;
 			}
 			record_sync_abort(0U);
+			g_ble_stream_restore_after_session = g_ble_stream_enabled;
 			g_ble_stream_enabled = false;
 			return true;
 		}
@@ -2068,6 +2077,9 @@ namespace {
 				g_local_record_phase != LocalRecordPhase::Capturing) {
 			return true;
 		}
+		/* Quiet the live stream for the collection phase but remember the
+		 * master switch so preview resumes when the run finishes. */
+		g_ble_stream_restore_after_session = g_ble_stream_enabled;
 		g_ble_stream_enabled = false;
 		g_ble_record_transfer_mode = true;
 		/* Keep the Master capturing until selected Nodes have accepted StopRecord.
@@ -3472,9 +3484,19 @@ int main(void)
 					const uint16_t chunk_sz = static_cast<uint16_t>(remain > kRecordChunkPayloadBytes ? kRecordChunkPayloadBytes : remain);
 					uint8_t payload[kRecordChunkPayloadBytes];
 					if (!g_local_session_recorder.read(offset, payload, chunk_sz)) {
-						EXO_LOG("[MASTER][REC] chunk read failed off=%lu size=%u\r\n",
+						/* A transient SD read failure must not strand the local
+						 * transfer in a dead-end phase: retry the same chunk a
+						 * bounded number of times, then release the session
+						 * (MREC.BIN stays durable for a later retry). */
+						++g_local_chunk_read_fail_count;
+						if (g_local_chunk_read_fail_count <= kLocalChunkReadRetryBudget) {
+							g_local_receiver_credit = 0U;
+							break;
+						}
+						EXO_LOG("[MASTER][REC] chunk read failed off=%lu size=%u attempts=%u\r\n",
 								static_cast<unsigned long>(offset),
-								static_cast<unsigned>(chunk_sz));
+								static_cast<unsigned>(chunk_sz),
+								static_cast<unsigned>(g_local_chunk_read_fail_count));
 						g_local_record_phase = LocalRecordPhase::ErrorStoredCanResume;
 						g_local_receiver_credit = 0U;
 					} else if (send_reliable_record_frame(exo::RecordReliableType::Chunk,
@@ -3484,8 +3506,9 @@ int main(void)
 							offset,
 							payload,
 							chunk_sz,
-							(((offset + chunk_sz) >= g_local_session_size) ? exo::kRecordFlagFinalChunk : 0U) |
-									(retransmit_chunk ? exo::kRecordFlagRetransmit : 0U))) {
+								(((offset + chunk_sz) >= g_local_session_size) ? exo::kRecordFlagFinalChunk : 0U) |
+										(retransmit_chunk ? exo::kRecordFlagRetransmit : 0U))) {
+						g_local_chunk_read_fail_count = 0U;
 						g_local_pending_chunk = chunk_index;
 						if (retransmit_chunk) {
 							g_local_retx_cursor_chunk = chunk_index + 1U;
@@ -3527,6 +3550,13 @@ int main(void)
 						!leaf_ble_manager.start_or_record_active()) {
 					g_ble_record_transfer_mode = false;
 					g_ble_start_or_record_in_progress = false;
+					/* Collection is over: resume the live preview that Stop
+					 * quieted, instead of waiting for the browser to re-enable
+					 * the master switch. */
+					if (g_ble_stream_restore_after_session) {
+						g_ble_stream_restore_after_session = false;
+						g_ble_stream_enabled = true;
+					}
 					local_record_reset();
 				}
 			}
@@ -4418,6 +4448,16 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								EXO_LOG("[BLE][REC][REL] MANIFEST_ACK observer-drop source=%u session=%lu\r\n",
 										static_cast<unsigned>(ack.source_id),
 										static_cast<unsigned long>(ack.session_id));
+							} else if (ack.source_id >= 1U && ack.source_id <= 4U &&
+									((master_training_csv_coordinator.completed_source_mask() |
+									  master_training_csv_coordinator.failed_source_mask()) &
+									 static_cast<uint8_t>(1U << ack.source_id)) != 0U) {
+								/* The source already resolved (completed or written off):
+								 * re-granting chunk-0 credit would restart chunks into a
+								 * coordinator that now ignores every frame. */
+								EXO_LOG("[BLE][REC][REL] MANIFEST_ACK resolved-drop source=%u session=%lu\r\n",
+										static_cast<unsigned>(ack.source_id),
+										static_cast<unsigned long>(ack.session_id));
 							} else {
 								(void) forward_remote_record_control(ack.source_id, payload, length);
 							}
@@ -4452,8 +4492,10 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							if (ack.next_chunk_index < g_local_stream_cursor_chunk) {
 								g_local_stale_ack_repeat = static_cast<uint8_t>(g_local_stale_ack_repeat < 255U ? (g_local_stale_ack_repeat + 1U) : 255U);
 								const uint32_t now = HAL_GetTick();
-								if ((g_local_record_phase == LocalRecordPhase::Resync || g_local_retx_remaining > 0U) &&
-										g_local_stale_ack_repeat >= 6U &&
+								/* The receiver keeps acknowledging a chunk behind our cursor
+								 * and we have made no forward progress: force a resync to the
+								 * receiver's position instead of streaming further ahead. */
+								if (g_local_stale_ack_repeat >= 6U &&
 										(now - g_local_forward_progress_tick_ms) >= 200U) {
 									g_local_retx_cursor_chunk = ack.next_chunk_index;
 									g_local_retx_remaining = static_cast<uint8_t>(rx_credit > 0U ? (rx_credit > 4U ? 4U : rx_credit) : 1U);

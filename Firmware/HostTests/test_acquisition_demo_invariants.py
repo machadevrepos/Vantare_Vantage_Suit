@@ -147,6 +147,34 @@ checks = [
      "recorder_.set_header_address(detected_flash_capacity_ - kReservedFlashBytes)" in node and
      "recorder_.finalized_header_address()" in node,
      "Session headers must live in the recovery sector (slot-B finalize kills the payload erase window) with boot salvage into ReadyForUpload"),
+    ("node_upload_chunk_index_valid" in node_main and
+     "NackRange rejected out-of-range" in node_main and
+     "VerifyFail rejected out-of-range" in node_main and
+     "legacy ChunkAck rejected out-of-range" in node_main,
+     "Inbound chunk indices must be validated: an out-of-range cursor must never silently terminate an upload"),
+    ("kFifoMaxPlausibleDeltaUs" in icm and "kFifoNominalPeriodUs" in icm,
+     "ICM FIFO timestamps must survive a 16-bit TMST wrap (stall >= 1.05 s) without compressing offset_us"),
+    ("kMaxIcmTailReadFails" in node and "last_read_status_ != 0" in node,
+     "A transient I2C error at the finalize tail must be retried, not treated as an empty FIFO"),
+    ("ReadyForUpload is deliberately excluded" in node,
+     "A plain StartRecord must never wipe a retained ReadyForUpload session (the node flash copy is the only durable record until validated)"),
+    ("recovery_sector_address()" in node and "0x0007F000" not in node_main,
+     "The DIAG boot flash self-test must never erase inside the session region"),
+    ("kLocalChunkReadRetryBudget" in master and "g_local_chunk_read_fail_count" in master,
+     "A transient SD read failure during the local transfer must be retried before dead-ending the session"),
+    ("g_ble_stream_restore_after_session" in master and
+     master.count("g_ble_stream_restore_after_session") >= 4,
+     "Stop must latch (not destroy) the live-stream switch and restore it when collection finishes"),
+    ("force a resync to the" in master and "resolved-drop" in master,
+     "The stale-ACK escape must be reachable, and a resolved source must not be re-granted ManifestAck credit"),
+    ("validation_started_ms_" in coordinator and "stage_error_retry" in coordinator,
+     "ValidateNode must have stall coverage, and a CRC-mismatch StageError must be re-pullable in binary-only runs"),
+    ("kRecordReliableDefaultCredit = 8U" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
+     "ListSessions" not in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
+     "payload_size > chunk_size_" in (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h").read_text(),
+     "Protocol defaults must match the granted credit, dead opcodes stay deleted, and the window must enforce the chunk-size bound"),
+    ("const payload = new Uint8Array(14);" in (ROOT / "Firmware/DesktopTools/Exoskeleton.html").read_text(encoding="utf-8-sig"),
+     "Browser NACK_RANGE payload must carry the trailing flags field like the 14-byte C struct"),
 ]
 
 failures = [message for ok, message in checks if not ok]

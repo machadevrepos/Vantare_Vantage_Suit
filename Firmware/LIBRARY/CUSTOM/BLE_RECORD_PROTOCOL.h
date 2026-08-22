@@ -8,12 +8,9 @@ namespace exo {
 enum class RecordCommand : uint8_t {
     StartRecord = 0x01,
     RecordDone = 0x02,
-    ListSessions = 0x03,
-    FetchSession = 0x04,
     SessionChunk = 0x05,
     ChunkAck = 0x06,
     SessionCompleteAck = 0x07,
-    EraseSession = 0x08,
     LaneFrameV3 = 0x09,
     ReliableFrame = 0x0A,
     PrepareRecord = 0x0B,
@@ -27,7 +24,9 @@ enum class RecordCommand : uint8_t {
 static constexpr uint8_t kRecordReliableProtoVersion = 6U;
 static constexpr uint16_t kRecordReliableMagic = 0x5845U; /* "EX" little endian */
 static constexpr uint16_t kRecordReliableDefaultChunkSize = 180U;
-static constexpr uint8_t kRecordReliableDefaultCredit = 16U;
+/* Matches the credit the Master actually grants per window (8). Every sender
+ * and the browser presets must agree on this default or tuning gets confusing. */
+static constexpr uint8_t kRecordReliableDefaultCredit = 8U;
 
 enum class RecordSourceId : uint16_t {
     Master = 0U,
@@ -110,12 +109,6 @@ struct RecordDoneMessage {
     uint32_t actual_duration_ms;
     uint32_t total_size;
     uint32_t payload_crc32;
-};
-
-struct FetchSessionMessage {
-    RecordCommand command;
-    uint32_t session_id;
-    uint32_t resume_offset;
 };
 
 struct SessionChunkHeader {
@@ -250,11 +243,6 @@ struct SessionCompleteAckMessage {
     RecordCommand command;
     uint32_t session_id;
     uint32_t payload_crc32;
-};
-
-struct EraseSessionMessage {
-    RecordCommand command;
-    uint32_t session_id;
 };
 #pragma pack(pop)
 

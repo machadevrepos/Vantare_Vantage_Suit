@@ -1,0 +1,371 @@
+diff --git a/Firmware/DesktopTools/Exoskeleton.html b/Firmware/DesktopTools/Exoskeleton.html
+index c090342..9657ed4 100644
+--- a/Firmware/DesktopTools/Exoskeleton.html
++++ b/Firmware/DesktopTools/Exoskeleton.html
+@@ -3155,12 +3155,15 @@ input[type="checkbox"] {
+         transfer.awaitingTimeouts = (transfer.awaitingTimeouts || 0) + 1;
+         logDebug(`RECORD control recovery retry: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} first=${missing.first} count=${missing.count} awaiting_ms=${Math.round(awaitingAgeMs)}`);
+       }
+-      const payload = new Uint8Array(12);
++      // 14 bytes: matches RecordReliableNackRangePayload including the
++      // trailing flags field the C struct carries.
++      const payload = new Uint8Array(14);
+       const dv = new DataView(payload.buffer);
+       dv.setUint16(0, transfer.nodeId >>> 0, true);
+       dv.setUint32(2, transfer.sessionId >>> 0, true);
+       dv.setUint32(6, missing.first >>> 0, true);
+       dv.setUint16(10, missing.count, true);
++      dv.setUint16(12, 0, true);
+       queueReliableControl(transfer, RECORD_REL.NACK_RANGE, payload, missing.first);
+       transfer.nackRequests = (transfer.nackRequests || 0) + 1;
+       transfer.lastNackQueuedMs = now;
+diff --git a/Firmware/HostTests/test_acquisition_demo_invariants.py b/Firmware/HostTests/test_acquisition_demo_invariants.py
+index 2e65d00..2eae028 100644
+--- a/Firmware/HostTests/test_acquisition_demo_invariants.py
++++ b/Firmware/HostTests/test_acquisition_demo_invariants.py
+@@ -147,6 +147,34 @@ checks = [
+      "recorder_.set_header_address(detected_flash_capacity_ - kReservedFlashBytes)" in node and
+      "recorder_.finalized_header_address()" in node,
+      "Session headers must live in the recovery sector (slot-B finalize kills the payload erase window) with boot salvage into ReadyForUpload"),
++    ("node_upload_chunk_index_valid" in node_main and
++     "NackRange rejected out-of-range" in node_main and
++     "VerifyFail rejected out-of-range" in node_main and
++     "legacy ChunkAck rejected out-of-range" in node_main,
++     "Inbound chunk indices must be validated: an out-of-range cursor must never silently terminate an upload"),
++    ("kFifoMaxPlausibleDeltaUs" in icm and "kFifoNominalPeriodUs" in icm,
++     "ICM FIFO timestamps must survive a 16-bit TMST wrap (stall >= 1.05 s) without compressing offset_us"),
++    ("kMaxIcmTailReadFails" in node and "last_read_status_ != 0" in node,
++     "A transient I2C error at the finalize tail must be retried, not treated as an empty FIFO"),
++    ("ReadyForUpload is deliberately excluded" in node,
++     "A plain StartRecord must never wipe a retained ReadyForUpload session (the node flash copy is the only durable record until validated)"),
++    ("recovery_sector_address()" in node and "0x0007F000" not in node_main,
++     "The DIAG boot flash self-test must never erase inside the session region"),
++    ("kLocalChunkReadRetryBudget" in master and "g_local_chunk_read_fail_count" in master,
++     "A transient SD read failure during the local transfer must be retried before dead-ending the session"),
++    ("g_ble_stream_restore_after_session" in master and
++     master.count("g_ble_stream_restore_after_session") >= 4,
++     "Stop must latch (not destroy) the live-stream switch and restore it when collection finishes"),
++    ("force a resync to the" in master and "resolved-drop" in master,
++     "The stale-ACK escape must be reachable, and a resolved source must not be re-granted ManifestAck credit"),
++    ("validation_started_ms_" in coordinator and "stage_error_retry" in coordinator,
++     "ValidateNode must have stall coverage, and a CRC-mismatch StageError must be re-pullable in binary-only runs"),
++    ("kRecordReliableDefaultCredit = 8U" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
++     "ListSessions" not in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
++     "payload_size > chunk_size_" in (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h").read_text(),
++     "Protocol defaults must match the granted credit, dead opcodes stay deleted, and the window must enforce the chunk-size bound"),
++    ("const payload = new Uint8Array(14);" in (ROOT / "Firmware/DesktopTools/Exoskeleton.html").read_text(encoding="utf-8-sig"),
++     "Browser NACK_RANGE payload must carry the trailing flags field like the 14-byte C struct"),
+ ]
+ 
+ failures = [message for ok, message in checks if not ok]
+diff --git a/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h b/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
+index 829f410..b75620f 100644
+--- a/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
++++ b/Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h
+@@ -8,12 +8,9 @@ namespace exo {
+ enum class RecordCommand : uint8_t {
+     StartRecord = 0x01,
+     RecordDone = 0x02,
+-    ListSessions = 0x03,
+-    FetchSession = 0x04,
+     SessionChunk = 0x05,
+     ChunkAck = 0x06,
+     SessionCompleteAck = 0x07,
+-    EraseSession = 0x08,
+     LaneFrameV3 = 0x09,
+     ReliableFrame = 0x0A,
+     PrepareRecord = 0x0B,
+@@ -27,7 +24,9 @@ enum class RecordCommand : uint8_t {
+ static constexpr uint8_t kRecordReliableProtoVersion = 6U;
+ static constexpr uint16_t kRecordReliableMagic = 0x5845U; /* "EX" little endian */
+ static constexpr uint16_t kRecordReliableDefaultChunkSize = 180U;
+-static constexpr uint8_t kRecordReliableDefaultCredit = 16U;
++/* Matches the credit the Master actually grants per window (8). Every sender
++ * and the browser presets must agree on this default or tuning gets confusing. */
++static constexpr uint8_t kRecordReliableDefaultCredit = 8U;
+ 
+ enum class RecordSourceId : uint16_t {
+     Master = 0U,
+@@ -112,12 +111,6 @@ struct RecordDoneMessage {
+     uint32_t payload_crc32;
+ };
+ 
+-struct FetchSessionMessage {
+-    RecordCommand command;
+-    uint32_t session_id;
+-    uint32_t resume_offset;
+-};
+-
+ struct SessionChunkHeader {
+     RecordCommand command;
+     uint32_t session_id;
+@@ -251,11 +244,6 @@ struct SessionCompleteAckMessage {
+     uint32_t session_id;
+     uint32_t payload_crc32;
+ };
+-
+-struct EraseSessionMessage {
+-    RecordCommand command;
+-    uint32_t session_id;
+-};
+ #pragma pack(pop)
+ 
+ } // namespace exo
+diff --git a/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h b/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h
+index 49d043f..fb70956 100644
+--- a/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h
++++ b/Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h
+@@ -63,6 +63,7 @@ public:
+             return result;
+         }
+         if (!payload_crc_ok ||
++                payload_size > chunk_size_ ||
+                 static_cast<uint64_t>(byte_offset) + payload_size > total_size_) {
+             result.decision = NodeTransferDecision::NackCorrupt;
+             return result;
+diff --git a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+index c282e8a..4210e67 100644
+--- a/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
++++ b/Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h
+@@ -172,15 +172,26 @@ return true;
+  * transfer owns the link. */
+ bool retry_failed_source(uint8_t node_id)
+ {
+-if (node_id < 1U || node_id > 4U || partial_finalized_) return false;
+-if (active_node_id_ != 0U || stager_.active() ||
++if (node_id < 1U || node_id > 4U) return false;
++if (active_node_id_ != 0U || stager_.active()) return false;
++/* A CRC-mismatch StageError tears the run down (partial_finalized_) with the
++ * node's flash copy retained; binary-only runs may re-open that source so the
++ * retained session can be re-pulled instead of lost. */
++const bool stage_error_retry = state_ == TrainingCsvState::StageError &&
++binary_only_ && partial_finalized_;
++if (!stage_error_retry &&
+ (state_ != TrainingCsvState::WaitingForNode &&
+ state_ != TrainingCsvState::Complete)) return false;
+ if ((failed_source_mask_ & static_cast<uint8_t>(1U << node_id)) == 0U) return false;
+ if ((completed_source_mask_ & static_cast<uint8_t>(1U << node_id)) != 0U) return false;
++if (stage_error_retry) {
++partial_finalized_ = false;
++state_ = TrainingCsvState::WaitingForNode;
++} else if (state_ == TrainingCsvState::Complete) {
+ /* A failed source can be the one that resolved the run into Complete; reopen
+  * it so the re-pull has a live collection state to stage into. */
+-if (state_ == TrainingCsvState::Complete) state_ = TrainingCsvState::WaitingForNode;
++state_ = TrainingCsvState::WaitingForNode;
++}
+ failed_source_mask_ = static_cast<uint8_t>(failed_source_mask_ &
+ static_cast<uint8_t>(~static_cast<uint8_t>(1U << node_id)));
+ return true;
+@@ -317,6 +328,11 @@ void finalize_partial(uint32_t now_ms)
+ {
+ if (partial_finalized_) return;
+ partial_finalized_ = true;
++if (active_node_id_ >= 1U && active_node_id_ <= 4U) {
++/* The torn-down source never completed: mark it failed so the status masks
++ * and the re-pull path describe it truthfully. */
++failed_source_mask_ |= static_cast<uint8_t>(1U << active_node_id_);
++}
+ if (!binary_only_) (void)logger_.shutdown(now_ms);
+ /* A failed stage must not leave a truncated R####N#.BIN that consumes the run
+  * index forever; the node's flash copy is the retry source. */
+@@ -338,16 +354,20 @@ service_master_bno(recorder, now_ms); break;
+ case TrainingCsvState::ConvertMasterIcm:
+ service_master_icm(recorder, now_ms); break;
+ #endif
+-case TrainingCsvState::ValidateNode:
+-switch (stager_.validation_status()) {
+-case node_session_staging::NodeSessionValidationStatus::Idle:
+-if (!stager_.begin_validation())
+-fail(TrainingCsvState::StageError, TrainingFailSite::Site4);
+-break;
+-case node_session_staging::NodeSessionValidationStatus::InProgress:
+-if (!stager_.step_validation(kValidationBytesPerService))
+-fail(TrainingCsvState::StageError, TrainingFailSite::Site5);
+-break;
++	case TrainingCsvState::ValidateNode:
++		switch (stager_.validation_status()) {
++		case node_session_staging::NodeSessionValidationStatus::Idle:
++			if (!stager_.begin_validation())
++			fail(TrainingCsvState::StageError, TrainingFailSite::Site4);
++			else
++			validation_started_ms_ = now_ms;
++			break;
++		case node_session_staging::NodeSessionValidationStatus::InProgress:
++			if (!stager_.step_validation(kValidationBytesPerService))
++			fail(TrainingCsvState::StageError, TrainingFailSite::Site5);
++			else
++			validation_started_ms_ = now_ms;
++			break;
+ case node_session_staging::NodeSessionValidationStatus::ReadyToFinalize:
+ if (stager_.finalize_validation()) {
+ if (binary_only_) {
+@@ -416,15 +436,22 @@ reliable_control_.reset();
+ complete_binary_node(now_ms);
+ }
+ break;
+-case TrainingCsvState::WaitingForNode:
+-/* Nothing arrived from any remaining node in time. Publish what was
+- * staged rather than discarding the sources that did complete. */
+-if ((now_ms - last_progress_ms_) >= kSessionStallMs) abandon_remaining_nodes(now_ms);
+-break;
+-default:
+-break;
+-}
+-}
++	case TrainingCsvState::WaitingForNode:
++		/* Nothing arrived from any remaining node in time. Publish what was
++		 * staged rather than discarding the sources that did complete. */
++		if ((now_ms - last_progress_ms_) >= kSessionStallMs) abandon_remaining_nodes(now_ms);
++		break;
++	case TrainingCsvState::ValidateNode:
++		/* Validation is local and always progresses, but a future step that
++		 * stops advancing must not dead-end the coordinator: bound it like
++		 * every other phase. */
++		if ((now_ms - validation_started_ms_) >= kSessionStallMs)
++		fail(TrainingCsvState::StageError, TrainingFailSite::Site7);
++		break;
++	default:
++		break;
++	}
++	}
+ void shutdown(uint32_t now_ms)
+ {
+ if (!binary_only_) (void)logger_.shutdown(now_ms);
+@@ -684,6 +711,7 @@ bool master_ledger_matches_ = false;
+ uint32_t last_progress_ms_ = 0U;
+ uint32_t progress_seq_ = 0U;
+ uint32_t last_progress_seq_ = 0U;
++uint32_t validation_started_ms_ = 0U;
+ bool partial_finalized_ = false;
+ TrainingFailSite failure_site_ = TrainingFailSite::None;
+ uint8_t failure_node_id_ = 0U;
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+index d6d09f0..ea1bf2e 100644
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -389,6 +389,12 @@ namespace {
+ 	static constexpr uint32_t kLocalRecordArchiveChunkBytes = 512U;
+ 	static constexpr uint8_t kLocalArchiveMaxAttempts = 3U;
+ 	static uint8_t g_local_archive_attempt = 0U;
++	/* Bounded retries for transient SD failures while reading local chunks. */
++	static constexpr uint8_t kLocalChunkReadRetryBudget = 8U;
++	static uint8_t g_local_chunk_read_fail_count = 0U;
++	/* Live-stream master switch latched across a session so preview resumes
++	 * automatically when the run finishes. */
++	static bool g_ble_stream_restore_after_session = false;
+ 	static exo::StartRecordMessage g_local_start_msg { };
+ 	static bool g_local_record_armed = false;
+ 	static uint32_t g_local_arm_tick_ms = 0U;
+@@ -1065,6 +1071,7 @@ namespace {
+ 		g_local_record_armed = false;
+ 		g_local_arm_tick_ms = 0U;
+ 		g_local_capture_start_ms = 0U;
++		g_local_chunk_read_fail_count = 0U;
+ 		g_local_chunk_seq = 1U;
+ 		g_local_chunk_offset = 0U;
+ 		g_local_last_chunk_tick = 0U;
+@@ -1384,6 +1391,7 @@ namespace {
+ 		}
+ 		g_ble_record_transfer_mode = false;
+ 		g_ble_start_or_record_in_progress = false;
++		g_ble_stream_restore_after_session = false;
+ 		g_have_last_chunk_ack = false;
+ 		g_last_chunk_ack_session_id = 0U;
+ 		g_last_chunk_ack_source_id = 0U;
+@@ -2058,6 +2066,7 @@ namespace {
+ 				return false;
+ 			}
+ 			record_sync_abort(0U);
++			g_ble_stream_restore_after_session = g_ble_stream_enabled;
+ 			g_ble_stream_enabled = false;
+ 			return true;
+ 		}
+@@ -2068,6 +2077,9 @@ namespace {
+ 				g_local_record_phase != LocalRecordPhase::Capturing) {
+ 			return true;
+ 		}
++		/* Quiet the live stream for the collection phase but remember the
++		 * master switch so preview resumes when the run finishes. */
++		g_ble_stream_restore_after_session = g_ble_stream_enabled;
+ 		g_ble_stream_enabled = false;
+ 		g_ble_record_transfer_mode = true;
+ 		/* Keep the Master capturing until selected Nodes have accepted StopRecord.
+@@ -3472,9 +3484,19 @@ int main(void)
+ 					const uint16_t chunk_sz = static_cast<uint16_t>(remain > kRecordChunkPayloadBytes ? kRecordChunkPayloadBytes : remain);
+ 					uint8_t payload[kRecordChunkPayloadBytes];
+ 					if (!g_local_session_recorder.read(offset, payload, chunk_sz)) {
+-						EXO_LOG("[MASTER][REC] chunk read failed off=%lu size=%u\r\n",
++						/* A transient SD read failure must not strand the local
++						 * transfer in a dead-end phase: retry the same chunk a
++						 * bounded number of times, then release the session
++						 * (MREC.BIN stays durable for a later retry). */
++						++g_local_chunk_read_fail_count;
++						if (g_local_chunk_read_fail_count <= kLocalChunkReadRetryBudget) {
++							g_local_receiver_credit = 0U;
++							break;
++						}
++						EXO_LOG("[MASTER][REC] chunk read failed off=%lu size=%u attempts=%u\r\n",
+ 								static_cast<unsigned long>(offset),
+-								static_cast<unsigned>(chunk_sz));
++								static_cast<unsigned>(chunk_sz),
++								static_cast<unsigned>(g_local_chunk_read_fail_count));
+ 						g_local_record_phase = LocalRecordPhase::ErrorStoredCanResume;
+ 						g_local_receiver_credit = 0U;
+ 					} else if (send_reliable_record_frame(exo::RecordReliableType::Chunk,
+@@ -3484,8 +3506,9 @@ int main(void)
+ 							offset,
+ 							payload,
+ 							chunk_sz,
+-							(((offset + chunk_sz) >= g_local_session_size) ? exo::kRecordFlagFinalChunk : 0U) |
+-									(retransmit_chunk ? exo::kRecordFlagRetransmit : 0U))) {
++								(((offset + chunk_sz) >= g_local_session_size) ? exo::kRecordFlagFinalChunk : 0U) |
++										(retransmit_chunk ? exo::kRecordFlagRetransmit : 0U))) {
++						g_local_chunk_read_fail_count = 0U;
+ 						g_local_pending_chunk = chunk_index;
+ 						if (retransmit_chunk) {
+ 							g_local_retx_cursor_chunk = chunk_index + 1U;
+@@ -3527,6 +3550,13 @@ int main(void)
+ 						!leaf_ble_manager.start_or_record_active()) {
+ 					g_ble_record_transfer_mode = false;
+ 					g_ble_start_or_record_in_progress = false;
++					/* Collection is over: resume the live preview that Stop
++					 * quieted, instead of waiting for the browser to re-enable
++					 * the master switch. */
++					if (g_ble_stream_restore_after_session) {
++						g_ble_stream_restore_after_session = false;
++						g_ble_stream_enabled = true;
++					}
+ 					local_record_reset();
+ 				}
+ 			}
+@@ -4418,6 +4448,16 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
+ 								EXO_LOG("[BLE][REC][REL] MANIFEST_ACK observer-drop source=%u session=%lu\r\n",
+ 										static_cast<unsigned>(ack.source_id),
+ 										static_cast<unsigned long>(ack.session_id));
++							} else if (ack.source_id >= 1U && ack.source_id <= 4U &&
++									((master_training_csv_coordinator.completed_source_mask() |
++									  master_training_csv_coordinator.failed_source_mask()) &
++									 static_cast<uint8_t>(1U << ack.source_id)) != 0U) {
++								/* The source already resolved (completed or written off):
++								 * re-granting chunk-0 credit would restart chunks into a
++								 * coordinator that now ignores every frame. */
++								EXO_LOG("[BLE][REC][REL] MANIFEST_ACK resolved-drop source=%u session=%lu\r\n",
++										static_cast<unsigned>(ack.source_id),
++										static_cast<unsigned long>(ack.session_id));
+ 							} else {
+ 								(void) forward_remote_record_control(ack.source_id, payload, length);
+ 							}
+@@ -4452,8 +4492,10 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
+ 							if (ack.next_chunk_index < g_local_stream_cursor_chunk) {
+ 								g_local_stale_ack_repeat = static_cast<uint8_t>(g_local_stale_ack_repeat < 255U ? (g_local_stale_ack_repeat + 1U) : 255U);
+ 								const uint32_t now = HAL_GetTick();
+-								if ((g_local_record_phase == LocalRecordPhase::Resync || g_local_retx_remaining > 0U) &&
+-										g_local_stale_ack_repeat >= 6U &&
++								/* The receiver keeps acknowledging a chunk behind our cursor
++								 * and we have made no forward progress: force a resync to the
++								 * receiver's position instead of streaming further ahead. */
++								if (g_local_stale_ack_repeat >= 6U &&
+ 										(now - g_local_forward_progress_tick_ms) >= 200U) {
+ 									g_local_retx_cursor_chunk = ack.next_chunk_index;
+ 									g_local_retx_remaining = static_cast<uint8_t>(rx_credit > 0U ? (rx_credit > 4U ? 4U : rx_credit) : 1U);

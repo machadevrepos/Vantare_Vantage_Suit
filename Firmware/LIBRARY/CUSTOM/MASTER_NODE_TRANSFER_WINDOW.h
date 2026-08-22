@@ -63,6 +63,7 @@ public:
             return result;
         }
         if (!payload_crc_ok ||
+                payload_size > chunk_size_ ||
                 static_cast<uint64_t>(byte_offset) + payload_size > total_size_) {
             result.decision = NodeTransferDecision::NackCorrupt;
             return result;

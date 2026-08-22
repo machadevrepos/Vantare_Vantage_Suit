@@ -172,15 +172,26 @@ return true;
  * transfer owns the link. */
 bool retry_failed_source(uint8_t node_id)
 {
-if (node_id < 1U || node_id > 4U || partial_finalized_) return false;
-if (active_node_id_ != 0U || stager_.active() ||
+if (node_id < 1U || node_id > 4U) return false;
+if (active_node_id_ != 0U || stager_.active()) return false;
+/* A CRC-mismatch StageError tears the run down (partial_finalized_) with the
+ * node's flash copy retained; binary-only runs may re-open that source so the
+ * retained session can be re-pulled instead of lost. */
+const bool stage_error_retry = state_ == TrainingCsvState::StageError &&
+binary_only_ && partial_finalized_;
+if (!stage_error_retry &&
 (state_ != TrainingCsvState::WaitingForNode &&
 state_ != TrainingCsvState::Complete)) return false;
 if ((failed_source_mask_ & static_cast<uint8_t>(1U << node_id)) == 0U) return false;
 if ((completed_source_mask_ & static_cast<uint8_t>(1U << node_id)) != 0U) return false;
+if (stage_error_retry) {
+partial_finalized_ = false;
+state_ = TrainingCsvState::WaitingForNode;
+} else if (state_ == TrainingCsvState::Complete) {
 /* A failed source can be the one that resolved the run into Complete; reopen
  * it so the re-pull has a live collection state to stage into. */
-if (state_ == TrainingCsvState::Complete) state_ = TrainingCsvState::WaitingForNode;
+state_ = TrainingCsvState::WaitingForNode;
+}
 failed_source_mask_ = static_cast<uint8_t>(failed_source_mask_ &
 static_cast<uint8_t>(~static_cast<uint8_t>(1U << node_id)));
 return true;
@@ -317,6 +328,11 @@ void finalize_partial(uint32_t now_ms)
 {
 if (partial_finalized_) return;
 partial_finalized_ = true;
+if (active_node_id_ >= 1U && active_node_id_ <= 4U) {
+/* The torn-down source never completed: mark it failed so the status masks
+ * and the re-pull path describe it truthfully. */
+failed_source_mask_ |= static_cast<uint8_t>(1U << active_node_id_);
+}
 if (!binary_only_) (void)logger_.shutdown(now_ms);
 /* A failed stage must not leave a truncated R####N#.BIN that consumes the run
  * index forever; the node's flash copy is the retry source. */
@@ -338,16 +354,20 @@ service_master_bno(recorder, now_ms); break;
 case TrainingCsvState::ConvertMasterIcm:
 service_master_icm(recorder, now_ms); break;
 #endif
-case TrainingCsvState::ValidateNode:
-switch (stager_.validation_status()) {
-case node_session_staging::NodeSessionValidationStatus::Idle:
-if (!stager_.begin_validation())
-fail(TrainingCsvState::StageError, TrainingFailSite::Site4);
-break;
-case node_session_staging::NodeSessionValidationStatus::InProgress:
-if (!stager_.step_validation(kValidationBytesPerService))
-fail(TrainingCsvState::StageError, TrainingFailSite::Site5);
-break;
+	case TrainingCsvState::ValidateNode:
+		switch (stager_.validation_status()) {
+		case node_session_staging::NodeSessionValidationStatus::Idle:
+			if (!stager_.begin_validation())
+			fail(TrainingCsvState::StageError, TrainingFailSite::Site4);
+			else
+			validation_started_ms_ = now_ms;
+			break;
+		case node_session_staging::NodeSessionValidationStatus::InProgress:
+			if (!stager_.step_validation(kValidationBytesPerService))
+			fail(TrainingCsvState::StageError, TrainingFailSite::Site5);
+			else
+			validation_started_ms_ = now_ms;
+			break;
 case node_session_staging::NodeSessionValidationStatus::ReadyToFinalize:
 if (stager_.finalize_validation()) {
 if (binary_only_) {
@@ -416,15 +436,22 @@ reliable_control_.reset();
 complete_binary_node(now_ms);
 }
 break;
-case TrainingCsvState::WaitingForNode:
-/* Nothing arrived from any remaining node in time. Publish what was
- * staged rather than discarding the sources that did complete. */
-if ((now_ms - last_progress_ms_) >= kSessionStallMs) abandon_remaining_nodes(now_ms);
-break;
-default:
-break;
-}
-}
+	case TrainingCsvState::WaitingForNode:
+		/* Nothing arrived from any remaining node in time. Publish what was
+		 * staged rather than discarding the sources that did complete. */
+		if ((now_ms - last_progress_ms_) >= kSessionStallMs) abandon_remaining_nodes(now_ms);
+		break;
+	case TrainingCsvState::ValidateNode:
+		/* Validation is local and always progresses, but a future step that
+		 * stops advancing must not dead-end the coordinator: bound it like
+		 * every other phase. */
+		if ((now_ms - validation_started_ms_) >= kSessionStallMs)
+		fail(TrainingCsvState::StageError, TrainingFailSite::Site7);
+		break;
+	default:
+		break;
+	}
+	}
 void shutdown(uint32_t now_ms)
 {
 if (!binary_only_) (void)logger_.shutdown(now_ms);
@@ -684,6 +711,7 @@ bool master_ledger_matches_ = false;
 uint32_t last_progress_ms_ = 0U;
 uint32_t progress_seq_ = 0U;
 uint32_t last_progress_seq_ = 0U;
+uint32_t validation_started_ms_ = 0U;
 bool partial_finalized_ = false;
 TrainingFailSite failure_site_ = TrainingFailSite::None;
 uint8_t failure_node_id_ = 0U;
