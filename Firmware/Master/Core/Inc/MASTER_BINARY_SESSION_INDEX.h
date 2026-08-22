@@ -14,10 +14,12 @@ class MasterBinarySessionIndex {
 public:
     static constexpr uint16_t kMaxFileIndex = 9999U;
 
-    /* Boot-time cache warm-up (call once after FATFS init, outside any BLE
-     * context). Reads the persisted marker; if it is missing or corrupt, runs
-     * the full occupancy scan once and (re)writes the marker. Tolerates a
-     * missing card: allocate() re-tries lazily. */
+    /* Boot-time cache warm-up (call once after FATFS init and SD power-up,
+     * outside any BLE context). Reads the persisted marker; if it is missing
+     * or corrupt, enumerates /SESSIONS once and (re)writes the marker. The
+     * enumeration is a single directory pass — bounded and fast even on a
+     * card full of sessions. Tolerates a missing card: allocate() re-tries
+     * lazily. */
     void init_cache()
     {
         (void) load_cache();
@@ -54,6 +56,62 @@ public:
 
 private:
     static constexpr uint32_t kMarkerMagic = 0x58444E49U; /* "INDX" */
+
+    /* Recognize "R####<suffix>" and "TRN####<suffix>" names (8.3 short names
+     * as produced by make_path/make_staging_path). Anything else — including
+     * RUNIDX.BIN and MREC.BIN — must not advance the cached index. */
+    static bool parse_session_index(const char *name, uint16_t &out_index)
+    {
+        if (name == nullptr) return false;
+        size_t digits_at = 0U;
+        if (name[0] == 'T' && name[1] == 'R' && name[2] == 'N') {
+            digits_at = 3U;
+        } else if (name[0] == 'R') {
+            digits_at = 1U;
+        } else {
+            return false;
+        }
+        uint32_t value = 0U;
+        for (uint8_t d = 0U; d < 4U; ++d) {
+            const char c = name[digits_at + d];
+            if (c < '0' || c > '9') return false;
+            value = value * 10U + static_cast<uint32_t>(c - '0');
+        }
+        const char next = name[digits_at + 4U];
+        const bool suffix_ok = (digits_at == 1U) ?
+                (next == 'M' || next == 'N') :   /* R####M.BIN / R####N#.BIN */
+                (next == '.');                    /* TRN####.CSV/.OK/.TMP */
+        if (!suffix_ok) return false;
+        out_index = static_cast<uint16_t>(value);
+        return true;
+    }
+
+    bool rebuild_last_from_directory(uint16_t &last)
+    {
+        last = 0U;
+        last_result_ = f_mkdir("/SESSIONS");
+        if (last_result_ != FR_OK && last_result_ != FR_EXIST) return false;
+        DIR dir{};
+        last_result_ = f_opendir(&dir, "/SESSIONS");
+        if (last_result_ == FR_NO_PATH) return true; /* empty card: index 1 next */
+        if (last_result_ != FR_OK) return false;
+        FILINFO info{};
+        for (;;) {
+            last_result_ = f_readdir(&dir, &info);
+            if (last_result_ != FR_OK || info.fname[0] == '\0') break;
+            uint16_t index = 0U;
+            if (parse_session_index(info.fname, index) && index > last) {
+                last = index;
+            }
+        }
+        const FRESULT read_result = last_result_;
+        f_closedir(&dir);
+        if (read_result != FR_OK) {
+            last_result_ = read_result;
+            return false;
+        }
+        return true;
+    }
 
     bool ensure_fs()
     {
@@ -96,14 +154,12 @@ private:
         if (marker_valid) {
             last = static_cast<uint16_t>(marker[4] | (marker[5] << 8));
         } else {
-            /* No usable marker: rebuild from the highest occupied on-card
-             * index. Strand-safe: the marker written below claims that index,
-             * so any stranded-but-fileless index above it may be reused only
-             * if it was never allocated since the last marker write. */
-            for (uint16_t index = 1U; index <= kMaxFileIndex; ++index) {
-                bool occupied = false;
-                if (!index_occupied(index, occupied)) return false;
-                if (occupied && index > last) last = index;
+            /* No usable marker: rebuild from a single enumeration of
+             * /SESSIONS. One directory pass, never a per-index f_stat storm —
+             * an O(index*8) scan here would block boot for minutes on a card
+             * that already holds sessions. */
+            if (!rebuild_last_from_directory(last)) {
+                return false;
             }
             if (!persist_marker(last)) return false;
         }

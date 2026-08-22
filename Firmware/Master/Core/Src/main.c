@@ -2925,9 +2925,6 @@ int main(void)
 	}
 	MX_RF_Init();
 	/* USER CODE BEGIN 2 */
-	/* Warm the run-index cache (marker read or one full scan) at boot so the
-	 * BLE allocation path never runs the O(index*8) occupancy scan. */
-	master_binary_session_index.init_cache();
 	{
 		const uint32_t old_prescaler = hspi1.Init.BaudRatePrescaler;
 		const uint32_t new_prescaler = SpiNextFasterPrescaler(old_prescaler);
@@ -2945,6 +2942,10 @@ int main(void)
 	HAL_GPIO_WritePin(PWR_EN_GPIO_Port, PWR_EN_Pin, GPIO_PIN_SET);
 	prepare_touch_wakeup_before_poweroff();
 	HAL_Delay(200);
+	/* Warm the run-index cache after SD power-up and the SPI speed-up: reads
+	 * the RUNIDX.BIN marker (one enumeration pass on first boot) so the BLE
+	 * allocation path never scans the card. */
+	master_binary_session_index.init_cache();
 #if EXO_MASTER_VERBOSE_DIAG
 	EXO_LOG(
 			"I2C setup: I2C1[timing=0x%08lX,addrMode=%lu,noStretch=%lu] I2C3[timing=0x%08lX,addrMode=%lu,noStretch=%lu]\r\n",
