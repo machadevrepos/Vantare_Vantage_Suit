@@ -306,7 +306,7 @@ static constexpr uint32_t kNodeRecordChunkGapMs = 8U;
  * the 10-minute-session offload target (>=10x the ~1.8 KB/s baseline) has
  * headroom. The credit window still bounds data in flight, and a busy BLE
  * stack simply fails a burst send, which the sender retries next tick. */
-static constexpr uint8_t kNodeRecordBurstLimit = 4U;
+static constexpr uint8_t kNodeRecordBurstLimit = 8U;
 static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
 static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
 /* An upload that has run out of credit is only restarted by an inbound control

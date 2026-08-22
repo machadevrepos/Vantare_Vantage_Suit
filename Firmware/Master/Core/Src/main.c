@@ -704,6 +704,7 @@ namespace {
 		g_record_transfer_runtime.master_burst_limit = clamp_u8(payload[9], 1U, 8U);
 		g_record_transfer_runtime.master_chunk_gap_ms = clamp_u8(payload[10], 0U, 5U);
 		g_record_transfer_runtime.flags = payload[11];
+		master_training_csv_coordinator.set_receiver_credit(g_record_transfer_runtime.credit);
 		EXO_LOG("[REC][CFG] cr=%u ackc=%u ackms=%u hbms=%u nckb=%u mb=%u mgms=%u fl=0x%02X\r\n",
 				static_cast<unsigned>(g_record_transfer_runtime.credit),
 				static_cast<unsigned>(g_record_transfer_runtime.ack_every_chunks),

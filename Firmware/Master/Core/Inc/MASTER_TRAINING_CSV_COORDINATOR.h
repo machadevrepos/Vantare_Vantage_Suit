@@ -57,7 +57,7 @@ default_master_ready, default_master_header, default_master_read
 class MasterTrainingCsvCoordinator {
 public:
 static constexpr uint32_t kRowsPerService = 8U;
-static constexpr uint32_t kValidationBytesPerService = 256U;
+static constexpr uint32_t kValidationBytesPerService = 1024U;
 static constexpr uint32_t kSessionStallMs = 30000U;
 /* A node that goes quiet mid-upload only costs that node's rows. The remaining
  * expected sources are still staged and the CSV is still published, so one flaky
@@ -70,7 +70,7 @@ static constexpr uint32_t kNodeAckRearmMs = 300U;
 /* Accepted chunks are copied here from the BLE ingest context and staged to SD
  * from the superloop (drain_pending_chunks), so the every-4KB stager flush and
  * duplicate read-back never run inside a radio event handler. Depth 8 matches
- * kNodeReceiverCredit: the node never has more in flight than this. */
+ * receiver_credit_: the node never has more in flight than this. */
 static constexpr uint8_t kPendingChunkDepth = 8U;
 struct PendingChunk {
 uint8_t node_id;
@@ -95,6 +95,13 @@ master_ops_(master_ops != nullptr ? master_ops :
  * inbound phone-write handler: every ACK/NACK would re-enter the command
  * dispatcher and be echoed back to the desktop tool. Point it straight at the
  * node link instead. */
+/* Credit the receiver grants the node per ACK. Default 8; the dashboard's
+ * transfer-tuning command raises it (up to 24, sanitizer-capped) so the node
+ * keeps more chunks in flight per ACK round-trip. */
+void set_receiver_credit(uint8_t credit)
+{
+receiver_credit_ = credit == 0U ? kNodeReceiverCredit : credit;
+}
 void set_reliable_transport(MasterNodeReliableControl::SendFn send_fn, void *context)
 {
 reliable_control_.set_transport(send_fn, context);
@@ -255,7 +262,7 @@ return;
 if (!transfer_window_.begin(static_cast<uint8_t>(done.node_id), done.session_id,
 done.total_size, kRecordReliableDefaultChunkSize) ||
 !reliable_control_.begin(done, kRecordReliableDefaultChunkSize,
-kNodeReceiverCredit)) {
+receiver_credit_)) {
 fail(TrainingCsvState::StageError, TrainingFailSite::Site2);
 return;
 }
@@ -291,7 +298,7 @@ case NodeTransferDecision::Ignore:
 return;
 case NodeTransferDecision::Duplicate:
 (void)reliable_control_.ack_window(transfer_window_.next_chunk(),
-kNodeReceiverCredit);
+receiver_credit_);
 return;
 case NodeTransferDecision::NackGap:
 (void)reliable_control_.nack_range(inspection.request_chunk, 1U);
@@ -329,7 +336,7 @@ if (pending_count_ < kPendingChunkDepth) {
 	state_ = TrainingCsvState::ValidateNode;
 }
 ++progress_seq_;
-(void)reliable_control_.ack_window(inspection.next_chunk, kNodeReceiverCredit);
+(void)reliable_control_.ack_window(inspection.next_chunk, receiver_credit_);
 }
 /* Flush queued reliable-control frames (ACK windows, NACKs) without the
 full state-machine pass. Called straight after BLE event dispatch so an
@@ -775,6 +782,7 @@ uint8_t expected_source_mask_ = 0U;
 uint8_t completed_source_mask_ = 0U;
 uint8_t failed_source_mask_ = 0U;
 uint8_t active_node_id_ = 0U;
+uint8_t receiver_credit_ = kNodeReceiverCredit;
 uint8_t reliable_defer_services_ = 0U;
 #if EXO_MASTER_BINARY_ONLY_BUILD
 static constexpr bool binary_only_ = true;
