@@ -250,6 +250,7 @@ namespace exo {
 				prepared_ = false;
 				prepare_erase_pending_ = false;
 				commit_pending_ = false;
+				start_erase_pending_ = false;
 				memset(&prepared_start_, 0, sizeof(prepared_start_));
 				recorder_.cancel_prepared();
 				if (armed_ && recorder_.state() != RecorderState::Recording) {

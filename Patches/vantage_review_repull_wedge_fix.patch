@@ -1,0 +1,29 @@
+diff --git a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+index 6fc8447..ff6c538 100644
+--- a/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
++++ b/Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h
+@@ -250,6 +250,7 @@ namespace exo {
+ 				prepared_ = false;
+ 				prepare_erase_pending_ = false;
+ 				commit_pending_ = false;
++				start_erase_pending_ = false;
+ 				memset(&prepared_start_, 0, sizeof(prepared_start_));
+ 				recorder_.cancel_prepared();
+ 				if (armed_ && recorder_.state() != RecorderState::Recording) {
+diff --git a/Firmware/Master/Core/Src/main.c b/Firmware/Master/Core/Src/main.c
+index ea1bf2e..728723f 100644
+--- a/Firmware/Master/Core/Src/main.c
++++ b/Firmware/Master/Core/Src/main.c
+@@ -1308,7 +1308,11 @@ namespace {
+ 		master_training_csv_coordinator.on_node_record_done(g_training_node_done[index]);
+ 		const exo::TrainingCsvState replay_state = master_training_csv_coordinator.state();
+ 		if (replay_state != exo::TrainingCsvState::WaitingForNode) {
+-			g_training_node_done_valid[index] = false;
++			/* g_training_node_done_valid stays set: the retained RecordDone is
++			 * the re-pull source for a source that later stalls or fails
++			 * validation, and clearing it here would wedge the scheduler when
++			 * the re-pull re-queues the same message. Double-accept is already
++			 * prevented by on_node_record_done's state guards. */
+ 			if (master_training_csv_coordinator.binary_only() &&
+ 				replay_state == exo::TrainingCsvState::ReceiveNode) {
+ 				EXO_LOG("[RECORD][BIN] node receive start source=%u session=%lu index=%u size=%lu\r\n",

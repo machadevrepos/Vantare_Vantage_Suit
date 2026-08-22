@@ -1308,7 +1308,11 @@ namespace {
 		master_training_csv_coordinator.on_node_record_done(g_training_node_done[index]);
 		const exo::TrainingCsvState replay_state = master_training_csv_coordinator.state();
 		if (replay_state != exo::TrainingCsvState::WaitingForNode) {
-			g_training_node_done_valid[index] = false;
+			/* g_training_node_done_valid stays set: the retained RecordDone is
+			 * the re-pull source for a source that later stalls or fails
+			 * validation, and clearing it here would wedge the scheduler when
+			 * the re-pull re-queues the same message. Double-accept is already
+			 * prevented by on_node_record_done's state guards. */
 			if (master_training_csv_coordinator.binary_only() &&
 				replay_state == exo::TrainingCsvState::ReceiveNode) {
 				EXO_LOG("[RECORD][BIN] node receive start source=%u session=%lu index=%u size=%lu\r\n",
