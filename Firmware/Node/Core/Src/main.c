@@ -500,15 +500,6 @@ static void node_blepipe_send_response(const blepipe_hdr_t &request_hdr,
 			payload_len);
 }
 
-static bool node_blepipe_send_record_payload(const uint8_t *payload, uint16_t payload_len)
-{
-	return node_blepipe_send(CUSTOM_STM_PIPEDATATX,
-			BLEPIPE_MSG_RAW_FORWARD,
-			BLEPIPE_ID_HUB,
-			payload,
-			payload_len);
-}
-
 static bool node_blepipe_send_record_payload_with_status(const uint8_t *payload,
 		uint16_t payload_len,
 		size_t *encoded_len_out,
@@ -809,7 +800,7 @@ static void node_blepipe_send_stream_status(const blepipe_hdr_t &request_hdr,
 	const uint8_t payload[4] = {
 		command_id,
 		static_cast<uint8_t>(node_blepipe_current_id()),
-		node_stream_enabled ? 1U : 0U,
+		static_cast<uint8_t>(node_stream_enabled ? 1U : 0U),
 		node_stream_interval_ms
 	};
 	node_blepipe_send_response(request_hdr, payload, static_cast<uint16_t>(sizeof(payload)));

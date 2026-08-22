@@ -255,6 +255,10 @@ public:
     }
 
     bool fifo_active() const { return fifo_active_; }
+    /* Status of the most recent FIFO/capture operation: 0 = ok, else the
+     * transport/config error code. Lets consumers distinguish an I2C error
+     * from a legitimately empty FIFO when a read returns zero frames. */
+    int8_t last_read_status() const { return last_read_status_; }
 
 private:
     /* TMST wrap guard: at 200 Hz a frame delta is ~5000 us; anything beyond

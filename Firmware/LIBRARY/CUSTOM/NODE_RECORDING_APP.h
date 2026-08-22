@@ -960,7 +960,7 @@ namespace exo {
 				if (record_icm_fifo_active_) {
 					const uint8_t icm_tail =
 							icm45686_.read_fifo_samples(icm_drain_buf_, kMaxIcmDrainPerTick);
-					if (icm_tail == 0U && icm45686_.last_read_status_ != 0) {
+					if (icm_tail == 0U && icm45686_.last_read_status() != 0) {
 						/* An I2C error and an empty FIFO both read as zero frames.
 						 * Only the empty FIFO means "caught the tail": retry a
 						 * transient error so a bus glitch cannot silently drop
