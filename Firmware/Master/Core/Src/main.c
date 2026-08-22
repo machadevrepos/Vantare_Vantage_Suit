@@ -3236,6 +3236,17 @@ int main(void)
 			}
 		}
 		if (training_state != master_training_csv_reported_state) {
+			/* Stall-abandons settle into WaitingForNode/Complete without the
+			 * completion-loop restore: hand any failed node's link back to
+			 * multi-link timing here. Idempotent HCI call. */
+			if (training_state == exo::TrainingCsvState::WaitingForNode ||
+					training_state == exo::TrainingCsvState::Complete ||
+					training_state == exo::TrainingCsvState::CsvError) {
+				const uint8_t stall_node = master_training_csv_coordinator.failure_node_id();
+				if (stall_node >= 1U && stall_node <= 4U) {
+					exo_hub_central_client_set_transfer_timing(stall_node, 0U);
+				}
+			}
 			if (training_state == exo::TrainingCsvState::StageError) {
 				const uint8_t failed_node = master_training_csv_coordinator.failure_node_id();
 				if (failed_node >= 1U && failed_node <= 4U) {

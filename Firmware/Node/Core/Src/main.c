@@ -539,7 +539,9 @@ static bool node_blepipe_send_reliable_frame(exo::RecordReliableType type,
 	hdr.payload_crc16 = blepipe_crc16_ccitt(payload, payload_len);
 	hdr.flags = flags;
 	const uint16_t total = static_cast<uint16_t>(sizeof(hdr) + payload_len);
-	if (total > sizeof(packet)) {
+	/* The blepipe envelope (18 B) rides in the same notification: the reliable
+	 * frame must fit MTU-3 minus the envelope or the stack drops every send. */
+	if (total > sizeof(packet) - sizeof(blepipe_hdr_t)) {
 		return false;
 	}
 	memcpy(packet, &hdr, sizeof(hdr));

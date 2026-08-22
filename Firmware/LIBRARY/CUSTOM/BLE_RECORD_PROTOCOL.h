@@ -23,9 +23,10 @@ enum class RecordCommand : uint8_t {
 
 static constexpr uint8_t kRecordReliableProtoVersion = 6U;
 static constexpr uint16_t kRecordReliableMagic = 0x5845U; /* "EX" little endian */
-/* 220 B payload + 21 B reliable header + 3 B ATT = 244 = MTU(247)-3: every
- * notification carries the maximum the negotiated MTU allows. */
-static constexpr uint16_t kRecordReliableDefaultChunkSize = 220U;
+/* Notification budget = MTU(247)-3 = 244 B, minus 18 B blepipe envelope,
+ * minus 21 B reliable header = 205 B max chunk. 200 keeps margin. (220
+ * overflowed the MTU and the stack silently dropped every chunk.) */
+static constexpr uint16_t kRecordReliableDefaultChunkSize = 200U;
 /* Matches the credit the Master actually grants per window (8). Every sender
  * and the browser presets must agree on this default or tuning gets confusing. */
 static constexpr uint8_t kRecordReliableDefaultCredit = 8U;
