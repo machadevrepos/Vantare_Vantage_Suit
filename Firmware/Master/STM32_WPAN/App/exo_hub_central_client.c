@@ -711,7 +711,7 @@ static void exo_start_pending_connection(void)
     return;
   }
   slot = &g_leaf_slots[g_connect_after_scan_slot];
-  EXO_LOG("[BLE][HUB][DISC] connect pending slot=%u node_hint=%u state=%u addr=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
+  EXO_LOG("[DISC] conn pend s=%u h=%u st=%u ad=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
           (unsigned)g_connect_after_scan_slot,
           (unsigned)slot->node_hint,
           (unsigned)slot->state,
@@ -735,12 +735,12 @@ static void exo_start_pending_connection(void)
   APP_BLE_LeafClientConnecting();
   if (conn_interval_min < EXO_HUB_CONN_INTERVAL_MIN_MULTI)
   {
-    EXO_LOG("[BLE][HUB][DISC] DISC WARN fast_leaf_interval: NODE%u conn=0x%04X-0x%04X may block multi-link scheduling\r\n",
+    EXO_LOG("[DISC] WARN fast ivl N%u cn=%04X-%04X blocks multi-link\r\n",
             (unsigned)exo_leaf_slot_node_id(slot),
             (unsigned)conn_interval_min,
             (unsigned)conn_interval_max);
   }
-  EXO_LOG("[BLE][HUB][DISC] params_a NODE%u slot=%u scan=0x%04X/0x%04X conn=0x%04X-0x%04X lat=%u to=0x%04X ce=0x%04X/0x%04X\r\n",
+  EXO_LOG("[DISC] pa N%u s=%u sc=%04X/%04X cn=%04X-%04X la=%u to=%04X ce=%04X/%04X\r\n",
           (unsigned)exo_leaf_slot_node_id(slot),
           (unsigned)g_connect_after_scan_slot,
           (unsigned)scan_interval,
@@ -751,7 +751,7 @@ static void exo_start_pending_connection(void)
           (unsigned)EXO_HUB_SUPERVISION_TIMEOUT,
           (unsigned)EXO_HUB_MIN_CE_LENGTH,
           (unsigned)EXO_HUB_MAX_CE_LENGTH);
-  EXO_LOG("[BLE][HUB][DISC] params_b NODE%u rdy_m=0x%02X xport_m=0x%02X act=%u rdy=%u busy=%u pend=%u tick=%lu\r\n",
+  EXO_LOG("[DISC] pb N%u rm=%02X xm=%02X a=%u rd=%u b=%u p=%u t=%lu\r\n",
           (unsigned)exo_leaf_slot_node_id(slot),
           (unsigned)exo_hub_central_client_ready_node_mask(),
           (unsigned)exo_hub_central_client_transport_ready_node_mask(),
@@ -794,7 +794,7 @@ static void exo_start_pending_connection(void)
             (unsigned)g_connect_after_scan_slot,
             (unsigned)slot->node_hint,
             (unsigned)status);
-    EXO_LOG("[BLE][HUB][DISC] fail detail NODE%u slot=%u st=%u/0x%02X %s retry_ms=%lu ce=0x%04X/0x%04X conn=0x%04X-0x%04X scan=0x%04X/0x%04X lat=%u to=0x%04X rdy_m=0x%02X xport_m=0x%02X act=%u rdy=%u busy=%u pend=%u tick=%lu\r\n",
+    EXO_LOG("[DISC] fail N%u s=%u st=%u/%02X %s r=%lu ce=%04X/%04X cn=%04X-%04X sc=%04X/%04X la=%u to=%04X rm=%02X xm=%02X a=%u rd=%u b=%u p=%u t=%lu\r\n",
             (unsigned)exo_leaf_slot_node_id(slot),
             (unsigned)g_connect_after_scan_slot,
             (unsigned)status,
@@ -1539,7 +1539,7 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
     if (memcmp(slot->addr, peer_address, 6U) != 0)
     {
       const uint8_t slot_index = (uint8_t)(slot - &g_leaf_slots[0]);
-      EXO_LOG("[BLE][HUB][DISC] addr mismatch slot=%u h=0x%04X exp=%02X:%02X:%02X:%02X:%02X:%02X got=%02X:%02X:%02X:%02X:%02X:%02X backoff\r\n",
+      EXO_LOG("[DISC] addr mm s=%u h=%04X e=%02X:%02X:%02X:%02X:%02X:%02X g=%02X:%02X:%02X:%02X:%02X:%02X bo\r\n",
               (unsigned)slot_index,
               (unsigned)connection_handle,
               (unsigned)slot->addr[5],
@@ -2045,7 +2045,7 @@ void aci_gatt_proc_complete_event(uint16_t Connection_Handle,
       g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RESUME_MS;
       APP_BLE_LeafClientScanIdle();
       exo_hub_leaf_topology_touch(slot->node_id != 0U ? slot->node_id : slot->node_hint);
-      EXO_LOG("[BLE][HUB][DISC] leaf ready slot=%u node=%u notify_mask=0x%02X resume=%lums ready_mask=0x%02X transport_mask=0x%02X\r\n",
+      EXO_LOG("[DISC] leaf rdy s=%u n=%u nm=%02X rs=%lums rm=%02X xm=%02X\r\n",
               (unsigned)(slot - &g_leaf_slots[0]),
               (unsigned)(slot->node_id != 0U ? slot->node_id : slot->node_hint),
               (unsigned)slot->notify_mask,
@@ -2072,7 +2072,7 @@ void aci_gatt_proc_complete_event(uint16_t Connection_Handle,
     g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RESUME_MS;
     APP_BLE_LeafClientScanIdle();
     exo_hub_leaf_topology_touch(slot->node_id != 0U ? slot->node_id : slot->node_hint);
-    EXO_LOG("[BLE][HUB][DISC] leaf ready slot=%u node=%u notify_mask=0x%02X resume=%lums ready_mask=0x%02X transport_mask=0x%02X\r\n",
+    EXO_LOG("[DISC] leaf rdy s=%u n=%u nm=%02X rs=%lums rm=%02X xm=%02X\r\n",
             (unsigned)(slot - &g_leaf_slots[0]),
             (unsigned)(slot->node_id != 0U ? slot->node_id : slot->node_hint),
             (unsigned)slot->notify_mask,

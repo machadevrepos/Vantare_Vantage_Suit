@@ -1897,7 +1897,7 @@ namespace {
 					g_record_sync.message.session_id == message.session_id &&
 					g_record_sync.message.start_timestamp_us == message.start_timestamp_us;
 			if (mask_matches && same_session) {
-				EXO_LOG("[BLE][HUB][SYNC] dup active start ign sess=%lu prep_sent=%u prep=0x%02X tgt=0x%02X\r\n",
+				EXO_LOG("[SYNC] dup start ign s=%lu ps=%u p=%02X t=%02X\r\n",
 						static_cast<unsigned long>(message.session_id),
 						static_cast<unsigned>(g_record_sync.prepare_sent ? 1U : 0U),
 						static_cast<unsigned>(g_record_sync.prepared_mask),
@@ -3233,7 +3233,7 @@ int main(void)
 		}
 		if (training_state != master_training_csv_reported_state) {
 			if (training_state == exo::TrainingCsvState::StageError) {
-				EXO_LOG("[TRAIN][CSV] invalid sess=%lu src=%u site=%u st_op=%u st_fr=%d csv_op=%u csv_fr=%d\r\n",
+				EXO_LOG("[TRN] inv s=%lu c=%u st=%u so=%u sf=%d co=%u cf=%d\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 						static_cast<unsigned>(master_training_csv_coordinator.failure_node_id()),
 						static_cast<unsigned>(master_training_csv_coordinator.failure_site()),
@@ -3290,7 +3290,7 @@ int main(void)
 		{
 			const bool training_partial = master_training_csv_coordinator.partial_finalized();
 			if (training_partial && !master_training_csv_reported_partial) {
-				EXO_LOG("[TRAIN][CSV] incomplete kept sess=%lu path=%s exp=0x%02X done=0x%02X rows=%lu st=%u\r\n",
+				EXO_LOG("[TRN] inc kept s=%lu p=%s e=%02X d=%02X r=%lu st=%u\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 						training_logger.path(),
 						static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
@@ -3353,7 +3353,7 @@ int main(void)
 					g_pending_node_manifest_last_tick = 0U;
 					master_training_csv_replay_pending_node_done();
 					if (g_have_pending_node_done) {
-						EXO_LOG("[BLE][REC][REL][NODEQ] start node manifest source=%u session=%lu size=%lu queue=%u\r\n",
+						EXO_LOG("[REL] start manifest src=%u sess=%lu sz=%lu q=%u\r\n",
 								static_cast<unsigned>(g_pending_node_done.node_id),
 								static_cast<unsigned long>(g_pending_node_done.session_id),
 								static_cast<unsigned long>(g_pending_node_done.total_size),
@@ -4206,7 +4206,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 			return 1U;
 		case 0xA2U: /* set stream interval ms */
 			if (length < 2U) {
-				EXO_LOG("[BLE][HUB][CTRL] stream interval missing arg len=%u\r\n", static_cast<unsigned>(length));
+				EXO_LOG("[CTRL] stream ivl no arg l=%u\r\n", static_cast<unsigned>(length));
 				(void) Custom_APP_SendCmdAck(payload, length, 0U);
 				return 0U;
 			}
