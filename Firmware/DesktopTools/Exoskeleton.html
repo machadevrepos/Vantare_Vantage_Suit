@@ -3496,7 +3496,7 @@ input[type="checkbox"] {
         }
         resetTransferUi(`Master SD Collection: ${sdState} \u00b7 ${srcMask(completed)} complete`);
         renderDevices();
-        if ((st === 10 || st === 11) && failureSite !== 0xFF) line += ` failure_site=${failureSite}`;
+        if (failureSite !== 0xFF && failureSite !== undefined) line += ` failure_site=${failureSite}`;
         if (failureNode) line += ` node=NODE${failureNode}`;
         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
         if (csvOp || csvFr) line += ` csv_op=${csvOp} csv_fr=${csvFr}(${FRESULT_NAMES[csvFr] ?? "?"})`;

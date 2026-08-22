@@ -224,6 +224,10 @@ if (binary_only_) {
 completed_source_mask_ = static_cast<uint8_t>(completed_source_mask_ | 0x01U);
 state_ = ((completed_source_mask_ | failed_source_mask_) & expected_source_mask_) == expected_source_mask_ ?
 TrainingCsvState::Complete : TrainingCsvState::WaitingForNode;
+/* The node stall window must start when node staging can actually begin:
+ * the master's own finalize+archive (30 s+) already consumed the old
+ * baseline and would abandon the node the instant it is staged. */
+last_progress_ms_ = 0U;
 return;
 }
 master_ledger_matches_ = !ledger_.overflowed() &&
@@ -258,6 +262,8 @@ return;
 reliable_defer_services_ = 1U;
 active_node_id_ = static_cast<uint8_t>(done.node_id);
 node_bno_index_ = node_icm_index_ = 0U;
+/* Fresh stall window: chunks start from scratch for this source. */
+last_progress_ms_ = 0U;
 state_ = TrainingCsvState::ReceiveNode;
 }
 void on_node_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length)
@@ -698,12 +704,17 @@ const uint8_t resolved = static_cast<uint8_t>(completed_source_mask_ | failed_so
 if (binary_only_) {
 state_ = ((resolved & expected_source_mask_) == expected_source_mask_) ?
 TrainingCsvState::Complete : TrainingCsvState::WaitingForNode;
+/* Waiting for the NEXT node: its window starts now, not at session begin. */
+last_progress_ms_ = 0U;
 return;
 }
 if ((resolved & expected_source_mask_) == expected_source_mask_) {
 if (logger_.shutdown(now_ms)) state_ = TrainingCsvState::Complete;
 else fail(TrainingCsvState::CsvError, TrainingFailSite::Site19);
-} else state_ = TrainingCsvState::WaitingForNode;
+} else {
+state_ = TrainingCsvState::WaitingForNode;
+last_progress_ms_ = 0U;
+}
 }
 void abandon_active_node(uint32_t now_ms)
 {
