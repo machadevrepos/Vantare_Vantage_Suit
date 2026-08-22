@@ -976,7 +976,7 @@ static uint8_t exo_send_blepipe_packet(exo_leaf_slot_t *slot,
                                                               slot->ctrl_rx_value_handle,
                                                               (uint8_t)encoded_len,
                                                               packet);
-    EXO_LOG("[BLE][HUB][TX] retry-write node=%u msg=0x%02X dst=0x%04X handle=0x%04X len=%u status=0x%02X\r\n",
+    EXO_LOG("[TX] retry n=%u m=%02X d=%04X h=%04X l=%u s=%02X\r\n",
             (unsigned)(slot->node_id != 0U ? slot->node_id : slot->node_hint),
             (unsigned)msg_type,
             (unsigned)dst_id,
@@ -1021,7 +1021,7 @@ static uint8_t exo_hub_maybe_queue_record_done(const uint8_t *payload,
   accepted = exo_hub_leaf_record_done_ingest(payload, length);
   if (accepted != 0U)
   {
-    EXO_LOG("[BLE][HUB][LEAF] record_done suppress_phone reason=%s node=%u session=%lu size=%lu crc=0x%08lX\r\n",
+    EXO_LOG("[LEAF] done supp_phone r=%s n=%u s=%lu sz=%lu c=%08lX\r\n",
             reason,
             (unsigned)done.node_id,
             (unsigned long)done.session_id,
@@ -1030,7 +1030,7 @@ static uint8_t exo_hub_maybe_queue_record_done(const uint8_t *payload,
     return 1U;
   }
 
-  EXO_LOG("[BLE][HUB][LEAF] record_done queue_fail forward_phone reason=%s node=%u session=%lu size=%lu\r\n",
+  EXO_LOG("[LEAF] done qfail fwd r=%s n=%u s=%lu sz=%lu\r\n",
           reason,
           (unsigned)done.node_id,
           (unsigned long)done.session_id,

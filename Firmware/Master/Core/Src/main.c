@@ -460,7 +460,7 @@ namespace {
 	{
 		const exo::diag::AcquisitionDiagnostics &d = g_acq_diag;
 		const uint32_t ms = d.session_duration_ms();
-		EXO_LOG("[ACQ][DIAG] ms=%lu iters=%lu max_us=%lu mean_us=%lu gt5/10/20/100=%lu/%lu/%lu/%lu\r\n",
+		EXO_LOG("[ACQ] ms=%lu it=%lu mx=%lu mn=%lu gt=%lu/%lu/%lu/%lu\r\n",
 				static_cast<unsigned long>(ms),
 				static_cast<unsigned long>(d.loop.count),
 				static_cast<unsigned long>(d.loop.max_us),
@@ -484,7 +484,7 @@ namespace {
 				static_cast<unsigned long>(d.bno_reports[exo::diag::kBnoSlotGravity]),
 				static_cast<unsigned long>(d.bno_reports[exo::diag::kBnoSlotGyro]),
 				static_cast<unsigned long>(d.bno_reports[exo::diag::kBnoSlotOther]));
-		EXO_LOG("[ACQ][DIAG] icm att=%lu ok=%lu fail=%lu hz=%lu gap_us=%lu rd_max=%lu rd_tot=%lu\r\n",
+		EXO_LOG("[ACQ] icm a=%lu o=%lu f=%lu hz=%lu g=%lu rm=%lu rt=%lu\r\n",
 				static_cast<unsigned long>(d.icm_attempts),
 				static_cast<unsigned long>(d.icm_ok),
 				static_cast<unsigned long>(d.icm_fail),
