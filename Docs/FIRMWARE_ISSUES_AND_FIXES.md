@@ -351,6 +351,21 @@ The roadmap above was executed end-to-end. Every fix is in code with Python inva
 | `3ca45ab` node_p2_robustness | #14 (validated inbound chunk indices), #15 (TMST wrap → nominal-period substitution), #16 (I²C-error ≠ empty-FIFO at the tail, 5-retry budget), #17 (plain StartRecord can no longer wipe a retained ReadyForUpload session), #19 (DIAG self-test moved to the recovery sector), #18-half (SPI1 /16→/4 = 8 MHz), P3 node-id lane alignment + legacy-ACK retx release |
 | `2fb2218` master_protocol_p2 | #20 (stale-ACK escape now reachable), #21 (bounded 8-retry SD read failures instead of instant dead-end), #22 (live-stream switch latched and restored at collection end), #23 (ValidateNode stall coverage), #25 (browser NACK packs the 14-B flags field), #26 (protocol default credit = 8, matches the grant), #28 (resolved sources no longer re-granted ManifestAck credit), #29 (CRC-mismatch StageError marks the source failed and is re-pullable in binary-only runs), P3 dead opcodes removed + transfer-window chunk-size bound enforced |
 | `77b7927` review_repull_wedge_fix | Review finding P1: retained-done `valid` flag must survive replay or the re-pull wedges the scheduler; review P3: `start_erase_pending_` cleared on abort |
+| `52e547b` master_link_overflow_patch | Master stopped linking: `.bss` +1880 B and FLASH +497 B over region caps. RAM region restored to full 128K SRAM1 (`0xFFF8 → 0x1FFF8`); 4 unused statics dropped from `main.c`; ~50 `EXO_LOG` literals compressed (every field kept) → links clean with 539 B flash margin. Details below |
+
+## Linker memory budget (Master, after `52e547b`)
+
+Both project linker scripts have carried undersized MEMORY caps since the repo's first commit — `FLASH = 124K`, `RAM = 64K−8` — on an STM32WB55CCU6 (256 KB flash, 128 KB SRAM1). Nothing documents those numbers as deliberate (no bootloader/OTA layout anywhere), but they were harmless until this campaign added ~7.7 KB of statics (the 4 KB stager write buffer from the throughput fix, ~3.6 KB BNO85 queue depth 64) and the code growth pushed the image past both caps.
+
+- **RAM**: `LENGTH = 0x1FFF8` restores all of SRAM1. The CPU2-shared areas already live in SRAM2 (`MAPPING_TABLE`, `MB_MEM1/2` @ `0x20030000`), so the upper 64 KB is pure application RAM; `_estack` now sits at `0x2001FFF8`.
+- **FLASH**: the 124K cap was *kept* on purpose — the FUS + wireless stack binaries occupy the top of internal flash on STM32WB, so free user flash < 256 K and 124 K is the only value known-good on this hardware. Instead the image was trimmed ≥1 KB: dead statics (`master_ble_session_id`, `send_record_lane_v3`, `rad_to_mdeg`, `clamp_i16` — already GC'd, zero binary change) and wording compression of the longest log literals in `main.c` / `exo_hub_central_client.c` (format specifiers and field order untouched; no desktop tool parses these tags).
+
+| Region | Limit | Used | Margin |
+|---|---|---|---|
+| FLASH (cap kept at 124K) | 126,976 B | 126,437 B | **539 B** |
+| RAM (`.data`+`.bss`, now 128K−8) | 131,064 B | 65,872 B | **~65 KB** |
+
+**Watch items:** (1) `Firmware/Node/*.ld` still carries the same undersized caps — Node links today, but apply the same RAM correction before its next feature lands. (2) The 539 B flash margin is thin; if it shrinks again, verify the true free window above the app with STM32CubeProgrammer (find where the installed FUS/stack begins) and raise the 124K cap deliberately rather than trimming more logs.
 
 ## Deferred with rationale
 
