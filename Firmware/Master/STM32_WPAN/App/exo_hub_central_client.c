@@ -545,7 +545,7 @@ static uint8_t exo_parse_leaf_name_id(const uint8_t *name, uint8_t len)
 
 static void exo_log_adv_report(const Advertising_Report_t *report, uint8_t node_id)
 {
-  EXO_LOG("[BLE][HUB][DISC] adv node=%u addr=%02X:%02X:%02X:%02X:%02X:%02X rssi=%d type=0x%02X len=%u\r\n",
+  EXO_LOG("[DISC] adv n=%u ad=%02X:%02X:%02X:%02X:%02X:%02X r=%d t=%02X l=%u\r\n",
           (unsigned)node_id,
           (unsigned)report->Address[5],
           (unsigned)report->Address[4],
@@ -1499,7 +1499,7 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
   }
   slot = &g_leaf_slots[g_pending_slot];
   g_pending_slot = 0xFFU;
-  EXO_LOG("[BLE][HUB][DISC] conn complete slot=%u st=%u h=0x%04X ptype=%u addr=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
+  EXO_LOG("[DISC] conn done s=%u st=%u h=%04X pt=%u ad=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
           (unsigned)(slot - &g_leaf_slots[0]),
           (unsigned)status,
           (unsigned)connection_handle,
