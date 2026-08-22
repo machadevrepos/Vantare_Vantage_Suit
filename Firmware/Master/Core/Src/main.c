@@ -230,7 +230,6 @@ namespace {
 	constexpr uint8_t kPendingNodeDoneQueueSize = 4U;
 	constexpr uint32_t kDefaultRecordDurationMs = 10000U;
 	constexpr uint64_t kDefaultLeadTimeUs = 300000ULL;
-	constexpr uint32_t kMasterBleSessionTag = 0x80000000UL;
 	constexpr uint8_t kRecordProtoV3 = 3U;
 
 	static bool master_blepipe_send(Custom_STM_Char_Opcode_t char_opcode,
@@ -238,44 +237,6 @@ namespace {
 			uint16_t dst_id,
 			const uint8_t *payload,
 			uint16_t payload_len);
-
-	static uint32_t master_ble_session_id(uint32_t base_session_id)
-			{
-		return (base_session_id | kMasterBleSessionTag);
-	}
-
-	static bool send_record_lane_v3(uint32_t session_id,
-			uint16_t source_id,
-			exo::RecordLaneId lane_id,
-			exo::RecordLaneMsgType msg_type,
-			uint16_t sequence,
-			uint32_t offset,
-			const uint8_t *payload,
-			uint16_t payload_len,
-			uint16_t flags = 0U)
-			{
-		uint8_t packet[244];
-		exo::RecordLaneFrameV3Header hdr { };
-		hdr.command = exo::RecordCommand::LaneFrameV3;
-		hdr.proto_version = kRecordProtoV3;
-		hdr.session_id = session_id;
-		hdr.source_id = source_id;
-		hdr.lane_id = static_cast<uint8_t>(lane_id);
-		hdr.msg_type = static_cast<uint8_t>(msg_type);
-		hdr.sequence = sequence;
-		hdr.offset = offset;
-		hdr.payload_len = payload_len;
-		hdr.flags = flags;
-		const uint16_t total = static_cast<uint16_t>(sizeof(hdr) + payload_len);
-		if (total > sizeof(packet)) {
-			return false;
-		}
-		memcpy(packet, &hdr, sizeof(hdr));
-		if (payload != nullptr && payload_len > 0U) {
-			memcpy(packet + sizeof(hdr), payload, payload_len);
-		}
-		return Custom_APP_SendRecordFrame(packet, static_cast<uint8_t>(total)) == BLE_STATUS_SUCCESS;
-	}
 
 	static bool send_reliable_record_frame(exo::RecordReliableType type,
 			uint16_t source_id,
@@ -499,7 +460,7 @@ namespace {
 	{
 		const exo::diag::AcquisitionDiagnostics &d = g_acq_diag;
 		const uint32_t ms = d.session_duration_ms();
-		EXO_LOG("[ACQ][DIAG] session_ms=%lu loop_iters=%lu loop_max_us=%lu loop_mean_us=%lu gt5=%lu gt10=%lu gt20=%lu gt100=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] ms=%lu iters=%lu max_us=%lu mean_us=%lu gt5/10/20/100=%lu/%lu/%lu/%lu\r\n",
 				static_cast<unsigned long>(ms),
 				static_cast<unsigned long>(d.loop.count),
 				static_cast<unsigned long>(d.loop.max_us),
@@ -508,7 +469,7 @@ namespace {
 				static_cast<unsigned long>(d.loop.over_10ms),
 				static_cast<unsigned long>(d.loop.over_20ms),
 				static_cast<unsigned long>(d.loop.over_100ms));
-		EXO_LOG("[ACQ][DIAG] bno svc=%lu ok=%lu rate_chz=%lu max_gap_us=%lu svc_max_us=%lu svc_total_us=%lu i2c_err=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] bno svc=%lu ok=%lu hz=%lu gap_us=%lu svc_max=%lu svc_tot=%lu i2c_err=%lu\r\n",
 				static_cast<unsigned long>(d.bno_service_calls),
 				static_cast<unsigned long>(d.bno_take_latest_ok),
 				static_cast<unsigned long>(d.rate_centihz(d.bno_take_latest_ok)),
@@ -523,7 +484,7 @@ namespace {
 				static_cast<unsigned long>(d.bno_reports[exo::diag::kBnoSlotGravity]),
 				static_cast<unsigned long>(d.bno_reports[exo::diag::kBnoSlotGyro]),
 				static_cast<unsigned long>(d.bno_reports[exo::diag::kBnoSlotOther]));
-		EXO_LOG("[ACQ][DIAG] icm att=%lu ok=%lu fail=%lu rate_chz=%lu max_gap_us=%lu rd_max_us=%lu rd_total_us=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] icm att=%lu ok=%lu fail=%lu hz=%lu gap_us=%lu rd_max=%lu rd_tot=%lu\r\n",
 				static_cast<unsigned long>(d.icm_attempts),
 				static_cast<unsigned long>(d.icm_ok),
 				static_cast<unsigned long>(d.icm_fail),
@@ -531,7 +492,7 @@ namespace {
 				static_cast<unsigned long>(d.icm_gap.max_gap_us),
 				static_cast<unsigned long>(d.icm_read.max_us),
 				static_cast<unsigned long>(d.icm_read.total_us));
-		EXO_LOG("[ACQ][DIAG] sd bno_ok=%lu bno_fail=%lu icm_ok=%lu icm_fail=%lu flushes=%lu w_max_us=%lu gt5=%lu gt10=%lu gt20=%lu gt100=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] sd bno ok/fail=%lu/%lu icm ok/fail=%lu/%lu flush=%lu wmax_us=%lu gt5/10/20/100=%lu/%lu/%lu/%lu\r\n",
 				static_cast<unsigned long>(d.sd_bno_append_ok),
 				static_cast<unsigned long>(d.sd_bno_append_fail),
 				static_cast<unsigned long>(d.sd_icm_append_ok),
@@ -542,14 +503,14 @@ namespace {
 				static_cast<unsigned long>(d.sd_write.over_10ms),
 				static_cast<unsigned long>(d.sd_write.over_20ms),
 				static_cast<unsigned long>(d.sd_write.over_100ms));
-		EXO_LOG("[ACQ][DIAG] comms ble_max_us=%lu ble_gt5=%lu central_max_us=%lu central_gt5=%lu leaf_max_us=%lu leaf_gt5=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] comms (max/gt5 us) ble=%lu/%lu cen=%lu/%lu leaf=%lu/%lu\r\n",
 				static_cast<unsigned long>(d.comms_ble.max_us),
 				static_cast<unsigned long>(d.comms_ble.over_5ms),
 				static_cast<unsigned long>(d.comms_central.max_us),
 				static_cast<unsigned long>(d.comms_central.over_5ms),
 				static_cast<unsigned long>(d.comms_leaf.max_us),
 				static_cast<unsigned long>(d.comms_leaf.over_5ms));
-		EXO_LOG("[ACQ][DIAG] modes sd_suppress=%u quiet_comms=%u icm_only=%u bno_only=%u bno_rv_only=%u summaries=%lu\r\n",
+		EXO_LOG("[ACQ][DIAG] modes sd_sup=%u quiet=%u icm_only=%u bno_only=%u rv_only=%u sums=%lu\r\n",
 				static_cast<unsigned>(EXO_ACQ_DIAG_SUPPRESS_SD),
 				static_cast<unsigned>(EXO_ACQ_DIAG_QUIET_COMMS),
 				static_cast<unsigned>(EXO_ACQ_DIAG_ICM_ONLY),
@@ -688,23 +649,6 @@ namespace {
 				static_cast<unsigned>(count),
 				static_cast<unsigned long>(g_recovery_queue_drops));
 		return false;
-	}
-
-	static int16_t clamp_i16(int32_t value)
-			{
-		if (value > 32767) {
-			return 32767;
-		}
-		if (value < -32768) {
-			return -32768;
-		}
-		return static_cast<int16_t>(value);
-	}
-
-	static int16_t rad_to_mdeg(float value_rad)
-			{
-		const float value_deg = value_rad * (180.0f / 3.14159265f);
-		return clamp_i16(static_cast<int32_t>(value_deg * 1000.0f));
 	}
 
 	static uint8_t clamp_u8(uint32_t value, uint8_t min_value, uint8_t max_value)
@@ -850,7 +794,7 @@ namespace {
 		const uint8_t training_completed_mask = master_training_csv_coordinator.completed_source_mask();
 		if (training_expected_mask != 0U &&
 				(training_completed_mask & training_expected_mask) != training_expected_mask) {
-			EXO_LOG("[TRAIN][CSV] incomplete session=%lu expected=0x%02X completed=0x%02X\r\n",
+			EXO_LOG("[TRAIN][CSV] incomplete sess=%lu exp=0x%02X done=0x%02X\r\n",
 					static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 					static_cast<unsigned>(training_expected_mask),
 					static_cast<unsigned>(training_completed_mask));
@@ -1449,7 +1393,7 @@ namespace {
 		}
 		g_ble_record_transfer_mode = true;
 		g_ble_start_or_record_in_progress = true;
-		EXO_LOG("[RECORD][BIN] re-pull armed source=NODE%u session=%lu size=%lu crc=0x%08lX\r\n",
+		EXO_LOG("[RECORD][BIN] re-pull armed NODE%u sess=%lu size=%lu crc=0x%08lX\r\n",
 				static_cast<unsigned>(node_id),
 				static_cast<unsigned long>(done.session_id),
 				static_cast<unsigned long>(done.total_size),
@@ -1684,7 +1628,7 @@ namespace {
 				EXO_LOG("[BLE][HUB][STOP] local stop released after node ACKs session=%lu\r\n",
 						static_cast<unsigned long>(g_record_stop_sync.message.session_id));
 			}
-			EXO_LOG("[BLE][HUB][STOP] complete session=%lu target=0x%02X attempts=%u\r\n",
+			EXO_LOG("[BLE][HUB][STOP] complete sess=%lu tgt=0x%02X att=%u\r\n",
 					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
 					static_cast<unsigned>(g_record_stop_sync.target_mask),
 					static_cast<unsigned>(g_record_stop_sync.send_attempts));
@@ -1698,7 +1642,7 @@ namespace {
 				g_local_stop_waiting_for_nodes = false;
 				g_local_stop_requested = true;
 			}
-			EXO_LOG("[BLE][HUB][STOP] timeout session=%lu target=0x%02X ack=0x%02X missing=0x%02X sent=0x%02X attempts=%u\r\n",
+			EXO_LOG("[BLE][HUB][STOP] timeout sess=%lu tgt=0x%02X ack=0x%02X miss=0x%02X sent=0x%02X att=%u\r\n",
 					static_cast<unsigned long>(g_record_stop_sync.message.session_id),
 					static_cast<unsigned>(g_record_stop_sync.target_mask),
 					static_cast<unsigned>(g_record_stop_sync.ack_mask),
@@ -1828,7 +1772,7 @@ namespace {
 		const uint8_t prepared_target_mask = static_cast<uint8_t>(g_record_sync.prepared_mask & g_record_sync.target_mask);
 		if (g_record_sync.target_mask != 0U && prepared_target_mask != g_record_sync.target_mask) {
 			g_record_sync.failed_mask = static_cast<uint8_t>(g_record_sync.target_mask & ~prepared_target_mask);
-			EXO_LOG("[BLE][HUB][SYNC] commit blocked missing_prepare session=%lu target=0x%02X prepared=0x%02X missing=0x%02X\r\n",
+			EXO_LOG("[BLE][HUB][SYNC] commit blocked no_prepare sess=%lu tgt=0x%02X prep=0x%02X miss=0x%02X\r\n",
 					static_cast<unsigned long>(g_record_sync.message.session_id),
 					static_cast<unsigned>(g_record_sync.target_mask),
 					static_cast<unsigned>(g_record_sync.prepared_mask),
@@ -1849,7 +1793,7 @@ namespace {
 																		0U;
 		if (g_record_sync.target_mask != 0U && commit_mask != g_record_sync.target_mask) {
 			g_record_sync.failed_mask = static_cast<uint8_t>(g_record_sync.target_mask & ~commit_mask);
-			EXO_LOG("[BLE][HUB][SYNC] commit send failed session=%lu target=0x%02X commit=0x%02X\r\n",
+			EXO_LOG("[BLE][HUB][SYNC] commit send fail sess=%lu tgt=0x%02X cmt=0x%02X\r\n",
 					static_cast<unsigned long>(g_record_sync.message.session_id),
 					static_cast<unsigned>(g_record_sync.target_mask),
 					static_cast<unsigned>(commit_mask));
@@ -1868,7 +1812,7 @@ namespace {
 		leaf_ble_manager.set_transfer_hold(false);
 		const exo::StartRecordMessage &message = g_record_sync.message;
 		if (!local_record_start(g_record_sync.message, true)) {
-			EXO_LOG("[RECORD][BIN] master start failed session=%lu index=%u\r\n",
+			EXO_LOG("[RECORD][BIN] master start fail sess=%lu idx=%u\r\n",
 					static_cast<unsigned long>(message.session_id),
 					static_cast<unsigned>(g_record_sync.file_index));
 			record_sync_abort(1U);
@@ -1897,7 +1841,7 @@ namespace {
 				static_cast<unsigned>(g_record_sync.target_mask),
 				static_cast<unsigned>(commit_mask),
 				static_cast<unsigned>(g_record_sync.prepared_mask));
-		EXO_LOG("[RECORD][MASTER] COMMIT session=%lu target=0x%02X commit=0x%02X commit_send_ms=%lu master_start_ms=%lu\r\n",
+		EXO_LOG("[RECORD][MASTER] COMMIT sess=%lu tgt=0x%02X cmt=0x%02X cmt_ms=%lu start_ms=%lu\r\n",
 				static_cast<unsigned long>(g_record_sync.message.session_id),
 				static_cast<unsigned>(g_record_sync.target_mask),
 				static_cast<unsigned>(commit_mask),
@@ -1953,7 +1897,7 @@ namespace {
 					g_record_sync.message.session_id == message.session_id &&
 					g_record_sync.message.start_timestamp_us == message.start_timestamp_us;
 			if (mask_matches && same_session) {
-				EXO_LOG("[BLE][HUB][SYNC] duplicate active start ignored session=%lu prepare_sent=%u prepared=0x%02X target=0x%02X\r\n",
+				EXO_LOG("[BLE][HUB][SYNC] dup active start ign sess=%lu prep_sent=%u prep=0x%02X tgt=0x%02X\r\n",
 						static_cast<unsigned long>(message.session_id),
 						static_cast<unsigned>(g_record_sync.prepare_sent ? 1U : 0U),
 						static_cast<unsigned>(g_record_sync.prepared_mask),
@@ -1966,7 +1910,7 @@ namespace {
 		if (requested_node_mask != 0U &&
 				(!exo::session_node_mask_valid(requested_node_mask) ||
 				exo::session_missing_node_mask(requested_node_mask, ready_node_mask) != 0U)) {
-			EXO_LOG("[BLE][HUB][SYNC] reject selected=0x%02X ready=0x%02X missing=0x%02X\r\n",
+			EXO_LOG("[BLE][HUB][SYNC] reject sel=0x%02X rdy=0x%02X miss=0x%02X\r\n",
 					static_cast<unsigned>(requested_node_mask),
 					static_cast<unsigned>(ready_node_mask),
 					static_cast<unsigned>(exo::session_missing_node_mask(requested_node_mask, ready_node_mask)));
@@ -1981,7 +1925,7 @@ namespace {
 				return 3U;
 			}
 			if (message.requested_duration_ms > capacity_duration_ms) {
-				EXO_LOG("[BLE][HUB][SYNC] clamp safety duration requested=%lu capacity=%lu mask=0x%02X\r\n",
+				EXO_LOG("[BLE][HUB][SYNC] clamp safety req=%lu cap=%lu mask=0x%02X\r\n",
 						static_cast<unsigned long>(message.requested_duration_ms),
 						static_cast<unsigned long>(capacity_duration_ms),
 						static_cast<unsigned>(requested_node_mask));
@@ -2024,7 +1968,7 @@ namespace {
 		}
 
 		if (ready_leaf_count != 0U && g_record_sync.target_mask == 0U) {
-			EXO_LOG("[BLE][HUB][SYNC] reject ready leaves without node id count=%u session=%lu\r\n",
+			EXO_LOG("[BLE][HUB][SYNC] reject ready no-node-id cnt=%u sess=%lu\r\n",
 					static_cast<unsigned>(ready_leaf_count),
 					static_cast<unsigned long>(message.session_id));
 			record_sync_send_phone_ack(0U);
@@ -2035,7 +1979,7 @@ namespace {
 		if (g_record_sync.target_mask == 0U && transport_ready_leaf_count != 0U) {
 			g_record_sync.deadline_ms = HAL_GetTick() + kRecordAppReadyTimeoutMs;
 			record_sync_send_heartbeat(BLEPIPE_RECORD_START_PHASE_WAIT_APP_READY, true);
-			EXO_LOG("[BLE][HUB][SYNC] wait app-ready session=%lu transport=0x%02X timeout=%lums\r\n",
+			EXO_LOG("[BLE][HUB][SYNC] wait app-ready sess=%lu xport=0x%02X to=%lums\r\n",
 					static_cast<unsigned long>(message.session_id),
 					static_cast<unsigned>(transport_ready_mask),
 					static_cast<unsigned long>(kRecordAppReadyTimeoutMs));
@@ -2051,7 +1995,7 @@ namespace {
 		const uint32_t cooldown_ms = remote_reset_cooldown_remaining_ms(HAL_GetTick());
 		if (cooldown_ms != 0U) {
 			record_sync_send_heartbeat(BLEPIPE_RECORD_START_PHASE_RESET_COOLDOWN, true);
-			EXO_LOG("[BLE][HUB][SYNC] prepare deferred reset_cooldown_ms=%lu session=%lu target=0x%02X\r\n",
+			EXO_LOG("[BLE][HUB][SYNC] prep deferred cd_ms=%lu sess=%lu tgt=0x%02X\r\n",
 					static_cast<unsigned long>(cooldown_ms),
 					static_cast<unsigned long>(message.session_id),
 					static_cast<unsigned>(g_record_sync.target_mask));
@@ -2653,7 +2597,7 @@ namespace {
 				return;
 			}
 			if (step == exo::MasterSdSessionRecorder::ArchiveStep::Failed) {
-				EXO_LOG("[RECORD][BIN] master archive retry session=%lu index=%u attempt=%u fr=%d\r\n",
+				EXO_LOG("[RECORD][BIN] archive retry sess=%lu idx=%u att=%u fr=%d\r\n",
 						static_cast<unsigned long>(g_local_start_msg.session_id),
 						static_cast<unsigned>(g_active_session_file_index),
 						static_cast<unsigned>(g_local_archive_attempt),
@@ -2668,14 +2612,14 @@ namespace {
 			master_training_csv_coordinator.on_master_finalized(g_local_session_recorder);
 			const exo::SessionHeader &session_header = g_local_session_recorder.header();
 			g_local_session_size = g_local_session_recorder.total_size();
-			EXO_LOG("[MASTER][REC] finalized session=%lu bno=%lu icm=%lu size=%lu bno_fail=%lu icm_fail=%lu\r\n",
+			EXO_LOG("[MASTER][REC] final sess=%lu bno=%lu icm=%lu sz=%lu bf=%lu ifl=%lu\r\n",
 					static_cast<unsigned long>(session_header.session_id),
 					static_cast<unsigned long>(session_header.bno85_sample_count),
 					static_cast<unsigned long>(session_header.icm45686_sample_count),
 					static_cast<unsigned long>(g_local_session_size),
 					static_cast<unsigned long>(g_local_bno_append_fail),
 					static_cast<unsigned long>(g_local_icm_append_fail));
-			EXO_LOG("[RECORD][MASTER] END session=%lu duration_ms=%lu size=%lu bno=%lu icm=%lu\r\n",
+			EXO_LOG("[RECORD][MASTER] END sess=%lu ms=%lu sz=%lu bno=%lu icm=%lu\r\n",
 					static_cast<unsigned long>(session_header.session_id),
 					static_cast<unsigned long>(g_local_finalize_duration_ms),
 					static_cast<unsigned long>(g_local_session_size),
@@ -2822,7 +2766,7 @@ namespace {
 			 * a missing Node ACK beyond the requested duration. */
 			g_local_stop_waiting_for_nodes = false;
 			g_local_stop_requested = true;
-			EXO_LOG("[BLE][HUB][STOP] automatic capacity guard session=%lu elapsed_ms=%lu\r\n",
+			EXO_LOG("[BLE][HUB][STOP] capacity guard sess=%lu elapsed_ms=%lu\r\n",
 					static_cast<unsigned long>(safety_stop.session_id),
 					static_cast<unsigned long>(elapsed_ms));
 		}
@@ -2890,7 +2834,7 @@ namespace {
 				}
 			}
 			if (last_tail_count == tail_capacity) {
-				EXO_LOG("[RECORD][MASTER] WARN ICM FIFO tail drain reached safety bound session=%lu\r\n",
+				EXO_LOG("[RECORD][MASTER] WARN ICM tail drain bound hit sess=%lu\r\n",
 						static_cast<unsigned long>(g_local_start_msg.session_id));
 			}
 		}
@@ -2909,7 +2853,7 @@ namespace {
 		 * BLE dispatch and node collection continue while the recording is
 		 * sealed. */
 		if (!g_local_session_recorder.begin_finalize(g_local_finalize_duration_ms)) {
-			EXO_LOG("[MASTER][REC] finalize begin failed fr=%d bno_fail=%lu icm_fail=%lu\r\n",
+			EXO_LOG("[MASTER][REC] finalize begin fail fr=%d bf=%lu ifl=%lu\r\n",
 					static_cast<int>(g_local_session_recorder.last_error()),
 					static_cast<unsigned long>(g_local_bno_append_fail),
 					static_cast<unsigned long>(g_local_icm_append_fail));
@@ -3253,7 +3197,7 @@ int main(void)
 			}
 			if (master_training_csv_coordinator.binary_only()) {
 				if (source_id == 0U) {
-					EXO_LOG("[RECORD][BIN] source durable source=MASTER index=%u completed=0x%02X\r\n",
+					EXO_LOG("[RECORD][BIN] durable MASTER idx=%u done=0x%02X\r\n",
 							static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 							static_cast<unsigned>(training_completed_mask));
 					continue;
@@ -3269,7 +3213,7 @@ int main(void)
 							done.session_id, source_id, done.payload_crc32);
 				}
 				const uint8_t cleanup_bit = static_cast<uint8_t>(1U << source_id);
-				EXO_LOG("[RECORD][BIN] source durable source=NODE%u index=%u completed=0x%02X cleanup_pending=%u released=%u\r\n",
+				EXO_LOG("[RECORD][BIN] durable NODE%u idx=%u done=0x%02X cln_pend=%u rel=%u\r\n",
 						static_cast<unsigned>(source_id),
 						static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 						static_cast<unsigned>(training_completed_mask),
@@ -3285,7 +3229,7 @@ int main(void)
 		}
 		if (training_state != master_training_csv_reported_state) {
 			if (training_state == exo::TrainingCsvState::StageError) {
-				EXO_LOG("[TRAIN][CSV] validation failed session=%lu source=%u site=%u stage_op=%u stage_fr=%d csv_op=%u csv_fr=%d\r\n",
+				EXO_LOG("[TRAIN][CSV] invalid sess=%lu src=%u site=%u st_op=%u st_fr=%d csv_op=%u csv_fr=%d\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 						static_cast<unsigned>(master_training_csv_coordinator.failure_node_id()),
 						static_cast<unsigned>(master_training_csv_coordinator.failure_site()),
@@ -3294,7 +3238,7 @@ int main(void)
 						static_cast<unsigned>(master_training_csv_coordinator.failure_csv_operation()),
 						static_cast<int>(master_training_csv_coordinator.failure_csv_result()));
 			} else if (training_state == exo::TrainingCsvState::CsvError) {
-				EXO_LOG("[TRAIN][CSV] failed session=%lu site=%u op=%s fr=%d expected=0x%02X completed=0x%02X\r\n",
+				EXO_LOG("[TRAIN][CSV] failed sess=%lu site=%u op=%s fr=%d exp=0x%02X done=0x%02X\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 						static_cast<unsigned>(master_training_csv_coordinator.failure_site()),
 						exo::training_csv::training_csv_log_operation_name(
@@ -3304,7 +3248,7 @@ int main(void)
 						static_cast<unsigned>(training_completed_mask));
 			} else if (training_state == exo::TrainingCsvState::Complete) {
 				if (master_training_csv_coordinator.binary_only()) {
-					EXO_LOG("[RECORD][BIN] complete session=%lu index=%u expected=0x%02X completed=0x%02X failed=0x%02X cleanup_pending=0x%02X\r\n",
+					EXO_LOG("[RECORD][BIN] complete sess=%lu idx=%u exp=0x%02X done=0x%02X fail=0x%02X cln=0x%02X\r\n",
 							static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 							static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 							static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
@@ -3312,7 +3256,7 @@ int main(void)
 							static_cast<unsigned>(master_training_csv_coordinator.failed_source_mask()),
 							static_cast<unsigned>(master_training_csv_coordinator.cleanup_pending_mask()));
 				} else {
-					EXO_LOG("[TRAIN][CSV] complete session=%lu expected=0x%02X completed=0x%02X rows=%lu\r\n",
+					EXO_LOG("[TRAIN][CSV] complete sess=%lu exp=0x%02X done=0x%02X rows=%lu\r\n",
 							static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 							static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
 							static_cast<unsigned>(training_completed_mask),
@@ -3342,7 +3286,7 @@ int main(void)
 		{
 			const bool training_partial = master_training_csv_coordinator.partial_finalized();
 			if (training_partial && !master_training_csv_reported_partial) {
-				EXO_LOG("[TRAIN][CSV] incomplete retained session=%lu path=%s expected=0x%02X completed=0x%02X rows=%lu state=%u\r\n",
+				EXO_LOG("[TRAIN][CSV] incomplete kept sess=%lu path=%s exp=0x%02X done=0x%02X rows=%lu st=%u\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
 						training_logger.path(),
 						static_cast<unsigned>(master_training_csv_coordinator.expected_source_mask()),
@@ -3533,7 +3477,7 @@ int main(void)
 						g_local_forward_progress_tick_ms = g_local_last_chunk_tick;
 						g_local_stale_ack_repeat = 0U;
 						++local_burst_sent;
-						EXO_LOG("[MASTER][REC][REL] CHUNK session=%lu idx=%lu off=%lu size=%u credit=%u retx=%u burst=%u\r\n",
+						EXO_LOG("[MASTER][REL] CHUNK sess=%lu idx=%lu off=%lu sz=%u cr=%u rtx=%u bst=%u\r\n",
 								static_cast<unsigned long>(g_local_done.session_id),
 								static_cast<unsigned long>(chunk_index),
 								static_cast<unsigned long>(offset),
@@ -4434,7 +4378,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								g_remote_transfer_session_id = ack.session_id;
 								g_have_pending_node_done = false;
 								g_pending_node_manifest_last_tick = 0U;
-								EXO_LOG("[BLE][REC][REL][NODEQ] node manifest ack source=%u session=%lu credit=%u queue=%u\r\n",
+								EXO_LOG("[BLE][REL][NODEQ] manifest ack src=%u sess=%lu cred=%u q=%u\r\n",
 										static_cast<unsigned>(ack.source_id),
 										static_cast<unsigned long>(ack.session_id),
 										static_cast<unsigned>(ack.credit),
@@ -4483,7 +4427,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 						if (ack.source_id == kMasterNodeId && ack.session_id == g_local_done.session_id) {
 							const uint8_t rx_credit = sanitize_receiver_credit(ack.credit);
 							if (g_local_record_phase == LocalRecordPhase::Resync || g_local_retx_remaining > 0U) {
-								EXO_LOG("[BLE][REC][REL] ACK_WINDOW ignored during recovery source=%u session=%lu chunk=%lu retx_rem=%u cur=%lu\r\n",
+								EXO_LOG("[BLE][REL] ACK_WINDOW ign in-recovery src=%u sess=%lu chk=%lu rtx_rem=%u cur=%lu\r\n",
 										static_cast<unsigned>(ack.source_id),
 										static_cast<unsigned long>(ack.session_id),
 										static_cast<unsigned long>(ack.next_chunk_index),
@@ -4504,14 +4448,14 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 									g_local_retx_cursor_chunk = ack.next_chunk_index;
 									g_local_retx_remaining = static_cast<uint8_t>(rx_credit > 0U ? (rx_credit > 4U ? 4U : rx_credit) : 1U);
 									g_local_record_phase = LocalRecordPhase::Resync;
-									EXO_LOG("[BLE][REC][REL] ACK_WINDOW stale escape source=%u session=%lu chunk=%lu retx=%u cur=%lu\r\n",
+									EXO_LOG("[BLE][REL] ACK_WINDOW stale escape src=%u sess=%lu chk=%lu rtx=%u cur=%lu\r\n",
 											static_cast<unsigned>(ack.source_id),
 											static_cast<unsigned long>(ack.session_id),
 											static_cast<unsigned long>(ack.next_chunk_index),
 											static_cast<unsigned>(g_local_retx_remaining),
 											static_cast<unsigned long>(g_local_stream_cursor_chunk));
 								}
-								EXO_LOG("[BLE][REC][REL] ACK_WINDOW stale ignored source=%u session=%lu chunk=%lu cur=%lu\r\n",
+								EXO_LOG("[BLE][REL] ACK_WINDOW stale ign src=%u sess=%lu chk=%lu cur=%lu\r\n",
 										static_cast<unsigned>(ack.source_id),
 										static_cast<unsigned long>(ack.session_id),
 										static_cast<unsigned long>(ack.next_chunk_index),
@@ -4578,7 +4522,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								const bool overlaps_active = (active_start < req_end_exclusive) && (req_start < active_end_exclusive);
 								if (overlaps_active) {
 									deferred_active_retx = true;
-									EXO_LOG("[BLE][REC][REL] NACK_RANGE deferred active_retx session=%lu first=%lu count=%u active=%lu rem=%u trigger=queue_after_active\r\n",
+									EXO_LOG("[BLE][REL] NACK_RANGE def active_retx sess=%lu first=%lu cnt=%u act=%lu rem=%u trig=q_after_act\r\n",
 											static_cast<unsigned long>(nack.session_id),
 											static_cast<unsigned long>(nack.first_chunk_index),
 											static_cast<unsigned>(nack_count),
@@ -4592,7 +4536,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 									nack.first_chunk_index,
 									nack_count);
 							if (deferred_active_retx) {
-								EXO_LOG("[BLE][REC][REL] NACK_RANGE queued deferred session=%lu first=%lu count=%u\r\n",
+								EXO_LOG("[BLE][REL] NACK_RANGE queued def sess=%lu first=%lu cnt=%u\r\n",
 										static_cast<unsigned long>(nack.session_id),
 										static_cast<unsigned long>(nack.first_chunk_index),
 										static_cast<unsigned>(nack_count));
@@ -4603,7 +4547,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 										static_cast<unsigned>(nack_count));
 							}
 						} else if (master_training_csv_owns_node_link(nack.source_id)) {
-							EXO_LOG("[BLE][REC][REL] NACK_RANGE observer-drop source=%u session=%lu first=%lu count=%u\r\n",
+							EXO_LOG("[BLE][REL] NACK_RANGE obs-drop src=%u sess=%lu first=%lu cnt=%u\r\n",
 									static_cast<unsigned>(nack.source_id),
 									static_cast<unsigned long>(nack.session_id),
 									static_cast<unsigned long>(nack.first_chunk_index),
@@ -4705,7 +4649,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 								hdr.chunk_index,
 								1U);
 					} else if (master_training_csv_owns_node_link(hdr.source_id)) {
-						EXO_LOG("[BLE][REC][REL] VERIFY_FAIL observer-drop source=%u session=%lu chunk=%lu\r\n",
+						EXO_LOG("[BLE][REL] VERIFY_FAIL obs-drop src=%u sess=%lu chk=%lu\r\n",
 								static_cast<unsigned>(hdr.source_id),
 								static_cast<unsigned long>(hdr.session_id),
 								static_cast<unsigned long>(hdr.chunk_index));
@@ -4759,7 +4703,7 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 							g_remote_transfer_active = false;
 							g_remote_transfer_source_id = 0U;
 							g_remote_transfer_session_id = 0U;
-							EXO_LOG("[BLE][REC][REL][NODEQ] node transfer complete source=%u session=%lu queue=%u\r\n",
+							EXO_LOG("[BLE][REL][NODEQ] xfer complete src=%u sess=%lu q=%u\r\n",
 									static_cast<unsigned>(source_id),
 									static_cast<unsigned long>(ack.session_id),
 									static_cast<unsigned>(pending_node_done_depth()));

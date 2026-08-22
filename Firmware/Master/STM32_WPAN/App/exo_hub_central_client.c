@@ -641,7 +641,7 @@ static void exo_request_scan_if_needed(void)
                          (uint16_t)EXO_HUB_SCAN_RETRY_MS);
     return;
   }
-  EXO_LOG("[BLE][HUB][DISC] scan start general-disc interval=0x%04X window=0x%04X ready=%u pending=%u\r\n",
+  EXO_LOG("[BLE][HUB][DISC] scan start gen-disc iv=0x%04X win=0x%04X rdy=%u pend=%u\r\n",
           (unsigned)scan_interval,
           (unsigned)scan_window,
           (unsigned)g_ble_ready,
@@ -653,7 +653,7 @@ static void exo_request_scan_if_needed(void)
                        scan_window);
   if (APP_BLE_LeafClientPhoneConnected() != 0U)
   {
-    EXO_LOG("[BLE][HUB][DISC] scan while phone-connected active=%u ready=%u transport_mask=0x%02X\r\n",
+    EXO_LOG("[BLE][HUB][DISC] scan held (phone conn) act=%u rdy=%u xport_m=0x%02X\r\n",
             (unsigned)exo_active_leaf_count(),
             (unsigned)exo_ready_leaf_count(),
             (unsigned)exo_hub_central_client_transport_ready_node_mask());
@@ -678,7 +678,7 @@ static void exo_request_scan_if_needed(void)
   else
   {
     const uint32_t retry_ms = exo_scan_retry_ms_for_status(status);
-    EXO_LOG("[BLE][HUB][DISC] scan start failed status=%u active=%u ready=%u transport_mask=0x%02X\r\n",
+    EXO_LOG("[BLE][HUB][DISC] scan start fail st=%u act=%u rdy=%u xport_m=0x%02X\r\n",
             (unsigned)status,
             (unsigned)exo_active_leaf_count(),
             (unsigned)exo_ready_leaf_count(),
@@ -740,7 +740,7 @@ static void exo_start_pending_connection(void)
             (unsigned)conn_interval_min,
             (unsigned)conn_interval_max);
   }
-  EXO_LOG("[BLE][HUB][DISC] DISC create_conn_params_a: NODE%u slot=%u scan=0x%04X/0x%04X conn=0x%04X-0x%04X latency=%u timeout=0x%04X ce=0x%04X/0x%04X\r\n",
+  EXO_LOG("[BLE][HUB][DISC] params_a NODE%u slot=%u scan=0x%04X/0x%04X conn=0x%04X-0x%04X lat=%u to=0x%04X ce=0x%04X/0x%04X\r\n",
           (unsigned)exo_leaf_slot_node_id(slot),
           (unsigned)g_connect_after_scan_slot,
           (unsigned)scan_interval,
@@ -751,7 +751,7 @@ static void exo_start_pending_connection(void)
           (unsigned)EXO_HUB_SUPERVISION_TIMEOUT,
           (unsigned)EXO_HUB_MIN_CE_LENGTH,
           (unsigned)EXO_HUB_MAX_CE_LENGTH);
-  EXO_LOG("[BLE][HUB][DISC] DISC create_conn_params_b: NODE%u ready_mask=0x%02X transport_mask=0x%02X active=%u ready=%u busy=%u pending=%u tick=%lu\r\n",
+  EXO_LOG("[BLE][HUB][DISC] params_b NODE%u rdy_m=0x%02X xport_m=0x%02X act=%u rdy=%u busy=%u pend=%u tick=%lu\r\n",
           (unsigned)exo_leaf_slot_node_id(slot),
           (unsigned)exo_hub_central_client_ready_node_mask(),
           (unsigned)exo_hub_central_client_transport_ready_node_mask(),
@@ -794,7 +794,7 @@ static void exo_start_pending_connection(void)
             (unsigned)g_connect_after_scan_slot,
             (unsigned)slot->node_hint,
             (unsigned)status);
-    EXO_LOG("[BLE][HUB][DISC] DISC connect_failed_detail: NODE%u slot=%u status=%u/0x%02X %s retry_ms=%lu ce=0x%04X/0x%04X conn=0x%04X-0x%04X scan=0x%04X/0x%04X latency=%u timeout=0x%04X ready_mask=0x%02X transport_mask=0x%02X active=%u ready=%u busy=%u pending=%u tick=%lu\r\n",
+    EXO_LOG("[BLE][HUB][DISC] fail detail NODE%u slot=%u st=%u/0x%02X %s retry_ms=%lu ce=0x%04X/0x%04X conn=0x%04X-0x%04X scan=0x%04X/0x%04X lat=%u to=0x%04X rdy_m=0x%02X xport_m=0x%02X act=%u rdy=%u busy=%u pend=%u tick=%lu\r\n",
             (unsigned)exo_leaf_slot_node_id(slot),
             (unsigned)g_connect_after_scan_slot,
             (unsigned)status,
@@ -1499,7 +1499,7 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
   }
   slot = &g_leaf_slots[g_pending_slot];
   g_pending_slot = 0xFFU;
-  EXO_LOG("[BLE][HUB][DISC] connection complete slot=%u status=%u handle=0x%04X peer_type=%u addr=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
+  EXO_LOG("[BLE][HUB][DISC] conn complete slot=%u st=%u h=0x%04X ptype=%u addr=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
           (unsigned)(slot - &g_leaf_slots[0]),
           (unsigned)status,
           (unsigned)connection_handle,
@@ -1539,7 +1539,7 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
     if (memcmp(slot->addr, peer_address, 6U) != 0)
     {
       const uint8_t slot_index = (uint8_t)(slot - &g_leaf_slots[0]);
-      EXO_LOG("[BLE][HUB][DISC] connection addr mismatch slot=%u handle=0x%04X expected=%02X:%02X:%02X:%02X:%02X:%02X got=%02X:%02X:%02X:%02X:%02X:%02X backoff\r\n",
+      EXO_LOG("[BLE][HUB][DISC] addr mismatch slot=%u h=0x%04X exp=%02X:%02X:%02X:%02X:%02X:%02X got=%02X:%02X:%02X:%02X:%02X:%02X backoff\r\n",
               (unsigned)slot_index,
               (unsigned)connection_handle,
               (unsigned)slot->addr[5],
@@ -1647,7 +1647,7 @@ void hci_le_advertising_report_event(uint8_t Num_Reports,
     }
     else
     {
-      EXO_LOG("[BLE][HUB][DISC] duplicate logical node ignored node=%u owner_slot=%u owner_state=%u\r\n",
+      EXO_LOG("[BLE][HUB][DISC] dup logical node ign node=%u own_slot=%u own_state=%u\r\n",
               (unsigned)node_id,
               (unsigned)(logical_slot - &g_leaf_slots[0]),
               (unsigned)logical_slot->state);
@@ -1688,7 +1688,7 @@ void hci_le_advertising_report_event(uint8_t Num_Reports,
           (unsigned)slot->addr[0]);
   if (slot->state == EXO_LEAF_SLOT_READY || slot->state == EXO_LEAF_SLOT_CONNECTING)
   {
-    EXO_LOG("[BLE][HUB][DISC] adv skipped node=%u slot=%u state=%u ready_or_connecting=%u/%u\r\n",
+    EXO_LOG("[BLE][HUB][DISC] adv skip node=%u slot=%u state=%u rdy/con=%u/%u\r\n",
             (unsigned)node_id,
             (unsigned)(slot - &g_leaf_slots[0]),
             (unsigned)slot->state,
@@ -1801,7 +1801,7 @@ void aci_gap_proc_complete_event(uint8_t Procedure_Code,
       {
         g_scan_requested = 1U;
         g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RESUME_MS;
-        EXO_LOG("[BLE][HUB][DISC] scan idle resume=%lums active=%u ready_or_connecting=%u/%u transport_mask=0x%02X\r\n",
+        EXO_LOG("[BLE][HUB][DISC] scan idle resume=%lums act=%u rdy/con=%u/%u xport_m=0x%02X\r\n",
                 (unsigned long)EXO_HUB_SCAN_RESUME_MS,
                 (unsigned)exo_active_leaf_count(),
                 (unsigned)exo_ready_or_connecting_leaf_count(),
