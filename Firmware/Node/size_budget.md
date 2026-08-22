@@ -1,11 +1,11 @@
 # Node Flash Budget Policy
 
 ## Budget
-- `FLASH_BUDGET_BYTES = 126976` (124 KB)
-- Warning threshold: `124928` bytes (122 KB)
-- Source of truth: `Node/STM32WB55CCUX_FLASH.ld` (`FLASH LENGTH = 124K`)
-- RAM: SRAM1 fully available (`RAM LENGTH = 0x1FFF8`, 128K - 8; mirrors the Master
-  `52e547b` fix — CPU2-shared areas live in SRAM2 @ `0x20030000`).
+- `FLASH_BUDGET_BYTES = 786432` (768 KB)
+- Source of truth: `Node/STM32WB55CCUX_FLASH.ld` (`FLASH LENGTH = 768K`)
+- Basis: hardware measurement 2026-08-22 — SFSA option byte = 0x080D0000
+  (1 MB G-grade part, full BLE stack in top 192 KB; app window 832 KB, 64 KB guard band kept).
+- RAM: SRAM1 192 KB (`RAM LENGTH = 0x2FFF8`); CPU2-shared areas live in SRAM2 @ `0x20030000`.
 
 ## Required Build Profile
 - Use size-safe debug flags for recurring development builds:

@@ -366,7 +366,20 @@ Both project linker scripts have carried undersized MEMORY caps since the repo's
 | FLASH (cap kept at 124K) | 126,976 B | 126,437 B | **539 B** |
 | RAM (`.data`+`.bss`, now 128K−8) | 131,064 B | 65,872 B | **~65 KB** |
 
-**Watch items:** (1) ~~`Firmware/Node/*.ld` still carries the same undersized caps~~ — **fixed 2026-08-22**: `Node/STM32WB55CCUX_FLASH.ld` RAM `0xFFF8 → 0x1FFF8` (mirrors `52e547b`); FLASH cap kept at 124K. (2) The 539 B Master flash margin is thin; if it shrinks again, verify the true free window above the app with STM32CubeProgrammer (find where the installed FUS/stack begins) and raise the 124K cap deliberately rather than trimming more logs.
+**Watch items:** (1) ~~`Firmware/Node/*.ld` still carries the same undersized caps~~ — **fixed 2026-08-22**: `Node/STM32WB55CCUX_FLASH.ld` RAM `0xFFF8 → 0x1FFF8` (mirrors `52e547b`); FLASH cap kept at 124K. (2) ~~The 539 B Master flash margin is thin~~ — **resolved 2026-08-22 (see next section)**.
+
+## Linker memory budget — PERMANENT fix (2026-08-22, SFSA measurement)
+
+The chips are **1 MB G-grade STM32WB55, not the 256 KB CC-grade the project name assumed**. Evidence from STM32CubeProgrammer option bytes (Master board): `SFSA = 0xD0` → secure/CPU2 area starts at **0x080D0000** (832 KB), `WRP1A_STRT = 255` (≈1 MB of 4K pages), `PCROP1A_STRT = 511` (=1 MB of 2K pages). The full BLE wireless stack occupies the top 192 KB (`0x080D0000–0x080FFFFF`). All four flash-overflow rounds (277 B / 385 B / 9 B / 37 B / 21 B) were the 124K cap colliding with normal code growth, funded by four rounds of EXO_LOG literal compression — that practice is now retired.
+
+Both `Master` and `Node` `STM32WB55CCUX_FLASH.ld`:
+- `FLASH LENGTH = 768K` (app window is 832 KB; 64 KB guard band below SFSA for future stack growth)
+- `RAM LENGTH = 0x2FFF8` (full 192 KB SRAM1; SRAM2 @ `0x20030000` holds the CPU2-shared areas — `RAM_SHARED` 10 K unchanged)
+- `size_budget.md` updated (budget 786,432 B)
+
+Old budget table (124K era, historical): FLASH 126,437/126,976 B (539 B margin); RAM 65,872/131,064 B.
+
+**Caveat:** SFSA was measured on the Master board; the Node linker assumes identical silicon/stack. Verify `SFSA = 0xD0` on a Node board when convenient (if a Node ever shows a *smaller* value, shrink its FLASH cap to match). Never let the app image cross SFSA — doing so overwrites the wireless stack and kills BLE until the stack is reflashed via FUS.
 
 ## Deferred with rationale
 

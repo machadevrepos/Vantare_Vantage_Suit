@@ -44,8 +44,12 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 /* Specify the memory areas */
 MEMORY
 {
-FLASH (rx)                 : ORIGIN = 0x08000000, LENGTH = 124K
-RAM (xrw)                 : ORIGIN = 0x20000008, LENGTH = 0x1FFF8
+/* SFSA option byte reads 0x080D0000 on this hardware (1MB G-grade part,
+   full BLE stack in the top 192K) - app window is 832K. 768K keeps a 64K
+   guard band below the secure area. Measured via STM32CubeProgrammer 2026-08-22
+   (Master board; Node assumed identical PCB/silicon). */
+FLASH (rx)                 : ORIGIN = 0x08000000, LENGTH = 768K
+RAM (xrw)                 : ORIGIN = 0x20000008, LENGTH = 0x2FFF8
 RAM_SHARED (xrw)           : ORIGIN = 0x20030000, LENGTH = 10K
 }
 
