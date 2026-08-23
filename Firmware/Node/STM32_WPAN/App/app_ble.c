@@ -346,7 +346,19 @@ void APP_BLE_Init(void)
   UTIL_SEQ_RegTask(1<<CFG_TASK_ADV_CANCEL_ID, UTIL_SEQ_RFU, Adv_Cancel);
 
   /* USER CODE BEGIN APP_BLE_Init_4 */
-
+  /* Data Length Extension for every future link. The chunk-upload traffic flows
+   * Node->Master, so the Node's TX octets bound that direction; without this the
+   * Node keeps the 27-octet default and each ~239 B chunk frame fragments into
+   * ~9 LL packets even after the Master requests DLE. Raise the suggested TX to
+   * the 251-octet / 2120 us maximum so new connections auto-negotiate full-size
+   * PDUs in both directions. (The 2M PHY is symmetric and driven by the Master's
+   * hci_le_set_phy, so no Node-side PHY request is needed.) */
+  {
+    const tBleStatus dle_default_status =
+        hci_le_write_suggested_default_data_length(251U, 0x0848U);
+    APP_DBG_MSG("[BLE][NODE][LINK] suggested DLE default 251/2120 status=0x%02X\n",
+                (unsigned)dle_default_status);
+  }
   /* USER CODE END APP_BLE_Init_4 */
 
   /**

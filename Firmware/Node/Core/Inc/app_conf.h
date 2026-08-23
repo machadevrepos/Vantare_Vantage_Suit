@@ -235,7 +235,11 @@
  * Number of allocated memory blocks
  * This parameter is overwritten by the CPU2 with an hardcoded optimal value when the parameter CFG_BLE_OPTIONS has SHCI_C2_BLE_INIT_OPTIONS_LL_ONLY flag set
  */
-#define CFG_BLE_MBLOCK_COUNT            (BLE_MBLOCKS_CALC(CFG_BLE_PREPARE_WRITE_LIST_SIZE, CFG_BLE_MAX_ATT_MTU, CFG_BLE_NUM_LINK))
+/* Extra TX buffers above the stack minimum so the node can queue more
+ * 2M/DLE chunk packets per connection event during upload. 16 blocks x
+ * BLE_MEM_BLOCK_SIZE (32 B) = 512 B of extra BLE pool RAM. */
+#define CFG_BLE_MBLOCK_EXTRA            (16)
+#define CFG_BLE_MBLOCK_COUNT            (BLE_MBLOCKS_CALC(CFG_BLE_PREPARE_WRITE_LIST_SIZE, CFG_BLE_MAX_ATT_MTU, CFG_BLE_NUM_LINK) + CFG_BLE_MBLOCK_EXTRA)
 
 /**
  * Enable or disable the Extended Packet length feature. Valid values are 0 or 1.

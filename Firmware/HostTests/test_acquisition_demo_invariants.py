@@ -169,7 +169,7 @@ checks = [
      "The stale-ACK escape must be reachable, and a resolved source must not be re-granted ManifestAck credit"),
     ("validation_started_ms_" in coordinator and "stage_error_retry" in coordinator,
      "ValidateNode must have stall coverage, and a CRC-mismatch StageError must be re-pullable in binary-only runs"),
-    ("kRecordReliableDefaultCredit = 8U" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
+    ("kRecordReliableDefaultCredit = 24U" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
      "ListSessions" not in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
      "payload_size > chunk_size_" in (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h").read_text(),
      "Protocol defaults must match the granted credit, dead opcodes stay deleted, and the window must enforce the chunk-size bound"),

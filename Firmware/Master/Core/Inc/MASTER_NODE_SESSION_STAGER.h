@@ -137,6 +137,23 @@ public:
             return duplicate_matches(byte_offset, data, size);
         }
 
+        /* Incremental payload CRC32: fold the payload bytes (offset >= header)
+         * of this in-order chunk into the running CRC now, so validation never
+         * needs a second full-file read pass. Chunks arrive strictly in order
+         * (out-of-order is NackGap, duplicates take the branch above), so this
+         * accumulates the payload exactly once, in order. The per-chunk CRC16
+         * has already verified these bytes; f_write failures are caught at
+         * flush. See begin_validation() for the storage-integrity note. */
+        {
+            const uint32_t header_size = static_cast<uint32_t>(sizeof(SessionHeader));
+            if (end > header_size) {
+                const uint32_t payload_from = byte_offset > header_size ? byte_offset : header_size;
+                const uint32_t skip = payload_from - byte_offset;
+                incremental_crc_ = crc32_update(incremental_crc_, data + skip,
+                        static_cast<size_t>(size - skip));
+            }
+        }
+
         /* Append path (byte_offset == staged_size_): accumulate in RAM and
          * write larger blocks. accept_chunk runs in BLE event context, so a
          * per-chunk f_lseek+f_write serializes every radio event behind SD
@@ -215,18 +232,18 @@ public:
                     FR_INVALID_PARAMETER);
         }
 
-        result = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(sizeof(SessionHeader)));
-        if (result != FR_OK) {
-            read_cursor_ = kInvalidCursor;
-            return close_invalid_stage(
-                    node_session_staging::NodeSessionStageOperation::PayloadSeek, result);
-        }
-        read_cursor_ = static_cast<uint32_t>(sizeof(SessionHeader));
-        validation_crc_ = 0U;
-        validation_remaining_ = done_.total_size - static_cast<uint32_t>(sizeof(SessionHeader));
-        validation_status_ = validation_remaining_ == 0U ?
-                node_session_staging::NodeSessionValidationStatus::ReadyToFinalize :
-                node_session_staging::NodeSessionValidationStatus::InProgress;
+        /* Payload integrity is taken from the CRC accumulated as the chunks
+         * arrived (incremental_crc_), so there is no second full-file read pass
+         * — the dominant cost of validation at 10-minute / 15-node scale. The
+         * header block above is still verified from disk. Transfer integrity is
+         * covered end to end (per-chunk CRC16 on receive + this CRC32 vs the
+         * node header), and every f_write failure is surfaced at flush time;
+         * the residual gap is silent SD corruption between write and readback,
+         * which the node's retained copy (erased only after VerifyOk) and the
+         * downstream archive re-validation both backstop. */
+        validation_crc_ = incremental_crc_;
+        validation_remaining_ = 0U;
+        validation_status_ = node_session_staging::NodeSessionValidationStatus::ReadyToFinalize;
         clear_error();
         return true;
     }
@@ -425,6 +442,7 @@ private:
         stage_started_ = false;
         validation_remaining_ = 0U;
         validation_crc_ = 0U;
+        incremental_crc_ = 0U;
         read_cursor_ = kInvalidCursor;
         validation_status_ = node_session_staging::NodeSessionValidationStatus::Idle;
         clear_error();
@@ -581,6 +599,9 @@ private:
     uint32_t staged_size_ = 0U;
     uint32_t validation_remaining_ = 0U;
     uint32_t validation_crc_ = 0U;
+    /* Running payload CRC32, folded in as in-order chunks are staged, so the
+     * validation pass needs no second full-file read. */
+    uint32_t incremental_crc_ = 0U;
     uint32_t read_cursor_ = kInvalidCursor;
     bool active_ = false;
     bool writable_ = false;

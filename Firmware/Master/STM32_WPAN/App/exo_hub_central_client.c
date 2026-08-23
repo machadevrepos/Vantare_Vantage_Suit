@@ -110,7 +110,19 @@ typedef enum
   EXO_DISC_EVT_CONNECT_STARTED = 0x07U,
   EXO_DISC_EVT_CONNECT_FAILED = 0x08U,
   EXO_DISC_EVT_LEAF_READY = 0x09U,
-  EXO_DISC_EVT_SCAN_DELAYED = 0x0AU
+  EXO_DISC_EVT_SCAN_DELAYED = 0x0AU,
+  /* Link-tuning telemetry surfaced to the desktop console (no SWO needed):
+   * value carries the negotiated figure - DLE MaxTxOctets, the TX/RX PHY byte
+   * pair, and the applied connection interval respectively. */
+  EXO_DISC_EVT_LINK_DLE = 0x10U,
+  EXO_DISC_EVT_LINK_PHY = 0x11U,
+  EXO_DISC_EVT_LINK_TIMING = 0x12U,
+  /* Request-acceptance telemetry from the deferred tuning path: value = the hci
+   * command status (0 = accepted). These fire even when the WB default mask
+   * suppresses the DLE/PHY completion events, so the console still shows the
+   * link tuning was issued and accepted. */
+  EXO_DISC_EVT_LINK_DLE_REQ = 0x13U,
+  EXO_DISC_EVT_LINK_PHY_REQ = 0x14U
 } exo_disc_event_t;
 
 typedef struct
@@ -139,6 +151,24 @@ typedef struct
   uint8_t mtu_exchange_done;
   uint32_t retry_after_ms;
   uint8_t seen_in_scan;
+  /* Last negotiated link tuning, captured at connect and re-surfaced to the
+   * desktop console at transfer start (the connect-time events usually fire
+   * before the browser is attached). */
+  uint16_t link_dle_tx_oct;
+  uint16_t link_dle_rx_oct;
+  uint8_t link_tx_phy;
+  uint8_t link_rx_phy;
+  /* Deferred link-tuning state machine (run from main context, not the connect
+   * event): 0 = done, 1 = issue DLE, 2 = issue 2M PHY. link_tune_after_ms paces
+   * the two so the second LL procedure is not issued while the first is active. */
+  uint8_t link_tune_step;
+  uint32_t link_tune_after_ms;
+  /* hci command-accept status of the last DLE / PHY request (0 = accepted,
+   * 0xFF = not yet issued). Stored so it can be re-surfaced to the console at
+   * transfer start, when the browser is attached (the connect-time request
+   * fires before the browser connects). */
+  uint8_t link_dle_req_status;
+  uint8_t link_phy_req_status;
 } exo_leaf_slot_t;
 
 static exo_leaf_slot_t g_leaf_slots[EXO_HUB_LEAF_MAX];
@@ -1266,7 +1296,13 @@ void exo_hub_central_client_init(void)
 void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast)
 {
   uint8_t i;
-  const uint16_t interval_min = fast != 0U ? 0x0006U : EXO_HUB_CONN_INTERVAL_MIN_MULTI;
+  /* Active-upload interval: fixed 15 ms (0x000C), not the 7.5 ms floor. Paired
+   * with the enlarged mblock pool the controller packs several 2M/DLE packets
+   * per connection event, which is faster AND more robust on a busy Master than
+   * 7.5 ms events (7.5 ms was implicated in the 2026-08-22 zero-progress stall).
+   * Idle links stay at the 30-40 ms multi-link interval so the radio scheduler
+   * has headroom as the node count grows. */
+  const uint16_t interval_min = fast != 0U ? 0x000CU : EXO_HUB_CONN_INTERVAL_MIN_MULTI;
   const uint16_t interval_max = fast != 0U ? 0x000CU : EXO_HUB_CONN_INTERVAL_MAX_MULTI;
   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
   {
@@ -1286,6 +1322,29 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast)
               (unsigned)interval_min,
               (unsigned)interval_max,
               (unsigned)status);
+      /* Re-surface the link tuning captured at connect (the DLE/PHY events
+       * usually fire before the desktop is attached), then the interval. This
+       * gives one console snapshot of tx_oct / PHY / interval at transfer start
+       * so DLE and 2M can be verified without SWO. */
+      exo_send_disc_report(EXO_DISC_EVT_LINK_DLE, node_id, (uint8_t)i,
+                           (uint8_t)(g_leaf_slots[i].link_dle_rx_oct & 0xFFU),
+                           g_leaf_slots[i].link_dle_tx_oct);
+      exo_send_disc_report(EXO_DISC_EVT_LINK_PHY, node_id, (uint8_t)i, 0U,
+                           (uint16_t)((uint16_t)g_leaf_slots[i].link_tx_phy |
+                                      ((uint16_t)g_leaf_slots[i].link_rx_phy << 8U)));
+      /* Command-accept status of the connect-time DLE/PHY requests (0 =
+       * accepted, 0xFF = never issued). Distinguishes "request rejected" from
+       * "accepted but completion event masked" when tx_oct/PHY read 0. */
+      exo_send_disc_report(EXO_DISC_EVT_LINK_DLE_REQ, node_id, (uint8_t)i, 0U,
+                           (uint16_t)g_leaf_slots[i].link_dle_req_status);
+      exo_send_disc_report(EXO_DISC_EVT_LINK_PHY_REQ, node_id, (uint8_t)i, 0U,
+                           (uint16_t)g_leaf_slots[i].link_phy_req_status);
+      /* value low byte = connection interval in 1.25 ms units (0x0C = 15 ms
+       * fast, 0x18 = 30 ms multi), value high byte = hci status (0 = accepted);
+       * state = fast flag. */
+      exo_send_disc_report(EXO_DISC_EVT_LINK_TIMING, node_id, (uint8_t)i,
+                           (uint8_t)(fast != 0U ? 1U : 0U),
+                           (uint16_t)(interval_min | ((uint16_t)status << 8U)));
       return;
     }
   }
@@ -1344,6 +1403,47 @@ void exo_hub_central_client_process(void)
       }
     }
     return;
+  }
+  /* Deferred throughput setup: request DLE then LE 2M PHY on each connected
+   * leaf from main context (the connect event handler cannot). One procedure
+   * per pass, paced ~150 ms apart so the second is not rejected while the first
+   * is still active. Completion arrives via hci_le_data_length_change_event /
+   * hci_le_phy_update_complete_event, which also surface the negotiated values
+   * to the desktop console. */
+  for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+  {
+    exo_leaf_slot_t *const tune_slot = &g_leaf_slots[i];
+    if (tune_slot->link_tune_step == 0U ||
+        tune_slot->connection_handle == 0xFFFFU ||
+        (int32_t)(now - tune_slot->link_tune_after_ms) < 0)
+    {
+      continue;
+    }
+    if (tune_slot->link_tune_step == 1U)
+    {
+      const tBleStatus st = hci_le_set_data_length(tune_slot->connection_handle,
+                                                   251U, 0x0848U);
+      EXO_LOG("[BLE][HUB][LINK] req DLE node=%u h=%04X st=0x%02X\r\n",
+              (unsigned)exo_leaf_slot_node_id(tune_slot),
+              (unsigned)tune_slot->connection_handle, (unsigned)st);
+      tune_slot->link_dle_req_status = (uint8_t)st;
+      exo_send_disc_report(EXO_DISC_EVT_LINK_DLE_REQ, exo_leaf_slot_node_id(tune_slot),
+                           (uint8_t)i, 0U, (uint16_t)st);
+      tune_slot->link_tune_step = 2U;
+      tune_slot->link_tune_after_ms = now + 150U;
+    }
+    else
+    {
+      const tBleStatus st = hci_le_set_phy(tune_slot->connection_handle, 0U,
+              HCI_TX_PHYS_LE_2M_PREF, HCI_RX_PHYS_LE_2M_PREF, 0U);
+      EXO_LOG("[BLE][HUB][LINK] req 2M PHY node=%u h=%04X st=0x%02X\r\n",
+              (unsigned)exo_leaf_slot_node_id(tune_slot),
+              (unsigned)tune_slot->connection_handle, (unsigned)st);
+      tune_slot->link_phy_req_status = (uint8_t)st;
+      exo_send_disc_report(EXO_DISC_EVT_LINK_PHY_REQ, exo_leaf_slot_node_id(tune_slot),
+                           (uint8_t)i, 0U, (uint16_t)st);
+      tune_slot->link_tune_step = 0U;
+    }
   }
   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
   {
@@ -1612,6 +1712,16 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
    * budget and drop any stale armed timer. */
   g_targeted_reconnect_attempts = 0U;
   g_targeted_reconnect_node_id = 0U;
+  /* Throughput setup (DLE + LE 2M PHY) is deferred to the main loop, not issued
+   * here: hci_le_set_data_length / hci_le_set_phy invoked inside this connection
+   * -complete event handler are rejected by the controller ("command disallowed"
+   * mid-event), which is why the earlier in-handler attempt never produced a
+   * data_length_change / phy_update_complete event. exo_hub_central_client_process()
+   * runs the two procedures staggered from main context once the link is idle. */
+  slot->link_tune_step = 1U;
+  slot->link_tune_after_ms = HAL_GetTick();
+  slot->link_dle_req_status = 0xFFU;
+  slot->link_phy_req_status = 0xFFU;
   exo_begin_mtu_exchange(slot);
 }
 
@@ -2181,5 +2291,65 @@ void exo_hub_central_client_set_discovery_hold(uint8_t hold)
     g_next_scan_after_ms = HAL_GetTick() + EXO_HUB_SCAN_RETRY_MS;
     g_targeted_reconnect_node_id = 0U;
     g_targeted_reconnect_attempts = 0U;
+  }
+}
+
+/* HCI event overrides that report the negotiated result of the throughput
+ * setup requested in exo_hub_central_client_on_connection_complete(). These are
+ * weak no-ops in the stack; overriding them lets the desktop console confirm
+ * that Data Length Extension and the LE 2M PHY actually took on each leaf link.
+ * TX_PHY / RX_PHY value 0x02 == LE 2M; MaxTxOctets should read 251 (or the
+ * peer-limited value) instead of the 27-octet default. */
+void hci_le_data_length_change_event(uint16_t Connection_Handle,
+                                     uint16_t MaxTxOctets,
+                                     uint16_t MaxTxTime,
+                                     uint16_t MaxRxOctets,
+                                     uint16_t MaxRxTime)
+{
+  EXO_LOG("[BLE][HUB][LINK] DLE change h=%04X tx_oct=%u tx_us=%u rx_oct=%u rx_us=%u\r\n",
+          (unsigned)Connection_Handle,
+          (unsigned)MaxTxOctets,
+          (unsigned)MaxTxTime,
+          (unsigned)MaxRxOctets,
+          (unsigned)MaxRxTime);
+  {
+    exo_leaf_slot_t *const slot = exo_find_slot_by_conn(Connection_Handle);
+    const uint8_t node_id = (slot != 0) ? exo_leaf_slot_node_id(slot) : 0U;
+    const uint8_t slot_index = (slot != 0) ? (uint8_t)(slot - &g_leaf_slots[0]) : 0xFFU;
+    if (slot != 0)
+    {
+      slot->link_dle_tx_oct = MaxTxOctets;
+      slot->link_dle_rx_oct = MaxRxOctets;
+    }
+    /* value = negotiated MaxTxOctets; 251 = full DLE, 27 = default (no DLE).
+     * state carries MaxRxOctets low byte for context. */
+    exo_send_disc_report(EXO_DISC_EVT_LINK_DLE, node_id, slot_index,
+                         (uint8_t)(MaxRxOctets & 0xFFU), MaxTxOctets);
+  }
+}
+
+void hci_le_phy_update_complete_event(uint8_t Status,
+                                      uint16_t Connection_Handle,
+                                      uint8_t TX_PHY,
+                                      uint8_t RX_PHY)
+{
+  EXO_LOG("[BLE][HUB][LINK] PHY update h=%04X status=%u tx_phy=0x%02X rx_phy=0x%02X\r\n",
+          (unsigned)Connection_Handle,
+          (unsigned)Status,
+          (unsigned)TX_PHY,
+          (unsigned)RX_PHY);
+  {
+    exo_leaf_slot_t *const slot = exo_find_slot_by_conn(Connection_Handle);
+    const uint8_t node_id = (slot != 0) ? exo_leaf_slot_node_id(slot) : 0U;
+    const uint8_t slot_index = (slot != 0) ? (uint8_t)(slot - &g_leaf_slots[0]) : 0xFFU;
+    if (slot != 0)
+    {
+      slot->link_tx_phy = TX_PHY;
+      slot->link_rx_phy = RX_PHY;
+    }
+    /* value = TX_PHY | (RX_PHY << 8); 0x02 = LE 2M, 0x01 = LE 1M. state=Status
+     * (0 = PHY update succeeded). */
+    exo_send_disc_report(EXO_DISC_EVT_LINK_PHY, node_id, slot_index, Status,
+                         (uint16_t)((uint16_t)TX_PHY | ((uint16_t)RX_PHY << 8U)));
   }
 }

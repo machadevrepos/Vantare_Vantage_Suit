@@ -354,6 +354,15 @@ void APP_BLE_Init(void)
   g_leaf_client_connecting = 0U;
   g_phone_connected = 0U;
 
+  /* Do NOT override the LE event mask here. An earlier attempt set it to
+   * {0xFF,0xFF,0x00,...} to enable the DLE/PHY-update completion events for
+   * console telemetry, but replacing the mask zeroed the upper bytes and
+   * disabled the extended-advertising events (e.g. LE Advertising Set
+   * Terminated, bit 18) the WB peripheral advertising depends on, so the Master
+   * stopped appearing in the browser chooser. The WB default mask is left
+   * untouched; DLE/PHY are still requested from the deferred main-loop tuning
+   * path and the throughput change is the primary confirmation. */
+
   /* USER CODE END APP_BLE_Init_4 */
 
   /**

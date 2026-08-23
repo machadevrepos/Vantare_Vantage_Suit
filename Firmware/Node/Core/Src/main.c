@@ -301,6 +301,12 @@ static constexpr uint8_t kTouchStatusPressed = 1U;
 static constexpr uint8_t kTouchStatusShutdownArmed = 2U;
 static constexpr uint8_t kTouchStatusTurningOff = 3U;
 static constexpr uint16_t kNodeRecordChunkPayloadBytes = exo::kRecordReliableDefaultChunkSize;
+/* A chunk frame (reliable header + payload) wrapped by the blepipe envelope must
+ * fit one BLE notification, or the stack silently drops every chunk -> zero
+ * accepted -> SessionStall at +30 s. Lock it at compile time. */
+static_assert(sizeof(exo::RecordReliableFrameHeader) + kNodeRecordChunkPayloadBytes
+		<= BLEPIPE_MAX_APP_PAYLOAD,
+		"reliable chunk frame exceeds blepipe app payload (MTU-3 minus envelope)");
 static constexpr uint32_t kNodeRecordChunkGapMs = 8U;
 /* Burst >1 removes the old ~22 KB/s hard ceiling (one 180 B chunk per gap) so
  * the 10-minute-session offload target (>=10x the ~1.8 KB/s baseline) has
@@ -539,9 +545,11 @@ static bool node_blepipe_send_reliable_frame(exo::RecordReliableType type,
 	hdr.payload_crc16 = blepipe_crc16_ccitt(payload, payload_len);
 	hdr.flags = flags;
 	const uint16_t total = static_cast<uint16_t>(sizeof(hdr) + payload_len);
-	/* The blepipe envelope (18 B) rides in the same notification: the reliable
-	 * frame must fit MTU-3 minus the envelope or the stack drops every send. */
-	if (total > sizeof(packet) - sizeof(blepipe_hdr_t)) {
+	/* The reliable frame is wrapped by the blepipe envelope (BLEPIPE_HDR_LEN +
+	 * BLEPIPE_CRC_LEN = 22 B, NOT sizeof(blepipe_hdr_t)=18) inside one
+	 * notification, so it must fit BLEPIPE_MAX_APP_PAYLOAD (= 244 - 22 = 222 B)
+	 * or blepipe_encode overflows MTU-3 and the stack silently drops it. */
+	if (total > BLEPIPE_MAX_APP_PAYLOAD) {
 		return false;
 	}
 	memcpy(packet, &hdr, sizeof(hdr));

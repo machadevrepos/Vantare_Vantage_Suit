@@ -527,7 +527,10 @@ namespace {
 			uint8_t nack_burst_chunks = 4U;
 			uint8_t master_burst_limit = kLocalRecordBurstLimit;
 			uint8_t master_chunk_gap_ms = static_cast<uint8_t>(kLocalRecordChunkGapMs);
-			uint8_t flags = 0U;
+			/* bit0 = fast (15 ms) connection interval for the active-upload link.
+			 * On by default and force-set in the tuning apply so a preset that
+			 * ships 0 cannot silently disable the throughput timing. */
+			uint8_t flags = 0x01U;
 	};
 	static RecordTransferRuntimeConfig g_record_transfer_runtime { };
 
@@ -703,7 +706,10 @@ namespace {
 		g_record_transfer_runtime.nack_burst_chunks = clamp_u8(payload[8], 1U, 16U);
 		g_record_transfer_runtime.master_burst_limit = clamp_u8(payload[9], 1U, 8U);
 		g_record_transfer_runtime.master_chunk_gap_ms = clamp_u8(payload[10], 0U, 5U);
-		g_record_transfer_runtime.flags = payload[11];
+		/* Force bit0 (fast active-upload interval) on regardless of the preset:
+		 * the desktop currently ships 0, which would disable the fast timing the
+		 * transfer throughput depends on. Other flag bits pass through. */
+		g_record_transfer_runtime.flags = static_cast<uint8_t>(payload[11] | 0x01U);
 		master_training_csv_coordinator.set_receiver_credit(g_record_transfer_runtime.credit);
 		EXO_LOG("[REC][CFG] cr=%u ackc=%u ackms=%u hbms=%u nckb=%u mb=%u mgms=%u fl=0x%02X\r\n",
 				static_cast<unsigned>(g_record_transfer_runtime.credit),

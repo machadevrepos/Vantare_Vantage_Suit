@@ -63,7 +63,7 @@ static constexpr uint32_t kSessionStallMs = 30000U;
  * expected sources are still staged and the CSV is still published, so one flaky
  * link cannot discard an entire capture. */
 static constexpr uint32_t kNodeStallMs = 30000U;
-static constexpr uint8_t kNodeReceiverCredit = 8U;
+static constexpr uint8_t kNodeReceiverCredit = 24U;
 /* Re-advertise the receive window when the active node stops sending, so a lost
  * ACK does not idle the link until the stall timeout expires. */
 static constexpr uint32_t kNodeAckRearmMs = 300U;
@@ -72,11 +72,16 @@ static constexpr uint32_t kNodeAckRearmMs = 300U;
  * duplicate read-back never run inside a radio event handler. Depth 8 matches
  * receiver_credit_: the node never has more in flight than this. */
 static constexpr uint8_t kPendingChunkDepth = 8U;
-/* ACK batching: fewer credit-refresh transmissions on the data link. Must
- * stay below the granted credit or the node starves mid-batch. 1 = per-chunk
- * ACK (last-known-good; batch >1 pending hardware A/B — suspected in the
- * 2026-08-22 zero-progress stall alongside the fast-timing lever). */
-static constexpr uint8_t kAckBatchChunks = 1U;
+/* ACK batching: fewer credit-refresh transmissions on the data link means the
+ * forward (node->master) chunk stream is interrupted 8x less often. Must stay
+ * below the granted credit (kNodeReceiverCredit = 24) so the node always has
+ * chunks in flight between refreshes; duplicates/gaps/Complete still re-ACK
+ * immediately, so a lost batch ACK self-heals within one keepalive window.
+ * NOTE: batch >1 (with the fast-timing lever) was reverted during the
+ * 2026-08-22 zero-progress bisect. That wedge's real cause was a chunk-size
+ * overflow (fixed in 9e67a7d); re-enabled here on top of DLE + 2M PHY, but
+ * A/B this and the 15 ms interval together on hardware before relying on them. */
+static constexpr uint8_t kAckBatchChunks = 8U;
 struct PendingChunk {
 uint8_t node_id;
 uint32_t session_id;

@@ -23,13 +23,22 @@ enum class RecordCommand : uint8_t {
 
 static constexpr uint8_t kRecordReliableProtoVersion = 6U;
 static constexpr uint16_t kRecordReliableMagic = 0x5845U; /* "EX" little endian */
-/* Notification budget = MTU(247)-3 = 244 B, minus 18 B blepipe envelope,
- * minus 21 B reliable header = 205 B max chunk. 200 keeps margin. (220
- * overflowed the MTU and the stack silently dropped every chunk.) */
-static constexpr uint16_t kRecordReliableDefaultChunkSize = 200U;
+/* Chunk-size budget (all on the same BLE notification):
+ *   notification payload  = MTU(247) - 3            = 244 B
+ *   blepipe envelope      = BLEPIPE_HDR_LEN(20) + CRC(2) = 22 B
+ *   reliable frame header = sizeof(RecordReliableFrameHeader) = 25 B
+ *   => max chunk payload  = 244 - 22 - 25           = 197 B
+ * 192 stays 5 B under the ceiling for MTU-negotiation margin. A value above
+ * 197 makes the wrapped frame exceed 244 B and the stack SILENTLY DROPS every
+ * chunk (zero accepted -> SessionStall at +30 s). 200 and 220 both did this.
+ * See the static_assert in Node/Core/Src/main.c that locks this invariant. */
+static constexpr uint16_t kRecordReliableDefaultChunkSize = 192U;
 /* Matches the credit the Master actually grants per window (8). Every sender
  * and the browser presets must agree on this default or tuning gets confusing. */
-static constexpr uint8_t kRecordReliableDefaultCredit = 8U;
+/* Chunks the node may keep in flight before a credit refresh. Sized to cover
+ * the ACK round-trip at the fast (15 ms) upload interval so the node never
+ * stalls waiting for a window; 24 is the controller-sanitized maximum. */
+static constexpr uint8_t kRecordReliableDefaultCredit = 24U;
 
 enum class RecordSourceId : uint16_t {
     Master = 0U,

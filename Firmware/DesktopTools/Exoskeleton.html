@@ -1574,6 +1574,11 @@ input[type="checkbox"] {
       case 0x08: return "connect_failed";
       case 0x09: return "leaf_ready";
       case 0x0A: return "scan_delayed";
+      case 0x10: return "link_dle";
+      case 0x11: return "link_phy";
+      case 0x12: return "link_timing";
+      case 0x13: return "link_dle_req";
+      case 0x14: return "link_phy_req";
       default: return `event_0x${eventId.toString(16).padStart(2, "0")}`;
     }
   }
@@ -1592,9 +1597,27 @@ input[type="checkbox"] {
     const transportMask = data[10];
     const nodeLabel = nodeId ? `NODE${nodeId}` : "node=none";
     const slotLabel = slot === 0xFF ? "slot=none" : `slot=${slot}`;
-    const extra = eventId === 0x03
-      ? `status=0x${stateValue.toString(16).padStart(2, "0")} retry_ms=${value}`
-      : `state=${stateValue} value=${value}`;
+    let extra;
+    if (eventId === 0x03) {
+      extra = `status=0x${stateValue.toString(16).padStart(2, "0")} retry_ms=${value}`;
+    } else if (eventId === 0x10) {
+      // link_dle: value = negotiated MaxTxOctets, stateValue = MaxRxOctets low byte
+      extra = `tx_oct=${value} rx_oct=${stateValue} ${value >= 251 ? "(DLE OK)" : "(NO DLE — 27B default)"}`;
+    } else if (eventId === 0x11) {
+      // link_phy: value = TX_PHY | RX_PHY<<8, stateValue = hci status
+      const txPhy = value & 0xFF, rxPhy = (value >> 8) & 0xFF;
+      extra = `tx_phy=0x${txPhy.toString(16).padStart(2, "0")} rx_phy=0x${rxPhy.toString(16).padStart(2, "0")} status=${stateValue} ${txPhy === 0x02 ? "(2M)" : "(1M)"}`;
+    } else if (eventId === 0x12) {
+      // link_timing: value low = interval (1.25ms units), value high = hci status, stateValue = fast flag
+      const ci = value & 0xFF, st = (value >> 8) & 0xFF;
+      extra = `fast=${stateValue} ci=${ci} (${(ci * 1.25).toFixed(1)}ms) st=0x${st.toString(16).padStart(2, "0")}`;
+    } else if (eventId === 0x13 || eventId === 0x14) {
+      // link_dle_req / link_phy_req: value = hci command status (0 = accepted, 0xFF = never issued)
+      const reqLabel = value === 0 ? "(accepted)" : (value === 0xFF ? "(NOT ISSUED — tune loop never ran)" : "(REJECTED)");
+      extra = `req_status=0x${value.toString(16).padStart(2, "0")} ${reqLabel}`;
+    } else {
+      extra = `state=${stateValue} value=${value}`;
+    }
     log(`DISC ${decodeDiscoveryEventName(eventId)}: ${nodeLabel} ${slotLabel} ${extra} ready_mask=0x${readyMask.toString(16).padStart(2, "0")} transport_mask=0x${transportMask.toString(16).padStart(2, "0")}`);
   }
 
