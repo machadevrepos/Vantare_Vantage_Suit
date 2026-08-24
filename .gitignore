@@ -1,17 +1,73 @@
-SESSIONS/
+# Build outputs
+Debug/
+Release/
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.d
+*.lst
+*.sym
+
+# CubeIDE project settings (user-specific)
+.settings/
+*.launch
+.cproject
+.mxproject
+*.ioc
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Data files (local development only)
+data/
 Output/
 Session_output/
-Firmware/Master/.settings/language.settings.xml
-Firmware/Node/.settings/language.settings.xml
-converted_csv/R0001M_BNO85.csv
-converted_csv/R0001M_ICM45686.csv
-converted_csv/R0001M_metadata.json
-converted_csv/R0001N2_BNO85.csv
-converted_csv/R0001N2_ICM45686.csv
-converted_csv/R0001N2_metadata.json
-converted_csv/R0001N3_BNO85.csv
-converted_csv/R0001N3_ICM45686.csv
-converted_csv/R0001N3_metadata.json
-converted_csv/R0001N4_BNO85.csv
-converted_csv/R0001N4_ICM45686.csv
-converted_csv/R0001N4_metadata.json
+*.log
+*.csv
+*.bin
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Submodule build artifacts (if any)
+firmware/third_party/*/build/
+firmware/third_party/*/Debug/
+firmware/third_party/*/Release/
+
+# Host test build
+host/tests/cpp/build/
+
+# Generated documentation
+docs/_build/
+site/
+
+# Keep specific settings files that are part of project config
+!Firmware/Master/.settings/language.settings.xml
+!Firmware/Node/.settings/language.settings.xml
