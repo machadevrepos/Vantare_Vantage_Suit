@@ -334,7 +334,7 @@ tBleStatus Custom_APP_SendPipeFrame(Custom_STM_Char_Opcode_t char_opcode, const 
   return status;
 }
 
-uint8_t Custom_APP_PipeDataNotifyEnabled(void)
+extern "C" uint8_t Custom_APP_PipeDataNotifyEnabled(void)
 {
   return g_pipe_data_notify_enabled;
 }

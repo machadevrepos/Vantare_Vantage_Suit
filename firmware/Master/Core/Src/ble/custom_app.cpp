@@ -30,9 +30,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
-extern void exo_hub_ble_evt_trace(uint8_t evt, const uint8_t *payload, uint8_t length);
-extern void exo_hub_ble_notify_state_trace(uint8_t channel, uint8_t enabled);
-extern uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length);
+extern "C" void exo_hub_ble_evt_trace(uint8_t evt, const uint8_t *payload, uint8_t length);
+extern "C" void exo_hub_ble_notify_state_trace(uint8_t channel, uint8_t enabled);
+extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length);
 
 /* USER CODE END Includes */
 

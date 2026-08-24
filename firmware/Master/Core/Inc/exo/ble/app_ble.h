@@ -74,6 +74,8 @@ APP_BLE_ConnStatus_t APP_BLE_Get_Server_Connection_Status(void);
 void APP_BLE_LeafClientConnecting(void);
 uint8_t APP_BLE_LeafClientPrepareScan(void);
 void APP_BLE_LeafClientScanIdle(void);
+void APP_BLE_LeafClientConnectIdle(void);
+uint8_t APP_BLE_LeafClientPhoneConnected(void);
 
 /* USER CODE END EF */
 

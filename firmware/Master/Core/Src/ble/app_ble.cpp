@@ -235,10 +235,10 @@ static void Connection_Interval_Update_Req(void);
 
 /* USER CODE BEGIN PFP */
 void APP_BLE_LeafClientConnecting(void);
-void APP_BLE_LeafClientConnectIdle(void);
+extern "C" void APP_BLE_LeafClientConnectIdle(void);
 uint8_t APP_BLE_LeafClientPrepareScan(void);
 void APP_BLE_LeafClientScanIdle(void);
-uint8_t APP_BLE_LeafClientPhoneConnected(void);
+extern "C" uint8_t APP_BLE_LeafClientPhoneConnected(void);
 
 /* USER CODE END PFP */
 

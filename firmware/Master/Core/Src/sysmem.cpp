@@ -50,6 +50,11 @@ static uint8_t *__sbrk_heap_end = NULL;
  * @param incr Memory size
  * @return Pointer to allocated memory
  */
+/* newlib references these via unmangled C symbols. */
+#ifdef __cplusplus
+extern "C"
+{
+#endif
 void *_sbrk(ptrdiff_t incr)
 {
   extern uint8_t _end; /* Symbol defined in the linker script */
@@ -77,3 +82,7 @@ void *_sbrk(ptrdiff_t incr)
 
   return (void *)prev_heap_end;
 }
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

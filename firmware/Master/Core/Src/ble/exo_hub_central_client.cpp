@@ -6,12 +6,20 @@
 #include "app_conf.h"
 #include <exo/ble/custom_app.h>
 #include "dbg_trace.h"
+/* STM32_WPAN ACI headers are plain C (no __cplusplus guards); give them C
+ * linkage explicitly so call sites do not emit mangled references. */
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "ble_gap_aci.h"
 #include "ble_gatt_aci.h"
 #include "ble_hci_le.h"
 #include "ble_events.h"
 #include "ble_std.h"
 #include "ble_types.h"
+#ifdef __cplusplus
+}
+#endif
 #include <exo/ble/exo_hub_leaf_bridge.h>
 
 extern void exo_ble_debug_printf(const char *fmt, ...);
@@ -36,12 +44,15 @@ typedef struct
 } ExoRecordDoneWire;
 #pragma pack(pop)
 
-extern void APP_BLE_LeafClientConnecting(void);
-extern void APP_BLE_LeafClientConnectIdle(void);
-extern uint8_t APP_BLE_LeafClientPrepareScan(void);
-extern void APP_BLE_LeafClientScanIdle(void);
-extern uint8_t APP_BLE_LeafClientPhoneConnected(void);
-extern void exo_hub_leaf_control_ingest(uint8_t node_id,
+/* These live in app_ble.cpp / hub_leaf_ble_manager with C linkage (declared
+ * extern "C" in their headers); keep the local declarations consistent or the
+ * call sites emit mangled references. */
+extern "C" void APP_BLE_LeafClientConnecting(void);
+extern "C" void APP_BLE_LeafClientConnectIdle(void);
+extern "C" uint8_t APP_BLE_LeafClientPrepareScan(void);
+extern "C" void APP_BLE_LeafClientScanIdle(void);
+extern "C" uint8_t APP_BLE_LeafClientPhoneConnected(void);
+extern "C" void exo_hub_leaf_control_ingest(uint8_t node_id,
                                         uint8_t msg_type,
                                         const uint8_t *payload,
                                         uint16_t payload_len);

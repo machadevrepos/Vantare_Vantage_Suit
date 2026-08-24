@@ -3723,7 +3723,8 @@ public:
   CJsonObject(const std::string &json) : root(cJSON_Parse(json.c_str())), ownsRoot(true)
   {
     if (!root)
-      throw std::runtime_error("Invalid JSON");
+      /* -fno-exceptions: fall back to an empty object. */
+      root = cJSON_CreateObject();
   }
   CJsonObject(cJSON *obj, bool takeOwnership = false) : root(obj), ownsRoot(takeOwnership) {}
 
@@ -3738,7 +3739,7 @@ public:
   CJsonObject(const CJsonObject &other) : root(cJSON_Duplicate(other.root, 1)), ownsRoot(true)
   {
     if (!root)
-      throw std::runtime_error("Failed to duplicate JSON object");
+      root = cJSON_CreateObject();
   }
   
   CJsonObject(CJsonObject &&other) noexcept : root(other.root), ownsRoot(other.ownsRoot)
@@ -3756,7 +3757,7 @@ public:
       root = cJSON_Duplicate(other.root, 1);
       ownsRoot = true;
       if (!root)
-        throw std::runtime_error("Failed to duplicate JSON object");
+        root = cJSON_CreateObject();
     }
     return *this;
   }

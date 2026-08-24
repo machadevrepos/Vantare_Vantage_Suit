@@ -36,6 +36,12 @@ extern int __io_putchar(int ch) __attribute__((weak));
 extern int __io_getchar(void) __attribute__((weak));
 
 
+/* libc (newlib) references these via unmangled C symbols; keep the ABI 
+ * stable now that this TU is compiled as C++. */
+#ifdef __cplusplus
+extern "C"
+{
+#endif
 char *__env[1] = { 0 };
 char **environ = __env;
 
@@ -174,3 +180,7 @@ int _execve(char *name, char **argv, char **env)
   errno = ENOMEM;
   return -1;
 }
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif

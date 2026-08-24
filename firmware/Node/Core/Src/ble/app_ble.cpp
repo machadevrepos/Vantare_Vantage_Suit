@@ -237,7 +237,7 @@ static void Connection_Interval_Update_Req(void);
 #endif /* L2CAP_REQUEST_NEW_CONN_PARAM != 0 */
 
 /* USER CODE BEGIN PFP */
-uint8_t exo_node_ble_runtime_id(void);
+extern "C" uint8_t exo_node_ble_runtime_id(void);
 static void EXO_Node_UpdateAdvName(void);
 
 /* USER CODE END PFP */
