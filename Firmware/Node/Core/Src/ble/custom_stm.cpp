@@ -20,7 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "common_blesvc.h"
-#include "custom_stm.h"
+#include <exo/ble/custom_stm.h>
 
 /* USER CODE BEGIN Includes */
 

@@ -32,9 +32,9 @@
 	</natures>
 	<linkedResources>
 		<link>
-			<name>CUSTOM</name>
+			<name>third_party</name>
 			<type>2</type>
-			<locationURI>PARENT-1-PROJECT_LOC/LIBRARY/CUSTOM</locationURI>
+			<locationURI>PARENT-1-PROJECT_LOC/third_party</locationURI>
 		</link>
 		<link>
 			<name>gnulibs</name>

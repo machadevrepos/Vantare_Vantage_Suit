@@ -24,7 +24,7 @@
 #include "dbg_trace.h"
 #include "ble.h"
 #include <exo/ble/custom_app.h>
-#include "custom_stm.h"
+#include <exo/ble/custom_stm.h>
 #include "stm32_seq.h"
 
 /* Private includes ----------------------------------------------------------*/
