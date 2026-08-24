@@ -1,6 +1,6 @@
 #include <stdint.h>
 
-#include "../../LIBRARY/CUSTOM/LIVE_STREAM_TIMING.h"
+#include <exo/protocol/live_stream_timing.h>
 
 constexpr bool first_fresh_sample_is_immediate()
 {

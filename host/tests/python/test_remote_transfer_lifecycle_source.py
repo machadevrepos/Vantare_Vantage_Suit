@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MASTER_MAIN = ROOT / "Firmware" / "Master" / "Core" / "Src" / "main.c"
+MASTER_MAIN = ROOT / "Firmware" / "Master" / "Core" / "Src" / "main.cpp"
 
 
 def main() -> int:

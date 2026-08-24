@@ -1,6 +1,6 @@
 #include <stdint.h>
 
-#include "MASTER_SESSION_TIMESTAMP_LEDGER.h"
+#include <exo/storage/master_session_timestamp_ledger.h>
 
 static_assert(exo::MasterSessionTimestampLedger::kMaxIcmSamples == 2400U,
         "Master ICM timestamp ledger capacity must remain 2400 samples");

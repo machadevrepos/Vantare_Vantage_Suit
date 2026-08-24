@@ -2,9 +2,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "blepipe_proto.h"
+#include <exo/protocol/blepipe_proto.h>
 
-#include "MASTER_TRAINING_CSV_COORDINATOR.h"
+#include <exo/protocol/master_training_csv_coordinator.h>
 
 namespace {
 

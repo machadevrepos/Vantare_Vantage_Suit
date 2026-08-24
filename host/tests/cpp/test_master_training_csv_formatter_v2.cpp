@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "MASTER_TRAINING_CSV_FORMATTER.h"
+#include <exo/sensors/master_training_csv_formatter.h>
 
 static std::vector<std::string> split(const std::string &line)
 {

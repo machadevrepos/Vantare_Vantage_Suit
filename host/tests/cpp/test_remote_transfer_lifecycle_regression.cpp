@@ -2,7 +2,7 @@
 #include <iostream>
 #include <type_traits>
 
-#include "HUB_LEAF_BLE_MANAGER.h"
+#include <exo/ble/hub_leaf_ble_manager.h>
 
 namespace {
 int failures = 0;

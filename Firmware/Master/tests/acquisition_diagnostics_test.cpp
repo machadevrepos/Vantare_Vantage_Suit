@@ -16,7 +16,7 @@
 
 #define EXO_ACQ_DIAG_HOST_TEST 1
 
-#include "ACQUISITION_DIAGNOSTICS.h"
+#include <exo/utils/acquisition_diagnostics.h>
 
 namespace {
 

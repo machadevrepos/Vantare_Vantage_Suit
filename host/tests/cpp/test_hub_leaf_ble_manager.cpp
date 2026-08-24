@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-#include "HUB_LEAF_BLE_MANAGER.h"
+#include <exo/ble/hub_leaf_ble_manager.h>
 
 int main()
 {

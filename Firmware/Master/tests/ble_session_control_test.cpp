@@ -1,7 +1,7 @@
 #include <stdint.h>
 
-#include "../../LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h"
-#include "../../LIBRARY/CUSTOM/BLE_SESSION_CONTROL.h"
+#include <exo/protocol/ble_record_protocol.h>
+#include <exo/protocol/ble_session_control.h>
 
 static_assert(sizeof(exo::StopRecordMessage) == 5U,
               "StopRecord wire format must remain compact");

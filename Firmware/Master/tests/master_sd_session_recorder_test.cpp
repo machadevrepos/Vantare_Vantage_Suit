@@ -9,7 +9,7 @@ extern "C" {
 FATFS USERFatFs{};
 char USERPath[4]{};
 
-#include "MASTER_SD_SESSION_RECORDER.h"
+#include <exo/storage/master_sd_session_recorder.h>
 
 namespace {
 

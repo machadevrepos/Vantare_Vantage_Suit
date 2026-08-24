@@ -2,7 +2,7 @@
 #include <cstring>
 #include <iostream>
 
-#include "MASTER_TRAINING_CSV_LOGGER.h"
+#include <exo/sensors/master_training_csv_logger.h>
 
 namespace {
 int failures = 0;

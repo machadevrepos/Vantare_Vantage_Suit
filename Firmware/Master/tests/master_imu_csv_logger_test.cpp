@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "MASTER_IMU_CSV_LOGGER.h"
+#include <exo/sensors/master_imu_csv_logger.h>
 
 namespace {
 

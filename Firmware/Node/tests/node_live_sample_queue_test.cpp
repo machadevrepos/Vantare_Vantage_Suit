@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "../../LIBRARY/CUSTOM/NODE_LIVE_SAMPLE_QUEUE.h"
+#include <exo/recording/node_live_sample_queue.h>
 
 static bool same_bytes(const uint8_t *lhs, const uint8_t *rhs, uint8_t size)
 {

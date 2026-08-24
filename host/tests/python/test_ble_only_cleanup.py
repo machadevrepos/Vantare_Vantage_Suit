@@ -23,6 +23,8 @@ ACTIVE_ROOTS = (
     REPO_ROOT / "Firmware/Master/STM32_WPAN",
     REPO_ROOT / "Firmware/Node/Core",
     REPO_ROOT / "Firmware/Node/STM32_WPAN",
+    REPO_ROOT / "Firmware/common",
+    REPO_ROOT / "Firmware/third_party",
     REPO_ROOT / "Firmware/LIBRARY/CUSTOM",
 )
 
@@ -79,14 +81,14 @@ def main() -> int:
                 line = text.count("\n", 0, match.start()) + 1
                 failures.append(f"{relative}:{line}: stale {label}")
 
-    master_main = (REPO_ROOT / "Firmware/Master/Core/Src/main.c").read_text(encoding="utf-8")
+    master_main = (REPO_ROOT / "Firmware/Master/Core/Src/main.cpp").read_text(encoding="utf-8")
     manager_header = (
-        REPO_ROOT / "Firmware/Master/Core/Inc/HUB_LEAF_BLE_MANAGER.h"
+        REPO_ROOT / "Firmware/common/inc/exo/ble/hub_leaf_ble_manager.h"
     ).read_text(encoding="utf-8")
     diagnostics = (
-        REPO_ROOT / "Firmware/LIBRARY/CUSTOM/ACQUISITION_DIAGNOSTICS.h"
+        REPO_ROOT / "Firmware/common/inc/exo/utils/acquisition_diagnostics.h"
     ).read_text(encoding="utf-8")
-    node_main = (REPO_ROOT / "Firmware/Node/Core/Src/main.c").read_text(encoding="utf-8")
+    node_main = (REPO_ROOT / "Firmware/Node/Core/Src/main.cpp").read_text(encoding="utf-8")
 
     if "leaf_ble_manager" not in master_main:
         failures.append("Master main.c does not expose leaf_ble_manager")

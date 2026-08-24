@@ -1,7 +1,7 @@
 #include <cassert>
 #include <iostream>
 
-#include "MASTER_NODE_TRANSFER_WINDOW.h"
+#include <exo/protocol/master_node_transfer_window.h>
 
 using exo::MasterNodeTransferWindow;
 using exo::NodeTransferDecision;

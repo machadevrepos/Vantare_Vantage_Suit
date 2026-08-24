@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "MASTER_NODE_SESSION_STAGER.h"
+#include <exo/storage/master_node_session_stager.h>
 
 namespace {
 

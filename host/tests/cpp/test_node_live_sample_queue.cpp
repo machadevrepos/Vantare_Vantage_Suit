@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <iostream>
 
-#include "NODE_LIVE_SAMPLE_QUEUE.h"
+#include <exo/recording/node_live_sample_queue.h>
 
 int main()
 {

@@ -15,7 +15,7 @@ def require(ok: bool, message: str, failures: list[str]) -> None:
 
 def main() -> int:
     failures: list[str] = []
-    allocator_path = ROOT / "Firmware/Master/Core/Inc/MASTER_BINARY_SESSION_INDEX.h"
+    allocator_path = ROOT / "Firmware/common/inc/exo/storage/master_binary_session_index.h"
     require(allocator_path.exists(), "binary run-index allocator must exist", failures)
     if allocator_path.exists():
         allocator = allocator_path.read_text(encoding="utf-8")
@@ -32,7 +32,7 @@ def main() -> int:
         require("USERFatFs.fs_type == 0U" in allocator,
                 "allocator must not remount an already-mounted FatFs volume", failures)
 
-    coordinator = read("Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h")
+    coordinator = read("Firmware/common/inc/exo/protocol/master_training_csv_coordinator.h")
     require("EXO_MASTER_BINARY_ONLY_BUILD" in coordinator and
             "static constexpr bool binary_only_ = true" in coordinator,
             "production build must support compile-time binary-only specialization", failures)
@@ -52,7 +52,7 @@ def main() -> int:
             binary_block.find("reliable_control_.verify_ok") > binary_block.find("stager_.discard_after_success()"),
             "node VerifyOk/erase permission must only be queued after the validated SD stage is closed", failures)
 
-    main_src = read("Firmware/Master/Core/Src/main.c")
+    main_src = read("Firmware/Master/Core/Src/main.cpp")
     require("#define EXO_MASTER_BINARY_ONLY_BUILD 1" in main_src,
             "Master must select the compile-time binary-only specialization", failures)
     require("#include <MASTER_BINARY_SESSION_INDEX.h>" in main_src,
@@ -91,7 +91,7 @@ def main() -> int:
             "retained_on_node=1" in main_src,
             "a stalled node must release the local scheduler slot without erasing node flash", failures)
 
-    recorder = read("Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h")
+    recorder = read("Firmware/common/inc/exo/storage/master_sd_session_recorder.h")
     require("/SESSIONS/R0000T.BIN" in recorder,
             "Master archive must use a temporary compact file", failures)
     require("read(archive_offset_, copy_buffer_, chunk)" in recorder,

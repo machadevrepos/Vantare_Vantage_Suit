@@ -6,10 +6,10 @@
 #include <utility>
 #include <vector>
 
-#include "HUB_LEAF_BLE_MANAGER.h"
-#include "MASTER_NODE_RELIABLE_CONTROL.h"
-#include "MASTER_NODE_TRANSFER_WINDOW.h"
-#include "MASTER_TRAINING_CSV_FORMATTER.h"
+#include <exo/ble/hub_leaf_ble_manager.h>
+#include <exo/protocol/master_node_reliable_control.h>
+#include <exo/protocol/master_node_transfer_window.h>
+#include <exo/sensors/master_training_csv_formatter.h>
 
 namespace {
 int failures = 0;

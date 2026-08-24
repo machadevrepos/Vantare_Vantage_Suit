@@ -7,8 +7,8 @@ def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 def main() -> int:
     failures=[]
-    master=read("Firmware/Master/Core/Src/main.c")
-    node=read("Firmware/Node/Core/Src/main.c")
+    master=read("Firmware/Master/Core/Src/main.cpp")
+    node=read("Firmware/Node/Core/Src/main.cpp")
     def require(ok,msg):
         if not ok: failures.append(msg)
     a=master.find("static bool stop_active_session")

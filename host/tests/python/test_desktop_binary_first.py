@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-HTML = (ROOT / "Firmware/DesktopTools/Exoskeleton.html").read_text(encoding="utf-8-sig")
+HTML = (ROOT / "host/desktop_tool/Exoskeleton.html").read_text(encoding="utf-8-sig")
 
 checks = [
     ("Vantare Vantage | Session Console" in HTML, "professional console title missing"),

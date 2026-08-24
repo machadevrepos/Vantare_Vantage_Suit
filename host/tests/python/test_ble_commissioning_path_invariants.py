@@ -26,8 +26,8 @@ def function_body(text: str, signature: str, next_signature: str | None) -> str:
 
 def main() -> int:
     failures: list[str] = []
-    central = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c").read_text(encoding="utf-8")
-    master_app_ble = (ROOT / "Firmware/Master/STM32_WPAN/App/app_ble.c").read_text(encoding="utf-8")
+    central = (ROOT / "Firmware/Master/Core/Src/ble/exo_hub_central_client.cpp").read_text(encoding="utf-8")
+    master_app_ble = (ROOT / "Firmware/Master/Core/Src/ble/app_ble.cpp").read_text(encoding="utf-8")
     master_conf = (ROOT / "Firmware/Master/Core/Inc/app_conf.h").read_text(encoding="utf-8")
 
     leaf_max = re.search(r"#define\s+EXO_HUB_LEAF_MAX\s+(\d+)U", central)

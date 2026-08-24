@@ -4,7 +4,7 @@
 #include <iostream>
 #include <vector>
 
-#include "MASTER_NODE_RELIABLE_CONTROL.h"
+#include <exo/protocol/master_node_reliable_control.h>
 
 struct FakeTransport {
     int failures_remaining = 1;

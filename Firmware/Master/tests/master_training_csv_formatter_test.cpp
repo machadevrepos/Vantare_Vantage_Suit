@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "MASTER_TRAINING_CSV_FORMATTER.h"
+#include <exo/sensors/master_training_csv_formatter.h>
 
 using namespace exo::training_csv;
 

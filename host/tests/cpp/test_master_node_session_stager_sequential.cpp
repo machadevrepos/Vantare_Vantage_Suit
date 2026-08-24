@@ -4,7 +4,7 @@
 #include <iostream>
 #include <vector>
 
-#include "MASTER_NODE_SESSION_STAGER.h"
+#include <exo/storage/master_node_session_stager.h>
 
 namespace {
 std::vector<uint8_t> g_file;

@@ -22,14 +22,14 @@ def require(condition: bool, message: str, failures: list[str]) -> None:
 def main() -> int:
     failures: list[str] = []
 
-    runtime_config = read("Firmware/LIBRARY/CUSTOM/NODE_RUNTIME_CONFIG.h")
+    runtime_config = read("Firmware/common/inc/exo/storage/node_runtime_config.h")
     require(
         "static constexpr uint8_t kNodeIdMax = 4U;" in runtime_config,
         "Node runtime configuration must reject IDs above the supported 1..4 topology",
         failures,
     )
 
-    node_main = read("Firmware/Node/Core/Src/main.c")
+    node_main = read("Firmware/Node/Core/Src/main.cpp")
     require(
         "PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);" in node_main,
         "ERM_PWM must use generated TIM1_CH4 / ERM pin mapping",
@@ -41,7 +41,7 @@ def main() -> int:
         failures,
     )
 
-    pwm = read("Firmware/LIBRARY/CUSTOM/PWM_PIN.h")
+    pwm = read("Firmware/common/inc/exo/utils/pwm_pin.h")
     zero_start = pwm.find("if (percent == 0U)")
     zero_end = pwm.find("const uint64_t scaled_ticks", zero_start)
     zero_block = pwm[zero_start:zero_end] if zero_start >= 0 and zero_end >= 0 else ""
@@ -55,7 +55,7 @@ def main() -> int:
         failures,
     )
 
-    custom_stm = read("Firmware/Master/STM32_WPAN/App/custom_stm.c")
+    custom_stm = read("Firmware/Master/Core/Src/ble/custom_stm.cpp")
     permit_case = custom_stm.find("case ACI_GATT_WRITE_PERMIT_REQ_VSEVT_CODE:")
     permit_end = custom_stm.find("/* USER CODE END EVT_BLUE_GATT_WRITE_PERMIT_REQ_BEGIN */", permit_case)
     permit_block = custom_stm[permit_case:permit_end] if permit_case >= 0 and permit_end >= 0 else ""
@@ -82,7 +82,7 @@ def main() -> int:
         failures,
     )
 
-    desktop = read("Firmware/DesktopTools/Exoskeleton.html")
+    desktop = read("host/desktop_tool/Exoskeleton.html")
     fn_start = desktop.find("function writeCharacteristic(char, payload)")
     fn_end = desktop.find("function decodeTrainingCsvStatus", fn_start)
     write_block = desktop[fn_start:fn_end] if fn_start >= 0 and fn_end >= 0 else ""

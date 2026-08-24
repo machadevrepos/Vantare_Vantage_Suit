@@ -1,4 +1,4 @@
-#include "MASTER_IMU_SWO_TELEMETRY.h"
+#include <exo/sensors/master_imu_swo_telemetry.h>
 
 using namespace exo::imu_swo;
 

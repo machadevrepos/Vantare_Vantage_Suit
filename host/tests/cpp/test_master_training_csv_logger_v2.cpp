@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "MASTER_TRAINING_CSV_LOGGER.h"
+#include <exo/sensors/master_training_csv_logger.h>
 
 static std::string g_output;
 static FRESULT mkdir_ok(const TCHAR*) { return FR_OK; }

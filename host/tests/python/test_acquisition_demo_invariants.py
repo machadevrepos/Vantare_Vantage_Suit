@@ -3,19 +3,19 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-bno = (ROOT / "Firmware/LIBRARY/CUSTOM/BNO85_STM32.h").read_text()
-icm = (ROOT / "Firmware/LIBRARY/CUSTOM/ICM45686_STM32.h").read_text()
-hub = (ROOT / "Firmware/LIBRARY/CUSTOM/HUB_SENSOR_TEST_APP.h").read_text()
-node = (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDING_APP.h").read_text()
-master = (ROOT / "Firmware/Master/Core/Src/main.c").read_text()
-recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_SD_SESSION_RECORDER.h").read_text()
-central = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.c").read_text()
-central_h = (ROOT / "Firmware/Master/STM32_WPAN/App/exo_hub_central_client.h").read_text()
-node_main = (ROOT / "Firmware/Node/Core/Src/main.c").read_text()
-stager = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_SESSION_STAGER.h").read_text()
-coordinator = (ROOT / "Firmware/Master/Core/Inc/MASTER_TRAINING_CSV_COORDINATOR.h").read_text()
-reliable = (ROOT / "Firmware/Master/Core/Inc/MASTER_NODE_RELIABLE_CONTROL.h").read_text()
-node_recorder = (ROOT / "Firmware/LIBRARY/CUSTOM/NODE_RECORDER.h").read_text()
+bno = (ROOT / "Firmware/common/inc/exo/sensors/bno85_stm32.h").read_text()
+icm = (ROOT / "Firmware/common/inc/exo/sensors/icm45686_stm32.h").read_text()
+hub = (ROOT / "Firmware/common/inc/exo/sensors/hub_sensor_test_app.h").read_text()
+node = (ROOT / "Firmware/common/inc/exo/recording/node_recording_app.h").read_text()
+master = (ROOT / "Firmware/Master/Core/Src/main.cpp").read_text()
+recorder = (ROOT / "Firmware/common/inc/exo/storage/master_sd_session_recorder.h").read_text()
+central = (ROOT / "Firmware/Master/Core/Src/ble/exo_hub_central_client.cpp").read_text()
+central_h = (ROOT / "Firmware/common/inc/exo/ble/exo_hub_central_client.h").read_text()
+node_main = (ROOT / "Firmware/Node/Core/Src/main.cpp").read_text()
+stager = (ROOT / "Firmware/common/inc/exo/storage/master_node_session_stager.h").read_text()
+coordinator = (ROOT / "Firmware/common/inc/exo/protocol/master_training_csv_coordinator.h").read_text()
+reliable = (ROOT / "Firmware/common/inc/exo/protocol/master_node_reliable_control.h").read_text()
+node_recorder = (ROOT / "Firmware/common/inc/exo/storage/node_recorder.h").read_text()
 
 checks = [
     ("void service_pending(uint8_t max_packets)" in bno,
@@ -126,7 +126,7 @@ checks = [
     ("abandon_and_unlink" in stager and "stage_started_" in stager and
      coordinator.count("stager_.abandon_and_unlink();") >= 3,
      "Abandoned/failed node stages must be unlinked so run indexes stay reusable and no truncated R####N#.BIN survives"),
-    ("RetrySource = 0x10" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
+    ("RetrySource = 0x10" in (ROOT / "Firmware/common/inc/exo/protocol/ble_record_protocol.h").read_text() and
      "master_retry_failed_source" in master and
      "retry_failed_source" in coordinator and
      "master_retry_failed_source(message.node_id)" in master,
@@ -169,11 +169,11 @@ checks = [
      "The stale-ACK escape must be reachable, and a resolved source must not be re-granted ManifestAck credit"),
     ("validation_started_ms_" in coordinator and "stage_error_retry" in coordinator,
      "ValidateNode must have stall coverage, and a CRC-mismatch StageError must be re-pullable in binary-only runs"),
-    ("kRecordReliableDefaultCredit = 24U" in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
-     "ListSessions" not in (ROOT / "Firmware/LIBRARY/CUSTOM/BLE_RECORD_PROTOCOL.h").read_text() and
-     "payload_size > chunk_size_" in (ROOT / "Firmware/LIBRARY/CUSTOM/MASTER_NODE_TRANSFER_WINDOW.h").read_text(),
+    ("kRecordReliableDefaultCredit = 24U" in (ROOT / "Firmware/common/inc/exo/protocol/ble_record_protocol.h").read_text() and
+     "ListSessions" not in (ROOT / "Firmware/common/inc/exo/protocol/ble_record_protocol.h").read_text() and
+     "payload_size > chunk_size_" in (ROOT / "Firmware/common/inc/exo/protocol/master_node_transfer_window.h").read_text(),
      "Protocol defaults must match the granted credit, dead opcodes stay deleted, and the window must enforce the chunk-size bound"),
-    ("const payload = new Uint8Array(14);" in (ROOT / "Firmware/DesktopTools/Exoskeleton.html").read_text(encoding="utf-8-sig"),
+    ("const payload = new Uint8Array(14);" in (ROOT / "host/desktop_tool/Exoskeleton.html").read_text(encoding="utf-8-sig"),
      "Browser NACK_RANGE payload must carry the trailing flags field like the 14-byte C struct"),
 ]
 
