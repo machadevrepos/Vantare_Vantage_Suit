@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 bno = (ROOT / "Firmware/common/inc/exo/sensors/bno85_stm32.h").read_text()
 icm = (ROOT / "Firmware/common/inc/exo/sensors/icm45686_stm32.h").read_text()
 hub = (ROOT / "Firmware/common/inc/exo/sensors/hub_sensor_test_app.h").read_text()

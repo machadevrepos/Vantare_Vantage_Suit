@@ -4,7 +4,7 @@
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 MASTER_MAIN = ROOT / "Firmware" / "Master" / "Core" / "Src" / "main.cpp"
 
 

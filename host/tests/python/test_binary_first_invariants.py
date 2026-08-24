@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 
 def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
@@ -55,7 +55,7 @@ def main() -> int:
     main_src = read("Firmware/Master/Core/Src/main.cpp")
     require("#define EXO_MASTER_BINARY_ONLY_BUILD 1" in main_src,
             "Master must select the compile-time binary-only specialization", failures)
-    require("#include <MASTER_BINARY_SESSION_INDEX.h>" in main_src,
+    require("#include <exo/storage/master_binary_session_index.h>" in main_src,
             "Master must include the binary session index allocator", failures)
     require("begin_binary_session" in main_src,
             "record start must select binary-only collection", failures)

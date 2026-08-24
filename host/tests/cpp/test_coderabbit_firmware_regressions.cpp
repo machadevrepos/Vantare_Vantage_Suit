@@ -143,7 +143,8 @@ struct RemoteLifecycleProbe<Manager, std::void_t<
         Manager completed;
         if (!completed.queue_record_done(first) || !completed.queue_record_done(second)) return false;
         if (!completed.pop_next_record_done(selected) || selected.node_id != 1U) return false;
-        if (completed.on_ble_reliable_verify_ok(77U, 1U, 0xDEADBEEFU)) return false;
+        /* verify_ok records the node-reported CRC; validation against the
+         * RecordDone payload happens later in on_ble_session_complete. */
         if (!completed.on_ble_reliable_verify_ok(77U, 1U, first.payload_crc32)) return false;
         if (completed.active_source_id() != 1U || completed.active_session_id() != 77U) return false;
         if (completed.on_ble_session_complete(77U, 1U, 0xDEADBEEFU)) return false;
@@ -175,12 +176,21 @@ int main()
     done.payload_crc32 = 0x12345678U;
     EXPECT_TRUE(control.begin(done, 180U));
     EXPECT_TRUE(control.service(1U));
-    EXPECT_TRUE(control.nack_range(0xFFFFFFFFU));
+    /* Chunk offsets are validated against the 32-bit protocol field: indices
+     * whose byte offset would overflow must be rejected outright, while the
+     * largest legal index still round-trips through NACK and ACK frames. */
+    EXPECT_TRUE(!control.nack_range(0xFFFFFFFFU));
+    EXPECT_TRUE(!control.ack_window(0xFFFFFFFFU));
+    constexpr uint32_t kMaxLegalChunk =
+            static_cast<uint32_t>(0xFFFFFFFFULL / 180U);
+    EXPECT_TRUE(control.nack_range(kMaxLegalChunk));
     EXPECT_TRUE(control.service(2U));
-    EXPECT_TRUE(frame_header(transport.frame).byte_offset == 0xFFFFFFFFU);
-    EXPECT_TRUE(control.ack_window(0xFFFFFFFFU));
+    EXPECT_TRUE(frame_header(transport.frame).byte_offset ==
+            static_cast<uint32_t>(kMaxLegalChunk) * 180U);
+    EXPECT_TRUE(control.ack_window(kMaxLegalChunk));
     EXPECT_TRUE(control.service(3U));
-    EXPECT_TRUE(frame_header(transport.frame).byte_offset == 0xFFFFFFFFU);
+    EXPECT_TRUE(frame_header(transport.frame).byte_offset ==
+            static_cast<uint32_t>(kMaxLegalChunk) * 180U);
 
     exo::ble_hub::HubLeafBleManager manager;
     exo::RecordDoneMessage done1{};

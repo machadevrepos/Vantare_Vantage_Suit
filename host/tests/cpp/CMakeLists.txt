@@ -14,6 +14,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
+enable_testing()
+
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 
 set(EXO_COMMON_INC   "${REPO_ROOT}/Firmware/common/inc")
@@ -37,6 +39,13 @@ if(MSVC)
     target_compile_options(exo_test_common INTERFACE /W4 /permissive-)
 else()
     target_compile_options(exo_test_common INTERFACE -Wall -Wextra)
+    # Session-stager tests allocate sizeable scratch buffers; give them room.
+    target_link_options(exo_test_common INTERFACE -Wl,--stack,16777216)
+endif()
+
+if(MINGW)
+    # Self-contained executables: no MinGW runtime DLLs needed at test time.
+    target_link_options(exo_test_common INTERFACE -static -static-libgcc -static-libstdc++)
 endif()
 
 function(exo_add_test NAME SOURCE)

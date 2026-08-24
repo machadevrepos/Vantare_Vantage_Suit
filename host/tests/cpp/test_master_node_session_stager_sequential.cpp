@@ -125,9 +125,12 @@ int main()
         assert(stager.read_icm(i, icm));
     }
 
-    // One seek positions the first sample. BNO and ICM records are contiguous,
-    // so every later row is read without another FAT filesystem seek.
-    assert(g_lseek_count == 1U);
+    // Reads are cursor-aware: validation leaves the read cursor at the first
+    // sample, so fully sequential BNO/ICM row access performs no FAT seeks.
+    if (g_lseek_count != 0U) {
+        std::cerr << "unexpected lseek count: " << g_lseek_count << "\n";
+    }
+    assert(g_lseek_count == 0U);
 
     // Buffered-write scenario: many small appends must cross the internal
     // write-block boundary, a duplicate may straddle flushed prefix vs RAM

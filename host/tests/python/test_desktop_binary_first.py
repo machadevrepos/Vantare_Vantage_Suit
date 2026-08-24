@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 HTML = (ROOT / "host/desktop_tool/Exoskeleton.html").read_text(encoding="utf-8-sig")
 
 checks = [

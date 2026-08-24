@@ -73,7 +73,8 @@ int main()
             body_of<exo::RecordReliableManifestAckPayload>(transport.frame);
     assert(manifest_ack.source_id == 3U);
     assert(manifest_ack.session_id == 42U);
-    assert(manifest_ack.accepted_chunk_size == 180U);
+    assert(manifest_ack.accepted_chunk_size ==
+            exo::kRecordReliableDefaultChunkSize);
     assert(manifest_ack.credit == 8U);
     assert(header.payload_crc16 ==
             exo::MasterNodeReliableControl::crc16_ccitt(

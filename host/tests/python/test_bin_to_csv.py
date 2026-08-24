@@ -8,7 +8,7 @@ import unittest
 import zlib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / 'host' / 'desktop_tool' / 'vantage_bin_to_csv.py'
 spec = importlib.util.spec_from_file_location('vantage_bin_to_csv', MODULE_PATH)
 mod = importlib.util.module_from_spec(spec)
