@@ -5,7 +5,7 @@
 
 extern "C" {
 #include "i2c.h"
-#include "inv_imu_driver.h"
+#include "imu/inv_imu_driver.h"
 }
 
 #include <exo/types/recording_types.h>
