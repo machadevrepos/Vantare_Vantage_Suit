@@ -70,7 +70,6 @@ typedef struct
  * START of Section BLE_APP_CONTEXT
  */
 
-static Custom_App_Context_t Custom_App_Context;
 
 /**
  * END of Section BLE_APP_CONTEXT
@@ -90,12 +89,6 @@ static uint32_t g_last_cmd_write_tick = 0U;
 /* Private function prototypes -----------------------------------------------*/
 /* BLEPipeService */
 static void Custom_Pipedatatx_Update_Char(void);
-static void Custom_Pipedatatx_Send_Notification(void);
-static void Custom_Pipectrltx_Update_Char(void);
-static void Custom_Pipectrltx_Send_Notification(void);
-static void Custom_Pipectrltx_Send_Indication(void);
-static void Custom_Pipestattx_Update_Char(void);
-static void Custom_Pipestattx_Send_Notification(void);
 
 /* USER CODE BEGIN PFP */
 static void Custom_APP_StoreLastWrite(Custom_STM_App_Notification_evt_t *pNotification);
@@ -439,124 +432,6 @@ __USED void Custom_Pipedatatx_Update_Char(void) /* Property Read */
   /* USER CODE BEGIN Pipedatatx_UC_Last*/
 
   /* USER CODE END Pipedatatx_UC_Last*/
-  return;
-}
-
-void Custom_Pipedatatx_Send_Notification(void) /* Property Notification */
-{
-  uint8_t updateflag = 0;
-
-  /* USER CODE BEGIN Pipedatatx_NS_1*/
-
-  /* USER CODE END Pipedatatx_NS_1*/
-
-  if (updateflag != 0)
-  {
-    Custom_STM_App_Update_Char(CUSTOM_STM_PIPEDATATX, (uint8_t *)NotifyCharData);
-  }
-
-  /* USER CODE BEGIN Pipedatatx_NS_Last*/
-
-  /* USER CODE END Pipedatatx_NS_Last*/
-
-  return;
-}
-
-__USED void Custom_Pipectrltx_Update_Char(void) /* Property Read */
-{
-  uint8_t updateflag = 0;
-
-  /* USER CODE BEGIN Pipectrltx_UC_1*/
-
-  /* USER CODE END Pipectrltx_UC_1*/
-
-  if (updateflag != 0)
-  {
-    Custom_STM_App_Update_Char(CUSTOM_STM_PIPECTRLTX, (uint8_t *)UpdateCharData);
-  }
-
-  /* USER CODE BEGIN Pipectrltx_UC_Last*/
-
-  /* USER CODE END Pipectrltx_UC_Last*/
-  return;
-}
-
-void Custom_Pipectrltx_Send_Notification(void) /* Property Notification */
-{
-  uint8_t updateflag = 0;
-
-  /* USER CODE BEGIN Pipectrltx_NS_1*/
-
-  /* USER CODE END Pipectrltx_NS_1*/
-
-  if (updateflag != 0)
-  {
-    Custom_STM_App_Update_Char(CUSTOM_STM_PIPECTRLTX, (uint8_t *)NotifyCharData);
-  }
-
-  /* USER CODE BEGIN Pipectrltx_NS_Last*/
-
-  /* USER CODE END Pipectrltx_NS_Last*/
-
-  return;
-}
-
-void Custom_Pipectrltx_Send_Indication(void) /* Property Indication */
-{
-  uint8_t updateflag = 0;
-
-  /* USER CODE BEGIN Pipectrltx_IS_1*/
-
-  /* USER CODE END Pipectrltx_IS_1*/
-
-  if (updateflag != 0)
-  {
-    Custom_STM_App_Update_Char(CUSTOM_STM_PIPECTRLTX, (uint8_t *)NotifyCharData);
-  }
-
-  /* USER CODE BEGIN Pipectrltx_IS_Last*/
-
-  /* USER CODE END Pipectrltx_IS_Last*/
-
-  return;
-}
-
-__USED void Custom_Pipestattx_Update_Char(void) /* Property Read */
-{
-  uint8_t updateflag = 0;
-
-  /* USER CODE BEGIN Pipestattx_UC_1*/
-
-  /* USER CODE END Pipestattx_UC_1*/
-
-  if (updateflag != 0)
-  {
-    Custom_STM_App_Update_Char(CUSTOM_STM_PIPESTATTX, (uint8_t *)UpdateCharData);
-  }
-
-  /* USER CODE BEGIN Pipestattx_UC_Last*/
-
-  /* USER CODE END Pipestattx_UC_Last*/
-  return;
-}
-
-void Custom_Pipestattx_Send_Notification(void) /* Property Notification */
-{
-  uint8_t updateflag = 0;
-
-  /* USER CODE BEGIN Pipestattx_NS_1*/
-
-  /* USER CODE END Pipestattx_NS_1*/
-
-  if (updateflag != 0)
-  {
-    Custom_STM_App_Update_Char(CUSTOM_STM_PIPESTATTX, (uint8_t *)NotifyCharData);
-  }
-
-  /* USER CODE BEGIN Pipestattx_NS_Last*/
-
-  /* USER CODE END Pipestattx_NS_Last*/
-
   return;
 }
 
