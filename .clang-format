@@ -1,0 +1,15 @@
+---
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+UseTab: Never
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+PointerAlignment: Right
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+AccessModifierOffset: -4
+AlignConsecutiveMacros: Consecutive
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2

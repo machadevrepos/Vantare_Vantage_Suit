@@ -1,0 +1,48 @@
+# Firmware build verification.
+#
+# STM32CubeIDE cannot be installed on public runners without accepting ST's
+# license interactively, so this workflow is opt-in: point FIRMWARE_CI_RUNNER at
+# a self-hosted runner that has STM32CubeIDE installed and set CUBEIDE_DIR to
+# its install root (e.g. C:\ST\STM32CubeIDE_1.13.1). The job then performs a
+# headless managed build of both projects.
+name: Firmware Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  cubeide-headless:
+    runs-on: ${{ vars.FIRMWARE_CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip notice (no CubeIDE runner configured)
+        if: ${{ !vars.FIRMWARE_CI_RUNNER }}
+        run: |
+          echo "FIRMWARE_CI_RUNNER is not set; skipping headless CubeIDE build."
+          echo "Configure a self-hosted runner with STM32CubeIDE and set"
+          echo "CUBEIDE_DIR to enable firmware build verification."
+
+      - name: Build Master (Debug)
+        if: ${{ vars.FIRMWARE_CI_RUNNER }}
+        shell: bash
+        run: |
+          "$CUBEIDE_DIR/STM32CubeIDE" --launcher.suppressErrors \
+            -nosplash -application org.eclipse.cdt.managedbuilder.core.headlessbuild \
+            -data /tmp/ws -import "$GITHUB_WORKSPACE/firmware/master" \
+            -cleanBuild Master/Debug
+        env:
+          CUBEIDE_DIR: ${{ vars.CUBEIDE_DIR }}
+
+      - name: Build Node (Debug)
+        if: ${{ vars.FIRMWARE_CI_RUNNER }}
+        shell: bash
+        run: |
+          "$CUBEIDE_DIR/STM32CubeIDE" --launcher.suppressErrors \
+            -nosplash -application org.eclipse.cdt.managedbuilder.core.headlessbuild \
+            -data /tmp/ws -import "$GITHUB_WORKSPACE/firmware/node" \
+            -cleanBuild Node/Debug
+        env:
+          CUBEIDE_DIR: ${{ vars.CUBEIDE_DIR }}

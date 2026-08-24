@@ -1,32 +1,31 @@
-# Build outputs
+# ---- Firmware build outputs ----
 Debug/
 Release/
-build/
-*.elf
-*.bin
-*.hex
-*.map
+host/tests/cpp/build/
+
+# Object / listing artifacts (any depth, scoped patterns)
 *.o
 *.d
 *.lst
 *.sym
+*.map
 
-# CubeIDE project settings (user-specific)
-.settings/
-*.launch
-.cproject
-.mxproject
-*.ioc
-
-# IDE/Editor
+# ---- IDE / editor ----
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
+.settings/
 
-# Python
+# CubeIDE user-local launch configs
+*.launch
+
+# NOTE: .cproject / .project / .mxproject / *.ioc are intentionally TRACKED.
+# They live at firmware/master and firmware/node project roots.
+
+# ---- Python ----
 __pycache__/
 *.pyc
 *.pyo
@@ -36,38 +35,20 @@ __pycache__/
 htmlcov/
 .venv/
 venv/
-env/
 
-# Data files (local development only)
+# ---- Local data (never commit recordings/exports) ----
 data/
 Output/
 Session_output/
-*.log
-*.csv
-*.bin
+converted_csv/
 
-# Logs
+# ---- Logs & temporaries ----
 *.log
 logs/
-
-# Temporary files
 tmp/
 temp/
 *.tmp
 *.bak
 
-# Submodule build artifacts (if any)
-firmware/third_party/*/build/
-firmware/third_party/*/Debug/
-firmware/third_party/*/Release/
-
-# Host test build
-host/tests/cpp/build/
-
-# Generated documentation
-docs/_build/
-site/
-
-# Keep specific settings files that are part of project config
-!Firmware/Master/.settings/language.settings.xml
-!Firmware/Node/.settings/language.settings.xml
+# ---- OS junk ----
+Thumbs.db

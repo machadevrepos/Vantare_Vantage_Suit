@@ -1,0 +1,25 @@
+Checks: >
+    -*,
+    modernize-use-override,
+    modernize-use-nullptr,
+    modernize-use-auto,
+    modernize-loop-convert,
+    modernize-use-emplace,
+    bugprone-*,
+    performance-*,
+    readability-identifier-naming
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*/firmware/(common|master|node)/.*'
+
+CheckOptions:
+    - key:   readability-identifier-naming.VariableCase
+      value: lower_case
+    - key:   readability-identifier-naming.FunctionCase
+      value: camelBack
+    - key:   readability-identifier-naming.ClassCase
+      value: CamelCase
+    - key:   readability-identifier-naming.MemberCase
+      value: lower_case
+    - key:   readability-identifier-naming.ConstexprVariablePrefix
+      value: k
