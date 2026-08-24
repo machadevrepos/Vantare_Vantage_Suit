@@ -1,4 +1,0 @@
-../Core/Src/blepipe_proto.c:59:10:blepipe_crc16_ccitt	6
-../Core/Src/blepipe_proto.c:81:18:blepipe_encode	9
-../Core/Src/blepipe_proto.c:113:18:blepipe_decode	11
-../Core/Src/blepipe_proto.c:157:9:blepipe_msg_allowed_on_lane	7
