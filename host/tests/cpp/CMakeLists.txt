@@ -27,6 +27,7 @@ set(STUBS            "${CMAKE_CURRENT_LIST_DIR}/stubs")
 add_library(exo_test_common INTERFACE)
 target_include_directories(exo_test_common INTERFACE
     "${EXO_COMMON_INC}"
+    "${THIRD_PARTY}"
     "${THIRD_PARTY}/sh2"
     "${THIRD_PARTY}/w25qxx/src"
     "${THIRD_PARTY}/icm45686-driver"

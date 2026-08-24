@@ -266,13 +266,13 @@ static void APPD_SetCPU2GpioConfig( void )
     {
       switch((uint32_t)aGpioConfigList[local_loop].port)
       {
-        case (uint32_t)GPIOA:
+        case GPIOA_BASE:
           gpioa_pin_list |= aGpioConfigList[local_loop].pin;
           break;
-        case (uint32_t)GPIOB:
+        case GPIOB_BASE:
           gpiob_pin_list |= aGpioConfigList[local_loop].pin;
           break;
-        case (uint32_t)GPIOC:
+        case GPIOC_BASE:
           gpioc_pin_list |= aGpioConfigList[local_loop].pin;
           break;
         default:
@@ -333,10 +333,10 @@ static void APPD_BleDtbCfg( void )
     {
       switch((uint32_t)aRfConfigList[local_loop].port)
       {
-        case (uint32_t)GPIOA:
+        case GPIOA_BASE:
           gpioa_pin_list |= aRfConfigList[local_loop].pin;
           break;
-        case (uint32_t)GPIOB:
+        case GPIOB_BASE:
           gpiob_pin_list |= aRfConfigList[local_loop].pin;
           break;
         default:

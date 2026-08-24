@@ -103,11 +103,11 @@ def main() -> int:
             ref = match.group(1)
             target = ref[1:-1]
             checked += 1
-            candidates = (
-                [path.parent / target]
-                if ref.startswith('"')
-                else [root / target for root in INCLUDE_ROOTS]
-            )
+            candidates = [path.parent / target]
+            if not candidates[0].exists():
+                # Quoted includes may also resolve via project include roots
+                # (e.g. "sh2/sh2.h" against firmware/third_party).
+                candidates += [root / target for root in INCLUDE_ROOTS]
             if any(candidate.exists() for candidate in candidates):
                 continue
             if ref.startswith("<"):

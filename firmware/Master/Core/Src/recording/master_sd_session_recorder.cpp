@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "app_fatfs.h"
+
 #include <exo/utils/acquisition_diagnostics.h>
 #include <exo/storage/hub_session_store.h>
 #include <exo/types/recording_types.h>

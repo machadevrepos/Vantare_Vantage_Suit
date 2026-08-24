@@ -1,6 +1,8 @@
 #ifndef ACQUISITION_DIAGNOSTICS_H_
 #define ACQUISITION_DIAGNOSTICS_H_
 
+#include "main.h"
+
 /* Phase 1 acquisition instrumentation.
  *
  * The Master captures BNO85 near 31 Hz and ICM45686 near 66 Hz while the Node
