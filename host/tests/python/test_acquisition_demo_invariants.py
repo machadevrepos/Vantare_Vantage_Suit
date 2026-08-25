@@ -16,6 +16,7 @@ stager = (ROOT / "Firmware/common/inc/exo/storage/master_node_session_stager.h")
 coordinator = (ROOT / "Firmware/common/inc/exo/protocol/master_training_csv_coordinator.h").read_text()
 reliable = (ROOT / "Firmware/common/inc/exo/protocol/master_node_reliable_control.h").read_text()
 node_recorder = (ROOT / "Firmware/common/inc/exo/storage/node_recorder.h").read_text()
+node_upload_pump = (ROOT / "Firmware/common/inc/exo/ble/node_upload_pump.h").read_text()
 
 checks = [
     ("void service_pending(uint8_t max_packets)" in bno,
@@ -134,8 +135,20 @@ checks = [
     ("kMaxConsecutiveWriteFails" in node and "drop_pending_batches" in node and
      "kMaxFinalizeAttempts" in node and "finalize_failed_" in node,
      "A persistently failing node flash must fail the session cleanly (data retained, node responsive) instead of wedging in Recording forever"),
-    ("kNodeRecordBurstLimit = 8U" in node_main,
-     "Node upload pacing must not cap the link at ~22 KB/s (one chunk per 8 ms gap) — the 10-min offload target needs headroom"),
+    ("node_upload_pump_sync(now);" in node_main and
+     "Custom_APP_NotificationCompleteCount()" in node_main and
+     "g_node_upload_pump.on_notification_complete(delta);" in node_main and
+     "Custom_APP_TxPoolEventCount()" in node_main and
+     "g_node_upload_pump.on_tx_pool_available(Custom_APP_LastTxPoolBuffers(), delta);" in node_main and
+     "g_node_upload_pump.ready(HAL_GetTick())" in node_main,
+     "Node upload pacing must be woken by notification-complete/TX-pool events instead of a millisecond poll gap"),
+    ("SendResult::Busy" in node_main and
+     "SendResult::InsufficientResources" in node_main and
+     "SendResult::OtherFailure" in node_main and
+     "static constexpr uint32_t kWatchdogMs = 750U;" in node_upload_pump and
+     "++metrics_.watchdog_wake_count;" in node_upload_pump and
+     "terminal_error_ = true;" in node_upload_pump,
+     "Node upload backpressure must distinguish recoverable controller blocking, lost-event watchdog recovery, and terminal failures"),
     ("service_region_erase" in node_recorder and
      "kEraseSectorsPerTick" in node and
      "service_background_erase();" in node and

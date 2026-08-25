@@ -751,6 +751,18 @@ input[type="checkbox"] {
         <span id="transferRate" class="mono" title="Live node&rarr;Master upload rate during collection (from staged bytes in the 0xB6 status report)">idle</span>
       </div>
       <div class="row">
+        <label>Master Link Evidence</label>
+        <span id="masterLinkTelemetry" class="mono">unknown (awaiting completion evidence)</span>
+      </div>
+      <div class="row">
+        <label>Node Upload Evidence</label>
+        <span id="nodeUploadTelemetry" class="mono">unknown (awaiting Node LINK_STATS)</span>
+      </div>
+      <div class="row">
+        <label>Effective Transfer</label>
+        <span id="effectiveTransferTelemetry" class="mono">unavailable (awaiting 0xB6 v2)</span>
+      </div>
+      <div class="row">
         <label>Session Nodes</label>
         <div id="sessionNodes">Discover Nodes to select participants</div>
       </div>
@@ -769,11 +781,11 @@ input[type="checkbox"] {
         </div>
         <div class="row">
           <label for="transferCreditInput">Credit</label>
-          <input id="transferCreditInput" type="number" min="1" max="24" value="24">
+          <input id="transferCreditInput" type="number" min="2" max="24" value="24">
         </div>
         <div class="row">
           <label for="transferAckChunksInput">ACK Chunks</label>
-          <input id="transferAckChunksInput" type="number" min="8" max="128" value="48">
+          <input id="transferAckChunksInput" type="number" min="1" max="23" value="8">
         </div>
         <div class="row">
           <label for="transferAckMsInput">ACK ms</label>
@@ -792,6 +804,11 @@ input[type="checkbox"] {
         <div class="row">
           <label for="transferMasterGapMsInput">Master Gap (ms)</label>
           <input id="transferMasterGapMsInput" type="number" min="0" max="5" value="1">
+        </div>
+        <div class="row">
+          <label for="transferRawRelayDebugInput">Raw download/debug relay</label>
+          <input id="transferRawRelayDebugInput" type="checkbox">
+          <span class="note">Debug only: mirrors raw Node artifact frames while the Master retains ACK/credit ownership.</span>
         </div>
       </div>
       <div class="transfer-box">
@@ -974,6 +991,224 @@ input[type="checkbox"] {
     </details>
   </main>
 
+  <script id="exoskeleton-telemetry-contract">
+  (() => {
+    "use strict";
+
+    const RAW_RELAY_DEBUG_FLAG = 0x02;
+    const DLE_OUTCOMES = ["unknown", "requested", "confirmed", "degraded", "failed"];
+    const MASTER_LINK_PHASES = [
+      "need_dle", "wait_dle", "need_phy", "wait_phy", "need_interval",
+      "wait_interval", "ready", "degraded", "failed"
+    ];
+
+    function hex8(value) {
+      return `0x${(Number(value) & 0xFF).toString(16).padStart(2, "0")}`;
+    }
+
+    function readU16(payload, offset) {
+      return payload[offset] | (payload[offset + 1] << 8);
+    }
+
+    function readU32(payload, offset) {
+      return (payload[offset] | (payload[offset + 1] << 8) |
+        (payload[offset + 2] << 16) | (payload[offset + 3] << 24)) >>> 0;
+    }
+
+    function dleOutcomeLabel(outcome) {
+      return DLE_OUTCOMES[outcome] || `unknown(${outcome})`;
+    }
+
+    function decodeNodeUploadLinkStats(payload, sourceId = 0) {
+      if (!(payload instanceof Uint8Array) || payload.length < 49) {
+        return { valid: false, reason: "short", sourceId };
+      }
+      if (payload[0] !== 1) {
+        return { valid: false, reason: `version${payload[0]}`, sourceId };
+      }
+      return {
+        valid: true,
+        sourceId,
+        version: payload[0],
+        dleOutcome: payload[1],
+        dleRequestStatus: payload[2],
+        uploadActive: payload[3] !== 0,
+        dleAttempts: payload[4],
+        controllerMaxTxOctets: readU16(payload, 5),
+        negotiatedTxOctets: readU16(payload, 7),
+        negotiatedRxOctets: readU16(payload, 9),
+        txPoolBuffers: readU16(payload, 11),
+        acceptedBytes: readU32(payload, 13),
+        acceptedCount: readU32(payload, 17),
+        busyCount: readU32(payload, 21),
+        resourceCount: readU32(payload, 25),
+        notificationCompleteCount: readU32(payload, 29),
+        txPoolEventCount: readU32(payload, 33),
+        watchdogWakeCount: readU32(payload, 37),
+        terminalErrorCount: readU32(payload, 41),
+        flashReadMs: readU32(payload, 45)
+      };
+    }
+
+    function formatNodeUploadLinkStats(stats) {
+      if (!stats || !stats.valid) {
+        return `Node upload telemetry unavailable (${stats?.reason || "invalid"})`;
+      }
+      const outcome = dleOutcomeLabel(stats.dleOutcome);
+      const tx = stats.negotiatedTxOctets > 0 ? stats.negotiatedTxOctets : "unknown";
+      const rx = stats.negotiatedRxOctets > 0 ? stats.negotiatedRxOctets : "unknown";
+      const evidence = outcome === "requested" ? " awaiting completion" : "";
+      const node = stats.sourceId ? `NODE${stats.sourceId} ` : "";
+      return `${node}DLE ${outcome}${evidence} tx=${tx} rx=${rx}` +
+        ` request_status=${hex8(stats.dleRequestStatus)} attempts=${stats.dleAttempts}` +
+        ` controller_max_tx=${stats.controllerMaxTxOctets || "unknown"}` +
+        ` upload=${stats.uploadActive ? "active" : "idle"}` +
+        ` accepted=${stats.acceptedBytes}B/${stats.acceptedCount}` +
+        ` busy=${stats.busyCount} resources=${stats.resourceCount}` +
+        ` notify_complete=${stats.notificationCompleteCount}` +
+        ` tx_pool=${stats.txPoolEventCount}/${stats.txPoolBuffers}` +
+        ` watchdog=${stats.watchdogWakeCount} terminal=${stats.terminalErrorCount}` +
+        ` flash_read=${stats.flashReadMs}ms`;
+    }
+
+    function formatMasterLinkEvent(eventId, stateValue, value) {
+      if (eventId === 0x10) {
+        const tx = value >>> 0;
+        const rx = stateValue >>> 0;
+        return tx > 0 && rx > 0
+          ? `DLE confirmed tx=${tx} rx=${rx}`
+          : "DLE unknown (no completion evidence)";
+      }
+      if (eventId === 0x11) {
+        const tx = value & 0xFF;
+        const rx = (value >>> 8) & 0xFF;
+        if (stateValue !== 0) return `PHY failed status=${hex8(stateValue)} tx=${hex8(tx)} rx=${hex8(rx)}`;
+        if (tx === 0 || rx === 0) return "PHY unknown (no completion evidence)";
+        return `PHY confirmed tx=${tx === 2 ? "2M" : hex8(tx)} rx=${rx === 2 ? "2M" : hex8(rx)}`;
+      }
+      if (eventId === 0x12) {
+        const interval = value >>> 0;
+        if (stateValue !== 0) return `interval failed status=${hex8(stateValue)} value=${interval}`;
+        return interval > 0
+          ? `interval confirmed units=${interval} (${(interval * 1.25).toFixed(2)} ms)`
+          : "interval unknown (no completion evidence)";
+      }
+      if (eventId === 0x13 || eventId === 0x14) {
+        const procedure = eventId === 0x13 ? "DLE" : "PHY";
+        return value === 0
+          ? `${procedure} requested (command accepted; awaiting completion)`
+          : `${procedure} failed request_status=${hex8(value)}`;
+      }
+      if (eventId === 0x15) {
+        const status = (value >>> 8) & 0xFF;
+        const interval = value & 0xFF;
+        return status === 0
+          ? `interval requested (${stateValue === 0 ? "fast" : "slow"}) units=${interval}; awaiting completion`
+          : `interval failed request_status=${hex8(status)} units=${interval}`;
+      }
+      if (eventId === 0x16) {
+        const status = value & 0xFF;
+        const retries = (value >>> 8) & 0xFF;
+        const phase = MASTER_LINK_PHASES[stateValue] || `state${stateValue}`;
+        const outcome = stateValue === 0 || stateValue === 2 || stateValue === 4 ? "unknown" :
+          stateValue === 1 || stateValue === 3 || stateValue === 5 ? "requested" :
+          stateValue === 6 ? "confirmed" : stateValue === 7 ? "degraded" : "failed";
+        return `link ${outcome} phase=${phase} status=${hex8(status)} retries=${retries}`;
+      }
+      return `state=${stateValue} value=${value}`;
+    }
+
+    function decodeTrainingStatusPayload(payload) {
+      if (!(payload instanceof Uint8Array) || payload.length < 8) {
+        return { valid: false, reason: "short", flowVersion: null };
+      }
+      const hasFailureSite = payload.length >= 9;
+      const hasMasks = payload.length >= 11;
+      const hasStaged = payload.length >= 15;
+      const hasStagedTotal = payload.length >= 19;
+      const hasFlowV2 = payload.length >= 59 && payload[19] >= 2;
+      const status = {
+        valid: true,
+        state: payload[0],
+        expected: payload[1],
+        completed: payload[2],
+        failureSite: hasFailureSite ? payload[3] : 0xFF,
+        failureNode: hasFailureSite ? payload[4] : payload[3],
+        stageOp: hasFailureSite ? payload[5] : payload[4],
+        stageFr: hasFailureSite ? payload[6] : payload[5],
+        csvOp: hasFailureSite ? payload[7] : payload[6],
+        csvFr: hasFailureSite ? payload[8] : payload[7],
+        failedSourceMask: hasMasks ? payload[9] : 0,
+        cleanupPendingMask: hasMasks ? payload[10] : 0,
+        stagedBytes: hasStaged ? readU32(payload, 11) : null,
+        stagedTotal: hasStagedTotal ? readU32(payload, 15) : null,
+        flowVersion: hasFlowV2 ? payload[19] : null
+      };
+      if (hasFlowV2) {
+        Object.assign(status, {
+          effectiveCredit: payload[20],
+          ackChunkThreshold: payload[21],
+          ackTimeoutMs: readU16(payload, 22),
+          pendingQueue: payload[24],
+          queueHighWater: payload[25],
+          receivedChunks: readU32(payload, 26),
+          queueOverflow: readU32(payload, 30),
+          ackAttempts: readU32(payload, 34),
+          ackSuccesses: readU32(payload, 38),
+          ackFailures: readU32(payload, 42),
+          lastAckOk: payload[46] !== 0,
+          suppressedRelay: readU32(payload, 47),
+          sdFlushes: readU32(payload, 51),
+          sdFlushMaxMs: readU32(payload, 55)
+        });
+      }
+      return status;
+    }
+
+    function formatEffectiveTransfer(status) {
+      if (!status || !status.valid || status.flowVersion === null) {
+        return "Effective transfer: unavailable (legacy 0xB6 status)";
+      }
+      return `Effective transfer: effective credit=${status.effectiveCredit}` +
+        ` ACK=${status.ackChunkThreshold} chunks/${status.ackTimeoutMs} ms` +
+        ` queue pending=${status.pendingQueue} high-water=${status.queueHighWater} overflow=${status.queueOverflow}` +
+        ` received=${status.receivedChunks}` +
+        ` ACK attempts=${status.ackAttempts} ok=${status.ackSuccesses} failed=${status.ackFailures}` +
+        ` last=${status.lastAckOk ? "ok" : "failed"}` +
+        ` raw relay suppressed=${status.suppressedRelay} (compact progress remains active)` +
+        ` SD flushes=${status.sdFlushes} max=${status.sdFlushMaxMs} ms`;
+    }
+
+    function rawRelayDebugEnabled(flags) {
+      return ((Number(flags) || 0) & RAW_RELAY_DEBUG_FLAG) !== 0;
+    }
+
+    function normalizeFlowControl(credit, ackChunkThreshold) {
+      const parsedCredit = Number.parseInt(credit, 10);
+      const effectiveCredit = Math.max(2, Math.min(24,
+        Number.isFinite(parsedCredit) && parsedCredit > 0 ? parsedCredit : 24));
+      const parsedThreshold = Number.parseInt(ackChunkThreshold, 10);
+      const requestedThreshold = Number.isFinite(parsedThreshold) && parsedThreshold > 0
+        ? parsedThreshold : 8;
+      return {
+        credit: effectiveCredit,
+        ackChunkThreshold: Math.max(1, Math.min(effectiveCredit - 1, requestedThreshold))
+      };
+    }
+
+    globalThis.ExoskeletonTelemetry = Object.freeze({
+      RAW_RELAY_DEBUG_FLAG,
+      dleOutcomeLabel,
+      decodeNodeUploadLinkStats,
+      formatNodeUploadLinkStats,
+      formatMasterLinkEvent,
+      decodeTrainingStatusPayload,
+      formatEffectiveTransfer,
+      rawRelayDebugEnabled,
+      normalizeFlowControl
+    });
+  })();
+  </script>
   <script>
 (() => {
   const BLE_CFG = {
@@ -1067,6 +1302,7 @@ input[type="checkbox"] {
     MSG_NACK: 0x13,
     MSG_STATUS: 0x20,
     MSG_TOPOLOGY: 0x21,
+    MSG_LINK_STATS: 0x22,
     MSG_CONFIG_SET: 0x31,
     MSG_STREAM_CONTROL: 0x32,
     DST_BROADCAST: 0xFFFF,
@@ -1229,8 +1465,8 @@ input[type="checkbox"] {
   };
   const START_RECORD_FIRST_HEARTBEAT_GRACE_MS = 90000;
   const RECORD_TUNING_LIMITS = {
-    credit: { min: 1, max: RECORD_REL.MAX_CREDIT },
-    ackEveryChunks: { min: 8, max: 128 },
+    credit: { min: 2, max: RECORD_REL.MAX_CREDIT },
+    ackEveryChunks: { min: 1, max: 23 },
     ackEveryMs: { min: 100, max: 5000 },
     controlHeartbeatMs: { min: 100, max: 5000 },
     nackBurstChunks: { min: 1, max: 16 },
@@ -1241,8 +1477,8 @@ input[type="checkbox"] {
   const SESSION_WATCHDOG_POLL_MS = 2000;
   const RECORD_TUNING_PRESETS = {
     safe: {
-      credit: 16,
-      ackEveryChunks: 32,
+      credit: 8,
+      ackEveryChunks: 4,
       ackEveryMs: 350,
       controlHeartbeatMs: 400,
       nackBurstChunks: 4,
@@ -1252,7 +1488,7 @@ input[type="checkbox"] {
     },
     balanced: {
       credit: 24,
-      ackEveryChunks: 48,
+      ackEveryChunks: 8,
       ackEveryMs: 750,
       controlHeartbeatMs: 900,
       nackBurstChunks: 8,
@@ -1262,7 +1498,7 @@ input[type="checkbox"] {
     },
     aggressive: {
       credit: 24,
-      ackEveryChunks: 64,
+      ackEveryChunks: 16,
       ackEveryMs: 1000,
       controlHeartbeatMs: 1200,
       nackBurstChunks: 8,
@@ -1284,12 +1520,13 @@ input[type="checkbox"] {
     intervalInput: el("intervalInput"),
     sessionIdInput: el("sessionIdInput"), durationInput: el("durationInput"), leadTimeInput: el("leadTimeInput"), startRecordBtn: el("startRecordBtn"),
     sessionState: el("sessionState"), sessionNodes: el("sessionNodes"),
-    transferRate: el("transferRate"),
+    transferRate: el("transferRate"), masterLinkTelemetry: el("masterLinkTelemetry"),
+    nodeUploadTelemetry: el("nodeUploadTelemetry"), effectiveTransferTelemetry: el("effectiveTransferTelemetry"),
     transferProfileSelect: el("transferProfileSelect"), applyTransferTuningBtn: el("applyTransferTuningBtn"),
     transferCreditInput: el("transferCreditInput"), transferAckChunksInput: el("transferAckChunksInput"),
     transferAckMsInput: el("transferAckMsInput"), transferHeartbeatMsInput: el("transferHeartbeatMsInput"),
     transferNackBurstInput: el("transferNackBurstInput"), transferMasterBurstInput: el("transferMasterBurstInput"),
-    transferMasterGapMsInput: el("transferMasterGapMsInput"),
+    transferMasterGapMsInput: el("transferMasterGapMsInput"), transferRawRelayDebugInput: el("transferRawRelayDebugInput"),
     nodeCurrentIdInput: el("nodeCurrentIdInput"), nodeNewIdInput: el("nodeNewIdInput"), setNodeIdBtn: el("setNodeIdBtn"),
     nodeQueryIdInput: el("nodeQueryIdInput"), getNodeIdBtn: el("getNodeIdBtn"), rediscoverBtn: el("rediscoverBtn"), refreshNodesBtn: el("refreshNodesBtn"), listNodesBtn: el("listNodesBtn"),
     discoveredNodes: el("discoveredNodes"),
@@ -1349,6 +1586,8 @@ input[type="checkbox"] {
     pendingTrainingTerminalState: null,
     // Last Master SD collector status report (wire-compatible with coordinator v1).
     trainingCsv: { state: 0, expected: 0, completed: 0 },
+    masterLinkTelemetry: new Map(),
+    nodeUploadTelemetry: new Map(),
     // One-shot latch for the "all expected sources collected" log line; the
     // firmware reports 0xB6 only on state/completed-mask changes.
     collectionAllSourcesLogged: false,
@@ -1443,7 +1682,8 @@ input[type="checkbox"] {
   ui.transferProfileSelect.addEventListener("change", onTransferProfileChanged);
   ui.applyTransferTuningBtn.addEventListener("click", () => applyRecordTransferTuning(true, "manual_apply"));
   [ui.transferCreditInput, ui.transferAckChunksInput, ui.transferAckMsInput, ui.transferHeartbeatMsInput,
-    ui.transferNackBurstInput, ui.transferMasterBurstInput, ui.transferMasterGapMsInput]
+    ui.transferNackBurstInput, ui.transferMasterBurstInput, ui.transferMasterGapMsInput,
+    ui.transferRawRelayDebugInput]
     .forEach((input) => input.addEventListener("change", () => {
       ui.transferProfileSelect.value = "custom";
     }));
@@ -1649,7 +1889,44 @@ input[type="checkbox"] {
       case 0x12: return "link_timing";
       case 0x13: return "link_dle_req";
       case 0x14: return "link_phy_req";
+      case 0x15: return "link_interval_req";
+      case 0x16: return "link_state";
       default: return `event_0x${eventId.toString(16).padStart(2, "0")}`;
+    }
+  }
+
+  function renderMasterLinkTelemetry(nodeId, text) {
+    const key = nodeId || 0;
+    state.masterLinkTelemetry.set(key, text);
+    if (!ui.masterLinkTelemetry) return;
+    ui.masterLinkTelemetry.textContent = [...state.masterLinkTelemetry.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([id, value]) => `${id ? `NODE${id}` : "unknown node"}: ${value}`)
+      .join(" | ");
+  }
+
+  function renderNodeUploadTelemetry(stats) {
+    if (!stats || !stats.valid) return;
+    const text = ExoskeletonTelemetry.formatNodeUploadLinkStats(stats);
+    state.nodeUploadTelemetry.set(stats.sourceId || 0, text);
+    if (ui.nodeUploadTelemetry) {
+      ui.nodeUploadTelemetry.textContent = [...state.nodeUploadTelemetry.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, value]) => value)
+        .join(" | ");
+    }
+    logOnChange(`node-upload-link-${stats.sourceId || 0}`, text);
+  }
+
+  function resetTelemetryEvidence(resetLinks) {
+    if (resetLinks) {
+      state.masterLinkTelemetry.clear();
+      state.nodeUploadTelemetry.clear();
+      if (ui.masterLinkTelemetry) ui.masterLinkTelemetry.textContent = "unknown (awaiting completion evidence)";
+      if (ui.nodeUploadTelemetry) ui.nodeUploadTelemetry.textContent = "unknown (awaiting Node LINK_STATS)";
+    }
+    if (ui.effectiveTransferTelemetry) {
+      ui.effectiveTransferTelemetry.textContent = "unavailable (awaiting 0xB6 v2)";
     }
   }
 
@@ -1670,21 +1947,9 @@ input[type="checkbox"] {
     let extra;
     if (eventId === 0x03) {
       extra = `status=0x${stateValue.toString(16).padStart(2, "0")} retry_ms=${value}`;
-    } else if (eventId === 0x10) {
-      // link_dle: value = negotiated MaxTxOctets, stateValue = MaxRxOctets low byte
-      extra = `tx_oct=${value} rx_oct=${stateValue} ${value >= 251 ? "(DLE OK)" : "(NO DLE — 27B default)"}`;
-    } else if (eventId === 0x11) {
-      // link_phy: value = TX_PHY | RX_PHY<<8, stateValue = hci status
-      const txPhy = value & 0xFF, rxPhy = (value >> 8) & 0xFF;
-      extra = `tx_phy=0x${txPhy.toString(16).padStart(2, "0")} rx_phy=0x${rxPhy.toString(16).padStart(2, "0")} status=${stateValue} ${txPhy === 0x02 ? "(2M)" : "(1M)"}`;
-    } else if (eventId === 0x12) {
-      // link_timing: value low = interval (1.25ms units), value high = hci status, stateValue = fast flag
-      const ci = value & 0xFF, st = (value >> 8) & 0xFF;
-      extra = `fast=${stateValue} ci=${ci} (${(ci * 1.25).toFixed(1)}ms) st=0x${st.toString(16).padStart(2, "0")}`;
-    } else if (eventId === 0x13 || eventId === 0x14) {
-      // link_dle_req / link_phy_req: value = hci command status (0 = accepted, 0xFF = never issued)
-      const reqLabel = value === 0 ? "(accepted)" : (value === 0xFF ? "(NOT ISSUED — tune loop never ran)" : "(REJECTED)");
-      extra = `req_status=0x${value.toString(16).padStart(2, "0")} ${reqLabel}`;
+    } else if (eventId >= 0x10 && eventId <= 0x16) {
+      extra = ExoskeletonTelemetry.formatMasterLinkEvent(eventId, stateValue, value);
+      renderMasterLinkTelemetry(nodeId, extra);
     } else {
       extra = `state=${stateValue} value=${value}`;
     }
@@ -1697,13 +1962,10 @@ input[type="checkbox"] {
   }
 
   function clampRecordTransferTuning(raw, requestedProfile = "custom") {
+    const flow = ExoskeletonTelemetry.normalizeFlowControl(raw?.credit, raw?.ackEveryChunks);
     const tuning = {
-      credit: clamp(parseInt(raw?.credit, 10) || RECORD_TUNING_PRESETS.balanced.credit,
-        RECORD_TUNING_LIMITS.credit.min,
-        RECORD_TUNING_LIMITS.credit.max),
-      ackEveryChunks: clamp(parseInt(raw?.ackEveryChunks, 10) || RECORD_TUNING_PRESETS.balanced.ackEveryChunks,
-        RECORD_TUNING_LIMITS.ackEveryChunks.min,
-        RECORD_TUNING_LIMITS.ackEveryChunks.max),
+      credit: flow.credit,
+      ackEveryChunks: flow.ackChunkThreshold,
       ackEveryMs: clamp(parseInt(raw?.ackEveryMs, 10) || RECORD_TUNING_PRESETS.balanced.ackEveryMs,
         RECORD_TUNING_LIMITS.ackEveryMs.min,
         RECORD_TUNING_LIMITS.ackEveryMs.max),
@@ -1751,6 +2013,9 @@ input[type="checkbox"] {
     ui.transferNackBurstInput.value = String(active.nackBurstChunks);
     ui.transferMasterBurstInput.value = String(active.masterBurstLimit);
     ui.transferMasterGapMsInput.value = String(active.masterChunkGapMs);
+    if (ui.transferRawRelayDebugInput) {
+      ui.transferRawRelayDebugInput.checked = ExoskeletonTelemetry.rawRelayDebugEnabled(active.flags);
+    }
   }
 
   function readTransferTuningFromUi() {
@@ -1762,7 +2027,7 @@ input[type="checkbox"] {
       nackBurstChunks: ui.transferNackBurstInput.value,
       masterBurstLimit: ui.transferMasterBurstInput.value,
       masterChunkGapMs: ui.transferMasterGapMsInput.value,
-      flags: 0
+      flags: ui.transferRawRelayDebugInput?.checked ? ExoskeletonTelemetry.RAW_RELAY_DEBUG_FLAG : 0
     }, ui.transferProfileSelect.value || "custom");
   }
 
@@ -1770,7 +2035,9 @@ input[type="checkbox"] {
     const next = clampRecordTransferTuning(tuning, tuning?.profile || "custom");
     state.recordTransferTuning = next;
     syncTransferTuningUi(next);
-    log(`RECORD tuning ${reason}: profile=${next.profile} credit=${next.credit} ack_chunks=${next.ackEveryChunks} ack_ms=${next.ackEveryMs} heartbeat_ms=${next.controlHeartbeatMs} nack_burst=${next.nackBurstChunks} master_burst=${next.masterBurstLimit} master_gap_ms=${next.masterChunkGapMs}`);
+    const relayMode = ExoskeletonTelemetry.rawRelayDebugEnabled(next.flags)
+      ? "raw-download/debug" : "compact-progress";
+    log(`RECORD tuning ${reason}: profile=${next.profile} credit=${next.credit} ack_chunks=${next.ackEveryChunks} ack_ms=${next.ackEveryMs} heartbeat_ms=${next.controlHeartbeatMs} nack_burst=${next.nackBurstChunks} master_burst=${next.masterBurstLimit} master_gap_ms=${next.masterChunkGapMs} relay_mode=${relayMode}`);
     return next;
   }
 
@@ -1854,6 +2121,10 @@ input[type="checkbox"] {
     if (!transfer) return false;
     const nodeId = transfer.nodeId >>> 0;
     if (nodeId < 1 || nodeId > 4) return false;
+    // Explicit raw relay is a read-only download/debug mirror. The Master still
+    // owns ACK/credit/verify decisions, even if its first 0xB6 status update has
+    // not reached the browser yet.
+    if (ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags)) return true;
     const training = state.trainingCsv;
     return !!training && (training.expected & (1 << nodeId)) !== 0;
   }
@@ -2068,6 +2339,7 @@ input[type="checkbox"] {
     state.activeRecordOwnerKey = null;
     state.pendingTrainingTerminalState = null;
     state.trainingCsv = { state: 0, expected: 0, completed: 0 };
+    resetTelemetryEvidence(true);
     state.collectionAllSourcesLogged = false;
     state.sessionStartedAtMs = 0;
     state.liveRejectSummaryLogged = false;
@@ -2566,6 +2838,7 @@ input[type="checkbox"] {
     state.activeRecordOwnerKey = null;
     state.pendingTrainingTerminalState = null;
     state.trainingCsv = { state: 0, expected: 0, completed: 0 };
+    resetTelemetryEvidence(false);
     state.collectionAllSourcesLogged = false;
     state.sessionStartedAtMs = 0;
     state.liveRejectSummaryLogged = false;
@@ -2920,28 +3193,7 @@ input[type="checkbox"] {
   }
 
   function decodeTrainingCsvStatus(data, reportLen) {
-    const hasFailureSite = reportLen >= 9;
-    const hasMasks = reportLen >= 11;
-    // Bytes 11-14 (staged so far) and 15-18 (active node total) were appended to
-    // the 0xB6 report so the console can show live node-upload progress + rate;
-    // they sit at data offsets 14 and 18 after the 3-byte report envelope.
-    const hasStaged = reportLen >= 15;
-    const hasStagedTotal = reportLen >= 19;
-    return {
-      state: data[3],
-      expected: data[4],
-      completed: data[5],
-      failureSite: hasFailureSite ? data[6] : 0xFF,
-      failureNode: hasFailureSite ? data[7] : data[6],
-      stageOp: hasFailureSite ? data[8] : data[7],
-      stageFr: hasFailureSite ? data[9] : data[8],
-      csvOp: hasFailureSite ? data[10] : data[9],
-      csvFr: hasFailureSite ? data[11] : data[10],
-      failedSourceMask: hasMasks ? data[12] : 0,
-      cleanupPendingMask: hasMasks ? data[13] : 0,
-      stagedBytes: hasStaged ? readReportU32(data, 14) : null,
-      stagedTotal: hasStagedTotal ? readReportU32(data, 18) : null
-    };
+    return ExoskeletonTelemetry.decodeTrainingStatusPayload(data.slice(3, 3 + reportLen));
   }
 
   function syncReceivingTransferState() {
@@ -3690,7 +3942,15 @@ input[type="checkbox"] {
           state: st, expected, completed, failureSite, failureNode,
           stageOp, stageFr, csvOp, csvFr, failedSourceMask, cleanupPendingMask
         } = status;
-        state.trainingCsv = { state: st, expected, completed, failed: failedSourceMask, cleanupPending: cleanupPendingMask };
+        state.trainingCsv = {
+          ...status,
+          failed: failedSourceMask,
+          cleanupPending: cleanupPendingMask
+        };
+        const effectiveTransfer = ExoskeletonTelemetry.formatEffectiveTransfer(status);
+        if (ui.effectiveTransferTelemetry) {
+          ui.effectiveTransferTelemetry.textContent = effectiveTransfer;
+        }
         const srcMask = sourceMaskLabel;
         // The coordinator reports 0xB6 only when its state or completed mask
         // changes, so the moment the completed mask covers the expected mask is
@@ -3728,6 +3988,7 @@ input[type="checkbox"] {
         // re-anchors the tracker.
         const rateSuffix = (st >= 4 && st <= 12) ? updateTransferRate(status) : "";
         if (rateSuffix) line += rateSuffix;
+        if (status.flowVersion !== null) line += ` ${effectiveTransfer}`;
         log(line);
         const terminalApplied = applyTrainingCsvTerminalState(st, expected, completed, failedSourceMask);
         if (terminalApplied) {
@@ -4079,7 +4340,9 @@ input[type="checkbox"] {
       return;
     }
     if (command === RECORD.SESSION_CHUNK) {
-      if (BINARY_FIRST_SD_MODE && command === RECORD.SESSION_CHUNK) {
+      const binaryFirstLegacyChunk = BINARY_FIRST_SD_MODE && command === RECORD.SESSION_CHUNK;
+      if (binaryFirstLegacyChunk &&
+          !ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags)) {
         return;
       }
       handleSessionChunk(data);
@@ -4130,6 +4393,15 @@ input[type="checkbox"] {
     }
     if (pipe.msgType === BLEPIPE.MSG_STATUS) {
       return handleRecoveryStatusFrame(pipe.payload);
+    }
+    if (pipe.msgType === BLEPIPE.MSG_LINK_STATS) {
+      const stats = ExoskeletonTelemetry.decodeNodeUploadLinkStats(pipe.payload, pipe.srcId);
+      if (!stats.valid) {
+        log(`LINK_STATS rejected: source=${sourceLabel(pipe.srcId)} reason=${stats.reason} len=${pipe.payload.length}`);
+        return true;
+      }
+      renderNodeUploadTelemetry(stats);
+      return true;
     }
     return false;
   }
@@ -4281,7 +4553,9 @@ input[type="checkbox"] {
       log(`RECORD reliable payload crc fail source=${sourceLabel(sourceId)} session=${sessionId} type=${frameType}`);
       return;
     }
-    if (BINARY_FIRST_SD_MODE && (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK)) {
+    const binaryFirstReliableBulk = BINARY_FIRST_SD_MODE && (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK);
+    if (binaryFirstReliableBulk &&
+        !ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags)) {
       return;
     }
     if (frameType === RECORD_REL.MANIFEST) {
@@ -4331,6 +4605,7 @@ input[type="checkbox"] {
       return;
     }
     if (BINARY_FIRST_SD_MODE &&
+        !ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags) &&
         (laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
         msgType === RECORD_V3.MSG_CHUNK) {
       return;
