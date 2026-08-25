@@ -1276,6 +1276,15 @@ namespace {
 				!pending_node_done_matches(g_training_node_done[index], g_pending_node_done)) {
 			return;
 		}
+		/* Arm the selected link before on_node_record_done queues ManifestAck.
+		 * Reliable-control servicing can run earlier in this same superloop, so
+		 * ordering plus the generation-safe gate are both required. */
+		if (master_training_csv_coordinator.binary_only() &&
+				(g_record_transfer_runtime.flags & kRecordTransferFlagFastInterval) != 0U) {
+			exo_hub_central_client_set_transfer_timing(
+					g_pending_node_done.node_id, 1U,
+					g_record_transfer_runtime.configured_fast_interval);
+		}
 		master_training_csv_coordinator.on_node_record_done(g_training_node_done[index]);
 		const exo::TrainingCsvState replay_state = master_training_csv_coordinator.state();
 		if (replay_state != exo::TrainingCsvState::WaitingForNode) {
@@ -1291,15 +1300,6 @@ namespace {
 						static_cast<unsigned long>(g_pending_node_done.session_id),
 						static_cast<unsigned>(master_training_csv_coordinator.file_index()),
 						static_cast<unsigned long>(g_pending_node_done.total_size));
-				/* Chunk bursts own the link: switch to fast connection events.
-				 * Opt-in (tuning flags bit 0): the mid-transfer LL update is a
-				 * suspect in the 2026-08-22 zero-progress stalls — A/B it on
-				 * hardware before enabling by default. */
-				if ((g_record_transfer_runtime.flags & kRecordTransferFlagFastInterval) != 0U) {
-					exo_hub_central_client_set_transfer_timing(
-							g_pending_node_done.node_id, 1U,
-							g_record_transfer_runtime.configured_fast_interval);
-				}
 				g_have_pending_node_done = false;
 				g_pending_node_manifest_last_tick = 0U;
 				memset(&g_pending_node_done, 0, sizeof(g_pending_node_done));
@@ -2405,6 +2405,18 @@ namespace {
 				length) != 0U;
 	}
 
+	static bool master_node_initial_credit_ready(void *context, uint8_t node_id)
+	{
+		(void) context;
+		/* The benchmark fast-interval lever is opt-in. Without it there is no
+		 * extra LL preparation to await; with it, only the exact source/generation
+		 * armed before ManifestAck may release upload credit. */
+		if ((g_record_transfer_runtime.flags & kRecordTransferFlagFastInterval) == 0U) {
+			return true;
+		}
+		return exo_hub_central_client_transfer_preparation_resolved(node_id) != 0U;
+	}
+
 	static uint32_t master_sd_flush_now_ms(void *context)
 	{
 		(void) context;
@@ -3067,6 +3079,8 @@ int main(void)
 	leaf_ble_manager.begin();
 	exo_hub_central_client_init();
 	master_training_csv_coordinator.set_reliable_transport(master_node_reliable_send, nullptr);
+	master_training_csv_coordinator.set_initial_credit_ready(
+			master_node_initial_credit_ready, nullptr);
 	master_training_csv_coordinator.set_sd_flush_time_source(master_sd_flush_now_ms, nullptr);
 	{
 		uint8_t discovered[8] = { 0U };

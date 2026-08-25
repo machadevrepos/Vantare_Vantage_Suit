@@ -54,6 +54,7 @@ public:
         ack_next_chunk_ = 0U;
         ack_credit_ = kDefaultCredit;
         ack_last_sent_ms_ = 0U;
+        initial_credit_sent_ = false;
     }
 
     bool begin(const RecordDoneMessage &done,
@@ -129,9 +130,12 @@ public:
                 reinterpret_cast<const uint8_t*>(&body), sizeof(body), 5U);
     }
 
-    bool service(uint32_t now_ms)
+    bool service(uint32_t now_ms, bool initial_credit_allowed = true)
     {
-        if (pending_length_ != 0U) {
+        const bool manifest_blocked = pending_length_ != 0U &&
+                pending_type_ == RecordReliableType::ManifestAck &&
+                !initial_credit_allowed;
+        if (pending_length_ != 0U && !manifest_blocked) {
             if (attempt_count_ != 0U &&
                     static_cast<uint32_t>(now_ms - last_attempt_ms_) < kRetryIntervalMs) {
                 return false;
@@ -139,6 +143,9 @@ public:
             last_attempt_ms_ = now_ms;
             if (attempt_count_ < 0xFFFFFFFFU) ++attempt_count_;
             if (!transmit(pending_frame_, pending_length_)) return false;
+            if (pending_type_ == RecordReliableType::ManifestAck) {
+                initial_credit_sent_ = true;
+            }
             pending_length_ = 0U;
             pending_priority_ = 0U;
             return true;
@@ -147,7 +154,12 @@ public:
          * outranks credit refresh (ACK): an ACK_WINDOW is skip-ahead-only on the
          * node, so it cannot substitute for a pending gap retransmit request. */
         if (nack_pending_) return send_nack(now_ms);
-        if (ack_pending_) return send_ack_window(now_ms);
+        /* ACK_WINDOW also grants upload credit. It cannot bypass a gated or
+         * not-yet-delivered ManifestAck, but recovery NACKs above remain live. */
+        if (manifest_blocked) return false;
+        if (ack_pending_ && initial_credit_allowed && initial_credit_sent_) {
+            return send_ack_window(now_ms);
+        }
         return true;
     }
 
@@ -333,6 +345,7 @@ private:
     uint32_t ack_next_chunk_ = 0U;
     uint8_t ack_credit_ = kDefaultCredit;
     uint32_t ack_last_sent_ms_ = 0U;
+    bool initial_credit_sent_ = false;
     bool nack_pending_ = false;
     uint32_t nack_first_chunk_ = 0U;
     uint16_t nack_count_ = 1U;

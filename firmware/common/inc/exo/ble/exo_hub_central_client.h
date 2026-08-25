@@ -23,6 +23,9 @@ void exo_hub_central_client_request_targeted_reconnect(uint8_t node_id);
  * multi-link timing. Request queuing/acceptance is never confirmation. */
 void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
                                                 uint8_t fast_interval);
+/* True only when the exact connected generation armed by the most recent fast
+ * request for this Node reached Ready or an explicit Degraded/Failed fallback. */
+uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id);
 
 uint8_t exo_hub_central_client_broadcast_blepipe(uint8_t msg_type,
                                                  uint16_t src_id,

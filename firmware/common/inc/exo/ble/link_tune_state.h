@@ -115,6 +115,8 @@ class LinkTuneState {
     entry.retry_at_ms = now_ms + kCommissioningStartDelayMs;
     entry.interval = Interval::Slow;
     entry.fast_interval = kFastIntervalMin;
+    entry.fast_preparation_pending = false;
+    entry.slow_restore_pending = false;
     return true;
   }
 
@@ -132,12 +134,27 @@ class LinkTuneState {
     }
     entry.connected = false;
     entry.telemetry.state = State::Failed;
+    entry.fast_preparation_pending = false;
+    entry.slow_restore_pending = false;
     return true;
   }
 
   constexpr Request issue_next(uint32_t now_ms) {
     if (active_.valid()) {
       return Request{};
+    }
+    /* A source completion that raced its fast-interval procedure already owns
+     * the next serialized action: restore that link before commissioning work
+     * on a lower-numbered slot can overtake it. */
+    for (uint8_t link = 0U; link < kLinkCount; ++link) {
+      Entry &entry = links_[link];
+      if (!entry.slow_restore_pending || !entry.connected ||
+          now_ms < entry.retry_at_ms || !needs_request(entry.telemetry.state)) {
+        continue;
+      }
+      active_ = make_request(link, entry);
+      active_accepted_ = false;
+      return active_;
     }
     for (uint8_t link = 0U; link < kLinkCount; ++link) {
       Entry &entry = links_[link];
@@ -170,6 +187,10 @@ class LinkTuneState {
     if (!matches_active(request)) {
       return false;
     }
+    /* Completion-status callbacks pass active_ itself. Snapshot it before
+     * clearing the global procedure slot so recovery decisions remain tied to
+     * the procedure and interval that actually failed. */
+    const Request completed_request = request;
     Entry &entry = links_[request.link];
     entry.telemetry.status = status;
     active_ = Request{};
@@ -180,11 +201,33 @@ class LinkTuneState {
         entry.telemetry.state = State::Degraded;
         entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
       } else {
-        entry.telemetry.state = need_state(request.procedure);
+        entry.telemetry.state = need_state(completed_request.procedure);
         entry.retry_at_ms = now_ms + kRetryDelayMs;
       }
     } else {
       entry.telemetry.state = State::Failed;
+    }
+    if (completed_request.procedure == Procedure::Interval &&
+        completed_request.interval == Interval::Slow &&
+        entry.fast_preparation_pending) {
+      entry.interval = Interval::Fast;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Interval &&
+        completed_request.interval == Interval::Fast && entry.slow_restore_pending) {
+      /* The transfer ended while the fast procedure was in flight. Its error
+       * resolves that request; the next request must be the latched restore,
+       * not a retry of an interval the source no longer needs. */
+      entry.interval = Interval::Slow;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Interval &&
+               completed_request.interval == Interval::Slow &&
+               (entry.telemetry.state == State::Degraded ||
+                entry.telemetry.state == State::Failed)) {
+      entry.slow_restore_pending = false;
     }
     return true;
   }
@@ -216,13 +259,13 @@ class LinkTuneState {
     entry.telemetry.confirmed_tx_phy = tx_phy;
     entry.telemetry.confirmed_rx_phy = rx_phy;
     entry.telemetry.status = kStatusSuccess;
-    if (entry.fast_after_commission) {
+    if (entry.fast_preparation_pending) {
       entry.interval = Interval::Fast;
       entry.telemetry.state = State::NeedInterval;
     } else {
       entry.telemetry.state = State::Ready;
     }
-    entry.fast_after_commission = false;
+    entry.fast_preparation_pending = false;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
     complete_active();
     (void)now_ms;
@@ -238,11 +281,28 @@ class LinkTuneState {
       return false;
     }
     Entry &entry = links_[active_.link];
+    const Interval completed_interval = active_.interval;
     entry.telemetry.confirmed_interval = interval;
     entry.telemetry.status = kStatusSuccess;
-    entry.telemetry.state = State::Ready;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
     complete_active();
+    if (completed_interval == Interval::Fast && entry.slow_restore_pending) {
+      entry.interval = Interval::Slow;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_interval == Interval::Slow &&
+               entry.fast_preparation_pending) {
+      entry.interval = Interval::Fast;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else {
+      entry.telemetry.state = State::Ready;
+      if (completed_interval == Interval::Slow) {
+        entry.slow_restore_pending = false;
+      }
+    }
     return true;
   }
 
@@ -251,10 +311,29 @@ class LinkTuneState {
       return false;
     }
     Entry &entry = links_[active_.link];
+    const Procedure timed_out_procedure = active_.procedure;
+    const Interval timed_out_interval = active_.interval;
     entry.telemetry.status = kStatusTimeout;
     entry.telemetry.state = State::Degraded;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
     complete_active();
+    if (timed_out_procedure == Procedure::Interval &&
+        timed_out_interval == Interval::Slow &&
+        entry.fast_preparation_pending) {
+      entry.interval = Interval::Fast;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (timed_out_procedure == Procedure::Interval &&
+        timed_out_interval == Interval::Fast && entry.slow_restore_pending) {
+      entry.interval = Interval::Slow;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (timed_out_procedure == Procedure::Interval &&
+               timed_out_interval == Interval::Slow) {
+      entry.slow_restore_pending = false;
+    }
     return true;
   }
 
@@ -263,19 +342,40 @@ class LinkTuneState {
       return false;
     }
     Entry &entry = links_[link];
-    if (!entry.connected || entry.telemetry.generation != generation ||
-        (active_.valid() && active_.link == link)) {
+    if (!entry.connected || entry.telemetry.generation != generation) {
       return false;
+    }
+    if (active_.valid() && active_.link == link) {
+      if (active_.procedure != Procedure::Interval ||
+          entry.telemetry.state != State::WaitInterval) {
+        return false;
+      }
+      entry.interval = Interval::Slow;
+      entry.slow_restore_pending = true;
+      return true;
     }
     if (entry.telemetry.state == State::NeedDle || entry.telemetry.state == State::WaitDle ||
         entry.telemetry.state == State::NeedPhy || entry.telemetry.state == State::WaitPhy) {
-      entry.fast_after_commission = true;
+      /* The link is still at its idle interval; cancel any fast-after-commission
+       * intent because the source completed before that work became useful. */
+      entry.fast_preparation_pending = false;
+      entry.interval = Interval::Slow;
       return true;
     }
-    if (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded) {
+    if (entry.telemetry.state == State::NeedInterval) {
+      entry.interval = Interval::Slow;
+      entry.slow_restore_pending = true;
+      entry.fast_preparation_pending = false;
+      entry.retry_at_ms = 0U;
+      return true;
+    }
+    if (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded &&
+        entry.telemetry.state != State::Failed) {
       return false;
     }
     entry.interval = Interval::Slow;
+    entry.slow_restore_pending = true;
+    entry.fast_preparation_pending = false;
     entry.telemetry.state = State::NeedInterval;
     entry.retry_at_ms = 0U;
     return true;
@@ -291,13 +391,42 @@ class LinkTuneState {
       return false;
     }
     Entry &entry = links_[link];
-    if (!entry.connected || entry.telemetry.generation != generation ||
-        (active_.valid() && active_.link == link) ||
-        (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded)) {
+    if (!entry.connected || entry.telemetry.generation != generation) {
       return false;
     }
     entry.fast_interval = RecordTransferTuningWire::sanitize_fast_interval(fast_interval);
+    if (active_.valid() && active_.link == link) {
+      if (active_.procedure == Procedure::Interval) {
+        if (active_.interval == Interval::Slow) {
+          entry.fast_preparation_pending = true;
+          entry.slow_restore_pending = false;
+        }
+        return true;
+      }
+      if (active_.procedure != Procedure::Dle && active_.procedure != Procedure::Phy) {
+        return false;
+      }
+      entry.fast_preparation_pending = true;
+      return true;
+    }
+    if (entry.telemetry.state == State::NeedDle || entry.telemetry.state == State::WaitDle ||
+        entry.telemetry.state == State::NeedPhy || entry.telemetry.state == State::WaitPhy) {
+      entry.fast_preparation_pending = true;
+      return true;
+    }
+    if (entry.telemetry.state == State::NeedInterval) {
+      entry.interval = Interval::Fast;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.retry_at_ms = 0U;
+      return true;
+    }
+    if (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded) {
+      return false;
+    }
     entry.interval = Interval::Fast;
+    entry.fast_preparation_pending = false;
+    entry.slow_restore_pending = false;
     entry.telemetry.state = State::NeedInterval;
     entry.retry_at_ms = 0U;
     return true;
@@ -312,6 +441,22 @@ class LinkTuneState {
                                   links_[link].telemetry.state == State::Degraded);
   }
 
+  /* The initial credit grant is tied to the exact connection generation that
+   * was selected for this upload. Ready is confirmed success; Degraded/Failed
+   * are explicit tuning fallbacks. A disconnected generation never qualifies,
+   * even though disconnect telemetry is Failed. */
+  constexpr bool transfer_preparation_resolved(uint8_t link,
+                                                uint32_t generation) const {
+    if (link >= kLinkCount) {
+      return false;
+    }
+    const Entry &entry = links_[link];
+    return entry.connected && entry.telemetry.generation == generation &&
+           (entry.telemetry.state == State::Ready ||
+            entry.telemetry.state == State::Degraded ||
+            entry.telemetry.state == State::Failed);
+  }
+
   constexpr Request active_request() const { return active_; }
 
  private:
@@ -323,7 +468,8 @@ class LinkTuneState {
     uint32_t deadline_ms = 0U;
     Interval interval = Interval::Fast;
     uint16_t fast_interval = kFastIntervalMin;
-    bool fast_after_commission = false;
+    bool fast_preparation_pending = false;
+    bool slow_restore_pending = false;
     bool connected = false;
   };
 

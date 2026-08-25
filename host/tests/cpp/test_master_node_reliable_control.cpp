@@ -116,6 +116,33 @@ int main()
             static_cast<uint8_t>(exo::RecordReliableType::NackRange));
     assert(!control.pending());
 
+    /* Initial upload credit waits for the selected link's fast-preparation
+     * outcome. Recovery NACKs remain serviceable while that ManifestAck is
+     * gated, and an ACK_WINDOW cannot bypass the initial-credit gate. */
+    FakeTransport gated_transport;
+    gated_transport.failures_remaining = 0;
+    exo::MasterNodeReliableControl gated(&FakeTransport::send, &gated_transport);
+    assert(gated.begin(done));
+    assert(gated.ack_window(1U, 8U));
+    assert(gated.nack_range(0U, 1U));
+    assert(gated.service(400U, false));
+    header = header_of(gated_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::NackRange));
+    gated_transport.frame.clear();
+    assert(!gated.service(420U, false));
+    assert(gated_transport.frame.empty());
+    assert(gated.pending());
+    assert(gated.service(440U, true));
+    header = header_of(gated_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::ManifestAck));
+    assert(gated.pending());
+    assert(gated.service(460U, true));
+    header = header_of(gated_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::AckWindow));
+
     assert(!control.verify_ok(0xDEADBEEFU));
     assert(control.verify_ok(done.payload_crc32));
     assert(control.service(260U));

@@ -176,6 +176,7 @@ typedef struct
   uint16_t link_dle_rx_oct;
   uint8_t link_tx_phy;
   uint8_t link_rx_phy;
+  uint32_t transfer_tune_generation;
 } exo_leaf_slot_t;
 
 static exo_leaf_slot_t g_leaf_slots[EXO_HUB_LEAF_MAX];
@@ -249,6 +250,7 @@ static void exo_leaf_slot_mark_backoff(exo_leaf_slot_t *slot)
 {
   slot->state = EXO_LEAF_SLOT_BACKOFF;
   slot->connection_handle = 0xFFFFU;
+  slot->transfer_tune_generation = 0U;
   slot->retry_after_ms = HAL_GetTick() + EXO_HUB_BACKOFF_MS;
   exo_leaf_slot_reset_handles(slot);
   g_connect_busy = 0U;
@@ -1434,6 +1436,17 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
       const uint8_t queued = (uint8_t)(fast != 0U
           ? g_link_tune.begin_fast_preparation(i, t.generation, fast_interval)
           : g_link_tune.begin_slow_restore(i, t.generation));
+      if (fast != 0U)
+      {
+        /* Snapshot the selected connection generation even when the tuning
+         * state is already Failed: that is an explicit reliable-upload
+         * fallback, while a later reconnect must not inherit this token. */
+        g_leaf_slots[i].transfer_tune_generation = t.generation;
+      }
+      else
+      {
+        g_leaf_slots[i].transfer_tune_generation = 0U;
+      }
       EXO_LOG("[BLE][HUB][XFER] timing queue node=%u slot=%u fast=%u ci_cfg=%u queued=%u gen=%lu\r\n",
               (unsigned)node_id, (unsigned)i, (unsigned)(fast != 0U),
               (unsigned)exo::RecordTransferTuningWire::sanitize_fast_interval(fast_interval),
@@ -1442,6 +1455,24 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
       return;
     }
   }
+}
+
+uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id)
+{
+  uint8_t i;
+  for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+  {
+    const exo_leaf_slot_t *const slot = &g_leaf_slots[i];
+    if (exo_leaf_slot_node_id(slot) != node_id ||
+        slot->connection_handle == 0xFFFFU ||
+        slot->transfer_tune_generation == 0U)
+    {
+      continue;
+    }
+    return (uint8_t)g_link_tune.transfer_preparation_resolved(
+        i, slot->transfer_tune_generation);
+  }
+  return 0U;
 }
 
 

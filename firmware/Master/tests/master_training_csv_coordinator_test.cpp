@@ -106,6 +106,18 @@ struct ReliableTxState {
     bool succeed = true;
 } g_reliable_tx;
 
+struct InitialCreditGateState {
+    bool ready = false;
+    uint8_t observed_node = 0U;
+};
+
+bool initial_credit_ready(void *context, uint8_t node_id)
+{
+    auto &state = *static_cast<InitialCreditGateState *>(context);
+    state.observed_node = node_id;
+    return state.ready;
+}
+
 uint32_t g_flush_clock_values[8]{};
 uint8_t g_flush_clock_index = 0U;
 
@@ -829,6 +841,46 @@ int main()
     if (stage_close_retry.state() != exo::TrainingCsvState::Idle ||
             !stage_close_retry.begin_session(103U, 0x01U)) return 20;
     stage_close_retry.shutdown(18U);
+
+    /* The coordinator must consult the selected source's link-preparation gate
+     * before granting initial upload credit. A recovery NACK remains sendable
+     * while both ManifestAck and ACK_WINDOW credit are held behind the gate. */
+    g_stage = StageFsState{};
+    reset_reliable_tx();
+    InitialCreditGateState credit_gate{};
+    exo::MasterTrainingCsvCoordinator gated_credit(&kLoggerOps, &kStagerOps,
+            &master_ops, fake_reliable_send, nullptr);
+    gated_credit.set_initial_credit_ready(initial_credit_ready, &credit_gate);
+    if (!gated_credit.begin_binary_session(706U, 0x05U, 12U)) return 90;
+    g_fake.master_header = exo::SessionHeader{};
+    g_fake.master_header.session_id = 706U;
+    gated_credit.on_master_finalized(recorder);
+    exo::RecordDoneMessage gated_done{};
+    gated_done.command = exo::RecordCommand::RecordDone;
+    gated_done.node_id = 2U;
+    gated_done.session_id = 706U;
+    gated_done.total_size = 2U * exo::kRecordReliableDefaultChunkSize;
+    gated_credit.on_node_record_done(gated_done);
+    gated_credit.service_reliable_control(0U); /* one-service defer */
+    gated_credit.service_reliable_control(1U); /* link gate closed */
+    if (credit_gate.observed_node != 2U || g_reliable_tx.count != 0U) return 91;
+
+    uint8_t gated_payload[exo::kRecordReliableDefaultChunkSize]{};
+    uint8_t gated_frame[sizeof(exo::RecordReliableFrameHeader) +
+            exo::kRecordReliableDefaultChunkSize]{};
+    const uint16_t gated_gap_len = make_chunk_frame(gated_frame, sizeof(gated_frame),
+            2U, 706U, 1U, gated_payload, sizeof(gated_payload));
+    gated_credit.on_node_reliable_frame(2U, gated_frame, gated_gap_len, 2U);
+    gated_credit.service_reliable_control(2U);
+    if (g_reliable_tx.count != 1U ||
+            g_reliable_tx.type[0] != exo::RecordReliableType::NackRange) return 92;
+    gated_credit.service_reliable_control(22U);
+    if (g_reliable_tx.count != 1U) return 93;
+    credit_gate.ready = true;
+    gated_credit.service_reliable_control(23U);
+    if (g_reliable_tx.count != 2U ||
+            g_reliable_tx.type[1] != exo::RecordReliableType::ManifestAck) return 94;
+
     (void)recorder;
     return 0;
 }

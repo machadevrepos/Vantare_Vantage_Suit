@@ -57,6 +57,7 @@ default_master_ready, default_master_header, default_master_read
 }
 class MasterTrainingCsvCoordinator {
 public:
+using InitialCreditReadyFn = bool (*)(void *context, uint8_t node_id);
 static constexpr uint32_t kRowsPerService = 8U;
 static constexpr uint32_t kValidationBytesPerService = 1024U;
 static constexpr uint32_t kSessionStallMs = 30000U;
@@ -141,6 +142,11 @@ void set_reliable_transport(MasterNodeReliableControl::SendFn send_fn, void *con
 {
 reliable_send_ = send_fn;
 reliable_context_ = context;
+}
+void set_initial_credit_ready(InitialCreditReadyFn ready_fn, void *context)
+{
+initial_credit_ready_fn_ = ready_fn;
+initial_credit_ready_context_ = context;
 }
 void set_sd_flush_time_source(MasterNodeSessionStager::FlushTimeFn time_fn, void *context)
 {
@@ -413,7 +419,7 @@ if (reliable_defer_services_ != 0U) {
 return;
 }
 (void)queue_idle_partial_ack(now_ms);
-(void)reliable_control_.service(now_ms);
+(void)reliable_control_.service(now_ms, initial_credit_ready());
 }
 void service(MasterSdSessionRecorder &recorder, uint32_t now_ms)
 {
@@ -421,7 +427,7 @@ if (reliable_defer_services_ != 0U) {
 --reliable_defer_services_;
 } else {
 (void)queue_idle_partial_ack(now_ms);
-(void)reliable_control_.service(now_ms);
+(void)reliable_control_.service(now_ms, initial_credit_ready());
 }
 drain_pending_chunks();
 const TrainingCsvState entry_state = state_;
@@ -655,6 +661,11 @@ training_csv::TrainingCsvLogOperation failure_csv_operation() const
 FRESULT failure_csv_result() const { return failure_csv_result_; }
 void fail_durability() { fail(binary_only_ ? TrainingCsvState::StageError : TrainingCsvState::CsvError, TrainingFailSite::Site20); }
 private:
+bool initial_credit_ready()
+{
+return initial_credit_ready_fn_ == nullptr || active_node_id_ == 0U ||
+initial_credit_ready_fn_(initial_credit_ready_context_, active_node_id_);
+}
 static bool reliable_transport_thunk(void *context, uint8_t node_id,
 const uint8_t *frame, uint16_t length)
 {
@@ -970,6 +981,8 @@ MasterNodeTransferWindow transfer_window_;
 MasterNodeReliableControl reliable_control_;
 MasterNodeReliableControl::SendFn reliable_send_ = nullptr;
 void *reliable_context_ = nullptr;
+InitialCreditReadyFn initial_credit_ready_fn_ = nullptr;
+void *initial_credit_ready_context_ = nullptr;
 MasterSessionTimestampLedger ledger_;
 PendingChunk pending_chunks_[kPendingChunkDepth]{};
 uint8_t pending_head_ = 0U;
