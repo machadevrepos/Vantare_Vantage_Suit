@@ -18,9 +18,14 @@ void exo_hub_central_client_set_discovery_hold(uint8_t hold);
 /* Arm one direct-address re-connect of a dropped Node while discovery is
  * held for an active session; ignored outside the hold. */
 void exo_hub_central_client_request_targeted_reconnect(uint8_t node_id);
-/* Session-upload link timing: fast=1 -> 7.5-15 ms connection events while
- * chunks flow; fast=0 restores the 30-50 ms multi-link timing. */
-void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast);
+/* Session-upload link timing: fast=1 requests the supplied sanitized interval
+ * through the global completion-driven arbiter; fast=0 restores the 30-50 ms
+ * multi-link timing. Request queuing/acceptance is never confirmation. */
+void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
+                                                uint8_t fast_interval);
+/* True only when the exact connected generation armed by the most recent fast
+ * request for this Node reached Ready or an explicit Degraded/Failed fallback. */
+uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id);
 
 uint8_t exo_hub_central_client_broadcast_blepipe(uint8_t msg_type,
                                                  uint16_t src_id,
@@ -51,6 +56,20 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
                                                    const uint8_t *peer_address);
 void exo_hub_central_client_on_disconnection_complete(uint16_t connection_handle,
                                                       uint8_t reason);
+void exo_hub_central_client_on_data_length_change(uint16_t connection_handle,
+                                                  uint16_t max_tx_octets,
+                                                  uint16_t max_tx_time,
+                                                  uint16_t max_rx_octets,
+                                                  uint16_t max_rx_time);
+void exo_hub_central_client_on_phy_update_complete(uint8_t status,
+                                                   uint16_t connection_handle,
+                                                   uint8_t tx_phy,
+                                                   uint8_t rx_phy);
+void exo_hub_central_client_on_connection_update_complete(uint8_t status,
+                                                          uint16_t connection_handle,
+                                                          uint16_t conn_interval,
+                                                          uint16_t conn_latency,
+                                                          uint16_t supervision_timeout);
 
 #ifdef __cplusplus
 }

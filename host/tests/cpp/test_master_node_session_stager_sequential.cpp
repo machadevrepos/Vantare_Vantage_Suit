@@ -11,6 +11,13 @@ std::vector<uint8_t> g_file;
 uint32_t g_cursor = 0U;
 uint32_t g_lseek_count = 0U;
 uint32_t g_unlink_count = 0U;
+uint32_t g_flush_clock_values[8]{};
+uint8_t g_flush_clock_index = 0U;
+
+uint32_t flush_clock(void *)
+{
+    return g_flush_clock_values[g_flush_clock_index++];
+}
 
 FRESULT seq_open(FIL *, const TCHAR *, BYTE mode)
 {
@@ -105,6 +112,11 @@ int main()
     done.payload_crc32 = header.payload_crc32;
 
     exo::MasterNodeSessionStager stager(&kSeqOps);
+    g_flush_clock_values[0] = 100U;
+    g_flush_clock_values[1] = 107U;
+    g_flush_clock_index = 0U;
+    stager.set_flush_time_source(flush_clock, nullptr);
+    stager.reset_flush_metrics();
     assert(stager.begin(done, 1U));
     assert(stager.accept_chunk(1U, 42U, 0U, session.data(),
             static_cast<uint16_t>(session.size())));
@@ -114,6 +126,8 @@ int main()
         assert(stager.step_validation(256U));
     }
     assert(stager.finalize_validation());
+    assert(stager.sd_flush_count() == 1U);
+    assert(stager.sd_flush_max_duration_ms() == 7U);
 
     g_lseek_count = 0U;
     exo::Bno85Sample bno{};

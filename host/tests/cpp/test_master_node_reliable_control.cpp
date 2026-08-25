@@ -116,6 +116,54 @@ int main()
             static_cast<uint8_t>(exo::RecordReliableType::NackRange));
     assert(!control.pending());
 
+    /* Initial upload credit waits for the selected link's fast-preparation
+     * outcome. Recovery NACKs remain serviceable while that ManifestAck is
+     * gated, and an ACK_WINDOW cannot bypass the initial-credit gate. */
+    FakeTransport gated_transport;
+    gated_transport.failures_remaining = 0;
+    exo::MasterNodeReliableControl gated(&FakeTransport::send, &gated_transport);
+    assert(gated.begin(done));
+    assert(gated.ack_window(1U, 8U));
+    assert(gated.nack_range(0U, 1U));
+    assert(gated.service(400U, false));
+    header = header_of(gated_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::NackRange));
+    gated_transport.frame.clear();
+    assert(!gated.service(420U, false));
+    assert(gated_transport.frame.empty());
+    assert(gated.pending());
+    assert(gated.service(440U, true));
+    header = header_of(gated_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::ManifestAck));
+    assert(gated.pending());
+    assert(gated.service(460U, true));
+    header = header_of(gated_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::AckWindow));
+
+    /* After ManifestAck has already granted initial credit, a reconnect gate
+     * pauses only the pending ACK-window refresh. Reopening the gate resumes
+     * with ACK_WINDOW and must not ambiguously grant a second ManifestAck. */
+    FakeTransport resume_transport;
+    resume_transport.failures_remaining = 0;
+    exo::MasterNodeReliableControl resume(&FakeTransport::send, &resume_transport);
+    assert(resume.begin(done));
+    assert(resume.service(500U, true));
+    header = header_of(resume_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::ManifestAck));
+    resume_transport.frame.clear();
+    assert(resume.ack_window(8U, 8U));
+    assert(resume.service(520U, false));
+    assert(resume_transport.frame.empty());
+    assert(resume.pending());
+    assert(resume.service(540U, true));
+    header = header_of(resume_transport.frame);
+    assert(header.frame_type ==
+            static_cast<uint8_t>(exo::RecordReliableType::AckWindow));
+
     assert(!control.verify_ok(0xDEADBEEFU));
     assert(control.verify_ok(done.payload_crc32));
     assert(control.service(260U));

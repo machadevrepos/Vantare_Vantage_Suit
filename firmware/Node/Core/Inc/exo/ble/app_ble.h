@@ -48,6 +48,17 @@ typedef enum
 } APP_BLE_ConnStatus_t;
 
 /* USER CODE BEGIN ET */
+typedef struct
+{
+  uint16_t controller_max_tx_octets;
+  uint16_t negotiated_tx_octets;
+  uint16_t negotiated_rx_octets;
+  uint8_t requested;
+  uint8_t confirmed;
+  uint8_t request_status;
+  uint8_t commission_state; /* 0=unknown, 1=requested, 2=confirmed, 3=degraded, 4=failed */
+  uint8_t commission_attempts;
+} exo_node_ble_dle_status_t;
 
 /* USER CODE END ET */
 
@@ -71,6 +82,9 @@ void APP_BLE_Init(void);
 APP_BLE_ConnStatus_t APP_BLE_Get_Server_Connection_Status(void);
 
 /* USER CODE BEGIN EF */
+/* Foreground-only DLE commissioning. HCI callbacks merely publish state. */
+void exo_node_ble_link_process(void);
+exo_node_ble_dle_status_t exo_node_ble_dle_status(void);
 
 /* USER CODE END EF */
 

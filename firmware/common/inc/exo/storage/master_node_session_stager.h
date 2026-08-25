@@ -71,11 +71,28 @@ static const NodeSessionFatFsOps kDefaultNodeSessionFatFsOps = {
 
 class MasterNodeSessionStager {
 public:
+    using FlushTimeFn = uint32_t (*)(void *context);
+
     explicit MasterNodeSessionStager(
             const node_session_staging::NodeSessionFatFsOps *ops = nullptr)
         : ops_(ops != nullptr ? ops : &node_session_staging::kDefaultNodeSessionFatFsOps)
     {
     }
+
+    void set_flush_time_source(FlushTimeFn time_fn, void *context)
+    {
+        flush_time_fn_ = time_fn;
+        flush_time_context_ = context;
+    }
+
+    void reset_flush_metrics()
+    {
+        sd_flush_count_ = 0U;
+        sd_flush_max_duration_ms_ = 0U;
+    }
+
+    uint32_t sd_flush_count() const { return sd_flush_count_; }
+    uint32_t sd_flush_max_duration_ms() const { return sd_flush_max_duration_ms_; }
 
     bool begin(const RecordDoneMessage &done, uint16_t file_index = 1U)
     {
@@ -459,22 +476,40 @@ private:
         if (write_buffer_len_ == 0U) {
             return true;
         }
+        const bool have_flush_clock = flush_time_fn_ != nullptr;
+        const uint32_t flush_started_ms = have_flush_clock ?
+                flush_time_fn_(flush_time_context_) : 0U;
+        if (sd_flush_count_ < UINT32_MAX) ++sd_flush_count_;
         const uint32_t buffer_start = staged_size_ - write_buffer_len_;
         const FRESULT seek = ops_->lseek_fn(&file_, static_cast<FSIZE_t>(buffer_start));
         read_cursor_ = kInvalidCursor;
         if (seek != FR_OK) {
+            finish_flush_metric(have_flush_clock, flush_started_ms);
             return set_error(node_session_staging::NodeSessionStageOperation::WriteSeek, seek);
         }
         UINT written = 0U;
         const FRESULT result = ops_->write_fn(&file_, write_buffer_, write_buffer_len_, &written);
         if (result != FR_OK) {
+            finish_flush_metric(have_flush_clock, flush_started_ms);
             return set_error(node_session_staging::NodeSessionStageOperation::Write, result);
         }
         if (written != write_buffer_len_) {
+            finish_flush_metric(have_flush_clock, flush_started_ms);
             return set_error(node_session_staging::NodeSessionStageOperation::WriteShort, FR_OK);
         }
         write_buffer_len_ = 0U;
+        finish_flush_metric(have_flush_clock, flush_started_ms);
         return true;
+    }
+
+    void finish_flush_metric(bool have_clock, uint32_t started_ms)
+    {
+        if (!have_clock) return;
+        const uint32_t duration_ms =
+                static_cast<uint32_t>(flush_time_fn_(flush_time_context_) - started_ms);
+        if (duration_ms > sd_flush_max_duration_ms_) {
+            sd_flush_max_duration_ms_ = duration_ms;
+        }
     }
 
     bool duplicate_matches(uint32_t offset, const uint8_t *data, uint16_t size)
@@ -589,6 +624,10 @@ private:
     }
 
     const node_session_staging::NodeSessionFatFsOps *ops_;
+    FlushTimeFn flush_time_fn_ = nullptr;
+    void *flush_time_context_ = nullptr;
+    uint32_t sd_flush_count_ = 0U;
+    uint32_t sd_flush_max_duration_ms_ = 0U;
     FIL file_{};
     RecordDoneMessage done_{};
     SessionHeader header_{};

@@ -235,10 +235,15 @@
  * Number of allocated memory blocks
  * This parameter is overwritten by the CPU2 with an hardcoded optimal value when the parameter CFG_BLE_OPTIONS has SHCI_C2_BLE_INIT_OPTIONS_LL_ONLY flag set
  */
-/* Extra TX buffers above the stack minimum so the node can queue more
- * 2M/DLE chunk packets per connection event during upload. 16 blocks x
- * BLE_MEM_BLOCK_SIZE (32 B) = 512 B of extra BLE pool RAM. */
-#define CFG_BLE_MBLOCK_EXTRA            (16)
+/* Four complete 247-byte ATT notification buffers. Use the STM32_WPAN
+ * BLE_MEM_BLOCK_X_TX formula rather than a guessed block count:
+ * BLE_MEM_BLOCK_X_TX(247) = DIVC(251, 32) + 1 = 9, so extras = 4 * 9 = 36.
+ * This reserves 36 * (BLE_MEM_BLOCK_SIZE + 8) = 1440 B of BLE pool RAM. */
+#define CFG_NODE_UPLOAD_NOTIFICATION_BUFFERS (4U)
+#define CFG_NODE_UPLOAD_MBLOCKS_PER_NOTIFICATION \
+  (BLE_MEM_BLOCK_X_TX(CFG_BLE_MAX_ATT_MTU))
+#define CFG_BLE_MBLOCK_EXTRA \
+  (CFG_NODE_UPLOAD_NOTIFICATION_BUFFERS * CFG_NODE_UPLOAD_MBLOCKS_PER_NOTIFICATION)
 #define CFG_BLE_MBLOCK_COUNT            (BLE_MBLOCKS_CALC(CFG_BLE_PREPARE_WRITE_LIST_SIZE, CFG_BLE_MAX_ATT_MTU, CFG_BLE_NUM_LINK) + CFG_BLE_MBLOCK_EXTRA)
 
 /**

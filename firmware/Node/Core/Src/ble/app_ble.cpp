@@ -27,6 +27,7 @@
 #include "ble.h"
 #include "tl.h"
 #include <exo/ble/app_ble.h>
+#include <exo/ble/node_upload_pump.h>
 
 #include "stm32_seq.h"
 #include "shci.h"
@@ -220,6 +221,17 @@ uint8_t a_AdvData[11] =
 };
 
 /* USER CODE BEGIN PV */
+static volatile uint8_t g_node_dle_connect_pending;
+static volatile uint8_t g_node_dle_disconnect_pending;
+static volatile uint8_t g_node_dle_data_length_pending;
+static volatile uint8_t g_node_dle_link_active;
+static volatile uint16_t g_node_dle_connection_handle = 0xFFFFU;
+static volatile uint16_t g_node_dle_event_tx_octets;
+static volatile uint16_t g_node_dle_event_rx_octets;
+static uint16_t g_node_dle_controller_max_tx_octets;
+static uint8_t g_node_dle_requested;
+static uint8_t g_node_dle_request_status = BLE_STATUS_INVALID_PARAMS;
+static exo::NodeDleCommissioner g_node_dle_commissioner;
 
 /* USER CODE END PV */
 
@@ -237,6 +249,11 @@ static void Adv_Cancel(void);
 /* USER CODE BEGIN PFP */
 extern "C" uint8_t exo_node_ble_runtime_id(void);
 static void EXO_Node_UpdateAdvName(void);
+static void EXO_Node_DleConnected(uint16_t connection_handle);
+static void EXO_Node_DleDisconnected(void);
+static void EXO_Node_DleDataLengthChanged(uint16_t connection_handle,
+                                          uint16_t tx_octets,
+                                          uint16_t rx_octets);
 
 /* USER CODE END PFP */
 
@@ -414,6 +431,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
   tBleStatus        ret = BLE_STATUS_INVALID_PARAMS;
   hci_le_connection_complete_event_rp0        *p_connection_complete_event;
   hci_disconnection_complete_event_rp0        *p_disconnection_complete_event;
+  hci_le_data_length_change_event_rp0         *p_data_length_change_event;
 #if (CFG_DEBUG_APP_TRACE != 0)
   hci_le_connection_update_complete_event_rp0 *p_connection_update_complete_event;
 #endif /* CFG_DEBUG_APP_TRACE != 0 */
@@ -461,6 +479,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
       HandleNotification.Custom_Evt_Opcode = CUSTOM_DISCON_HANDLE_EVT;
       HandleNotification.ConnectionHandle = BleApplicationContext.BleApplicationContext_legacy.connectionHandle;
       Custom_APP_Notification(&HandleNotification);
+      EXO_Node_DleDisconnected();
       /* USER CODE BEGIN EVT_DISCONN_COMPLETE */
 
       /* USER CODE END EVT_DISCONN_COMPLETE */
@@ -542,11 +561,19 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           HandleNotification.Custom_Evt_Opcode = CUSTOM_CONN_HANDLE_EVT;
           HandleNotification.ConnectionHandle = BleApplicationContext.BleApplicationContext_legacy.connectionHandle;
           Custom_APP_Notification(&HandleNotification);
+          EXO_Node_DleConnected(p_connection_complete_event->Connection_Handle);
           /* USER CODE BEGIN HCI_EVT_LE_CONN_COMPLETE */
 
           /* USER CODE END HCI_EVT_LE_CONN_COMPLETE */
           break; /* HCI_LE_CONNECTION_COMPLETE_SUBEVT_CODE */
         }
+
+        case HCI_LE_DATA_LENGTH_CHANGE_SUBEVT_CODE:
+          p_data_length_change_event = (hci_le_data_length_change_event_rp0 *) p_meta_evt->data;
+          EXO_Node_DleDataLengthChanged(p_data_length_change_event->Connection_Handle,
+                                        p_data_length_change_event->MaxTxOctets,
+                                        p_data_length_change_event->MaxRxOctets);
+          break;
 
         default:
           /* USER CODE BEGIN SUBEVENT_DEFAULT */
@@ -1097,6 +1124,31 @@ static void EXO_Node_UpdateAdvName(void)
   a_AdvData[6] = (uint8_t)('0' + (node_id % 10U));
 }
 
+/* HCI dispatch only publishes state. The foreground performs commissioning. */
+static void EXO_Node_DleConnected(uint16_t connection_handle)
+{
+  g_node_dle_connection_handle = connection_handle;
+  g_node_dle_link_active = 1U;
+  g_node_dle_connect_pending = 1U;
+}
+
+static void EXO_Node_DleDisconnected(void)
+{
+  g_node_dle_link_active = 0U;
+  g_node_dle_disconnect_pending = 1U;
+}
+
+static void EXO_Node_DleDataLengthChanged(uint16_t connection_handle,
+                                          uint16_t tx_octets,
+                                          uint16_t rx_octets)
+{
+  if (connection_handle == g_node_dle_connection_handle) {
+    g_node_dle_event_tx_octets = tx_octets;
+    g_node_dle_event_rx_octets = rx_octets;
+    g_node_dle_data_length_pending = 1U;
+  }
+}
+
 /* USER CODE END FD_LOCAL_FUNCTION */
 
 /*************************************************************
@@ -1163,6 +1215,97 @@ void hci_cmd_resp_wait(uint32_t Timeout)
   UTIL_SEQ_WaitEvt(1 << CFG_IDLEEVT_HCI_CMD_EVT_RSP_ID);
 
   return;
+}
+
+extern "C" void exo_node_ble_link_process(void)
+{
+  if (g_node_dle_disconnect_pending != 0U) {
+    g_node_dle_disconnect_pending = 0U;
+    g_node_dle_data_length_pending = 0U;
+    g_node_dle_requested = 0U;
+    g_node_dle_request_status = BLE_STATUS_INVALID_PARAMS;
+    g_node_dle_controller_max_tx_octets = 0U;
+    g_node_dle_event_tx_octets = 0U;
+    g_node_dle_event_rx_octets = 0U;
+    g_node_dle_commissioner.start(0U);
+    if (g_node_dle_link_active == 0U) {
+      g_node_dle_connect_pending = 0U;
+    }
+  }
+
+  if (g_node_dle_link_active == 0U) {
+    return;
+  }
+
+  const uint32_t now_ms = HAL_GetTick();
+  if (g_node_dle_connect_pending != 0U) {
+    g_node_dle_connect_pending = 0U;
+    g_node_dle_requested = 0U;
+    g_node_dle_request_status = BLE_STATUS_INVALID_PARAMS;
+    g_node_dle_controller_max_tx_octets = 0U;
+    g_node_dle_event_tx_octets = 0U;
+    g_node_dle_event_rx_octets = 0U;
+    g_node_dle_commissioner.start(now_ms);
+
+    uint16_t max_tx_octets = 0U;
+    uint16_t max_tx_time = 0U;
+    uint16_t max_rx_octets = 0U;
+    uint16_t max_rx_time = 0U;
+    const tBleStatus max_status = hci_le_read_maximum_data_length(&max_tx_octets,
+                                                                   &max_tx_time,
+                                                                   &max_rx_octets,
+                                                                   &max_rx_time);
+    if (max_status == BLE_STATUS_SUCCESS) {
+      g_node_dle_controller_max_tx_octets = max_tx_octets;
+    }
+  }
+
+  if (g_node_dle_data_length_pending != 0U) {
+    g_node_dle_data_length_pending = 0U;
+    g_node_dle_commissioner.on_complete(g_node_dle_event_tx_octets,
+                                        g_node_dle_event_rx_octets);
+  }
+
+  g_node_dle_commissioner.process(now_ms);
+  if (!g_node_dle_commissioner.request_due(now_ms)) {
+    return;
+  }
+
+  /* Never issue this HCI command from a connection callback. Only temporary
+   * controller contention is retried; completion is confirmed solely by the
+   * data-length-change event and otherwise times out into degraded/failed. */
+  const uint16_t requested_tx_octets =
+      (g_node_dle_controller_max_tx_octets != 0U && g_node_dle_controller_max_tx_octets < 251U) ?
+      g_node_dle_controller_max_tx_octets : 251U;
+  const tBleStatus request_status = hci_le_set_data_length(g_node_dle_connection_handle,
+                                                            requested_tx_octets,
+                                                            0x0848U);
+  g_node_dle_request_status = request_status;
+  exo::NodeDleCommissioner::RequestResult result = exo::NodeDleCommissioner::RequestResult::Failed;
+  if (request_status == BLE_STATUS_SUCCESS) {
+    result = exo::NodeDleCommissioner::RequestResult::Success;
+    g_node_dle_requested = 1U;
+  } else if (request_status == BLE_STATUS_BUSY ||
+             request_status == BLE_STATUS_INSUFFICIENT_RESOURCES ||
+             request_status == BLE_STATUS_PENDING ||
+             request_status == BLE_STATUS_TIMEOUT) {
+    result = exo::NodeDleCommissioner::RequestResult::Transient;
+  }
+  g_node_dle_commissioner.on_request_result(result, now_ms);
+}
+
+extern "C" exo_node_ble_dle_status_t exo_node_ble_dle_status(void)
+{
+  exo_node_ble_dle_status_t status;
+  status.controller_max_tx_octets = g_node_dle_controller_max_tx_octets;
+  status.negotiated_tx_octets = g_node_dle_event_tx_octets;
+  status.negotiated_rx_octets = g_node_dle_event_rx_octets;
+  status.requested = g_node_dle_requested;
+  status.confirmed = (g_node_dle_commissioner.state() == exo::NodeDleCommissioner::State::Confirmed) ? 1U : 0U;
+  status.request_status = g_node_dle_request_status;
+  status.commission_state = static_cast<uint8_t>(g_node_dle_commissioner.state());
+  status.commission_attempts = g_node_dle_commissioner.attempts();
+  return status;
 }
 
 static void BLE_UserEvtRx(void *p_Payload)

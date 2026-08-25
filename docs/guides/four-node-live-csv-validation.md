@@ -2,17 +2,17 @@
 
 ## Scope
 
-This procedure validates one Master and four commissioned Nodes after flashing the `2nd_Branch` firmware. It covers topology, continuous live graphs during recording, autonomous sequential Node uploads, binary durability, and training CSV schema version 2.
+This procedure validates one Master and four commissioned Nodes from the same reviewed throughput build. It covers topology, continuous live graphs during recording, autonomous sequential Node uploads, binary durability, transfer throughput, and training CSV schema version 2.
 
 The pull request must remain draft until every mandatory check below passes on physical hardware.
 
 ## Hardware and firmware preparation
 
-1. Build and flash the Master project from `Firmware/Master` on `2nd_Branch`.
-2. Build and flash the Node project from `Firmware/Node` on `2nd_Branch` to all four Node PCBs.
+1. Build and flash the Master project from `firmware/Master` and record the Git commit plus Debug/Release image sizes.
+2. Build and flash the Node project from `firmware/Node` from the same commit to all four Node PCBs; record its Debug/Release image sizes.
 3. Commission the persistent Node IDs as 1, 2, 3, and 4.
 4. Power-cycle every PCB and query each Node ID before assembling the test topology.
-5. Use the current `Firmware/DesktopTools/Exoskeleton.html` file.
+5. Use the matching `host/desktop_tool/Exoskeleton.html` file.
 
 ## Topology gate
 
@@ -60,7 +60,7 @@ During one test run:
 1. Wait until one Node upload is active, then record the active transfer's Node ID, session ID, and next expected chunk.
 2. Disconnect or close the browser.
 3. Leave the Master and Nodes powered while the browser remains disconnected.
-4. Before reconnecting, confirm from the Master's debug-probe SWO/ITM capture that the EXO_LOG record references that same Node ID and session ID and shows a greater `next_expected_node_chunk()` value or the active Node entering the validated state.
+4. Reconnect after several seconds and wait for the next compact `0xB6` status update. Confirm that staged bytes advanced or that the source entered validation/completed state. A debug-probe trace may be retained as secondary evidence, but it is not required.
 5. Reconnect the browser after several seconds.
 6. Confirm the Master continues from the advanced transfer state rather than restarting the complete session or discarding validated data.
 
@@ -138,6 +138,81 @@ For each source and sensor:
 - preview drop/coalescing counters are not substituted for recording dropped counts;
 - raw CSV values match spot-checked decoded binary samples;
 - derived features match independent calculations within numeric formatting tolerance.
+
+## Operator-visible transfer evidence
+
+Keep **Master raw-relay trace (read-only)** off for every throughput run. The default path suppresses raw Manifest/Chunk relay to the browser and retains compact progress, which prevents browser work from becoming part of the Node-to-Master benchmark. Enabling the trace observes raw frames only: the browser does not allocate an artifact or send Manifest ACK, ACK, NACK, Pause, or Verify control; the Master remains the sole transfer owner. Trace traffic still invalidates a performance run because it adds browser work and BLE traffic.
+
+The older browser-owned manual downloader is a separate development-only path available only when the desktop source is built with binary-first mode disabled. It is not selected by the trace checkbox and is not exposed as an operator mode in the production binary-first console.
+
+For each active Node, capture the browser fields below in the saved console log:
+
+- Master link state is one of `unknown`, `requested`, `confirmed`, `degraded`, or `failed`;
+- request acceptance is not confirmation: DLE octets, PHY, and interval count only when a completion event reports them;
+- a zero DLE value remains `unknown`; it is never interpreted as a confirmed 27-byte default;
+- Node `LINK_STATS` DLE outcome/request status/attempts, controller maximum, negotiated TX/RX octets, accepted bytes and notifications, busy/resource counts, notification-complete events, TX-pool events/buffers, watchdog wakes, terminal errors, and flash-read time;
+- effective `0xB6` receiver credit, ACK chunk threshold/timeout, configured/requested fast interval, queue pending/high-water/overflow, received chunks, ACK attempts/success/failure/last status, suppressed raw-relay count, SD flush count/maximum duration, counter Node ID, unique accepted chunks, retransmitted frames, and guarded retransmitted/unique ratio;
+- staged/total bytes, instantaneous and per-Node average KiB/s, validation result, and terminal collection state.
+
+If the browser reports a legacy 19-byte `0xB6` status, the collection state remains usable but the effective flow-control fields are unavailable. A 59-byte v2 status has flow-control evidence but lacks the executable interval echo and per-Node counters. Do not use either for the throughput benchmark; matrix runs require the 69-byte `0xB6` v3 report.
+
+The v3 retransmitted-frame counter counts CRC-valid observations carrying `kRecordFlagRetransmit`; it is not the browser's legacy duplicate-chunk count.
+
+## Hardware throughput benchmark matrix
+
+Benchmark all nine interval/credit combinations below. ACK threshold must always be strictly below the effective credit; the suggested values keep the comparison reproducible.
+
+| Requested/effective configured fast CI (separately DISC-confirmed) | Effective credit 8 | Effective credit 16 | Effective credit 24 |
+|---|---:|---:|---:|
+| 15 ms | ACK threshold 4 | ACK threshold 8 | ACK threshold 8 |
+| 11.25 ms | ACK threshold 4 | ACK threshold 8 | ACK threshold 8 |
+| 7.5 ms | ACK threshold 4 | ACK threshold 8 | ACK threshold 8 |
+
+For every matrix cell:
+
+1. Select `15 ms`, `11.25 ms`, or `7.5 ms` in **Requested Node Fast CI**, set the requested credit and ACK threshold, and click **Apply Tuning**. The browser sends B5 v2 with interval units `12`, `9`, or `6` respectively.
+2. In **Effective Transfer / Configured Request**, verify that `0xB6` v3 echoes the selected interval units and the intended effective credit/ACK threshold. This is configured/requested evidence, not controller completion. Reject or explicitly invalidate a run when the effective echo differs from its matrix cell.
+3. Separately inspect **DISC Confirmed Interval** for the active Node. Require a successful interval completion reporting the same units selected for the cell. A tuning ACK, interval-request event, queued request, or accepted command does not qualify the cell.
+4. Confirm that the `0xB6` counter Node ID matches the active Node. Record unique accepted chunks and retransmitted frames plus the displayed ratio. When unique is zero, the browser must show the ratio as unknown rather than dividing by zero; such a transfer does not qualify as a completed benchmark observation.
+5. Use realistic production-sized session artifacts, not a small synthetic transfer. Record the requested capture duration and exact artifact size.
+6. Run three transfers for each Node (`NODE1` through `NODE4`), resetting only the session/run index between trials. This gives 12 per-Node observations for the cell.
+7. Run three complete four-Node collections in the normal sequential order `NODE1 -> NODE2 -> NODE3 -> NODE4`.
+8. Save the browser log and the five SD binaries for every complete collection. Record RF setup, board IDs, power source, browser/OS version, firmware commit, build configuration, and any reconnect.
+
+For every Node transfer, calculate sustained payload throughput as:
+
+```text
+KiB/s = exact validated artifact bytes / 1024 / (last staged byte time - first staged byte time in seconds)
+```
+
+Do not use ATT packet size, accepted-notification bytes, aggregate four-Node time, or browser-arrival rate as the numerator. Report all three trials, median, minimum, and maximum; do not discard slow trials.
+
+## Throughput and integrity acceptance gates
+
+A configuration passes only when every required run meets all of these gates:
+
+- sustained payload throughput is at least **30 KiB/s for every Node transfer**, not only as an average across Nodes or trials;
+- the manifest size, staged byte count, committed SD file size, and independently copied workstation file size are exactly equal;
+- header CRC32 and payload CRC32 pass independently for every Master and Node binary;
+- every source reaches an explicit validated/committed terminal state; there are no stalls, queue overflows, terminal pump errors, ACK failures, or unclassified errors;
+- retransmission ratio is below **0.1%** for every Node, calculated as retransmitted frames divided by unique accepted chunks times 100; record the raw numerator and denominator even when retransmitted-frame and NACK counts are zero;
+- effective ACK threshold remains below effective credit, pending queue never exceeds capacity, and queue overflow remains zero;
+- raw-relay suppression advances during Node artifact upload while staged-byte compact progress remains visible;
+- the browser remains responsive: controls react, the console can scroll/copy, progress continues to update, and there is no visible freeze lasting one second or longer; record any browser long task, disconnect, or dropped notification as a failed run;
+- all three complete four-Node collections finish in order with exact bytes/CRC and without manual recovery.
+
+Transfer admission is independent of acquisition admission. A CRC-clean, 30 KiB/s artifact is still rejected for AI training if any of these separate gates fail:
+
+- captured/attempted/dropped counts and loss flags do not meet the predeclared per-sensor completeness thresholds;
+- BNO85 or ICM45686 timestamp gaps/rates exceed their declared timing limits;
+- source start/stop timing or cross-device alignment cannot be reconstructed within the declared synchronization tolerance;
+- preview quality, transfer counters, or CRC results are substituted for stored sensor sample evidence.
+
+Record binary integrity, acquisition completeness, timing, synchronization, transfer performance, and operator observability as separate pass/fail columns.
+
+## Conditional L2CAP CoC stop gate
+
+If completion telemetry confirms DLE of at least 247 octets, 2M PHY, and the selected fast interval, yet sustained payload throughput remains below 30 KiB/s after the full matrix, stop changing GATT constants. Open a separate design task for a capability-negotiated L2CAP CoC Manifest/Chunk bulk lane. Keep GATT for control/status, preserve exact byte/CRC verification, and require automatic fallback to the current reliable GATT path when either peer does not advertise CoC support. Do not implement or claim CoC as part of this benchmark task.
 
 ## Pass criteria
 

@@ -330,6 +330,24 @@ void APP_BLE_Init(void)
    */
   Ble_Hci_Gap_Gatt_Init();
 
+  /* Report the controller's real Data Length Extension ceiling.  The Master
+   * requests 251 octets per leaf, but this makes a firmware/controller limit
+   * visible on the browser console before any Node link is commissioned. */
+  {
+    uint16_t max_tx_octets = 0U;
+    uint16_t max_tx_time = 0U;
+    uint16_t max_rx_octets = 0U;
+    uint16_t max_rx_time = 0U;
+    const tBleStatus dle_status = hci_le_read_maximum_data_length(
+        &max_tx_octets, &max_tx_time, &max_rx_octets, &max_rx_time);
+    EXO_LOG("[BLE][APP][LINK] controller DLE st=0x%02X tx=%u/%uus rx=%u/%uus\r\n",
+            (unsigned)dle_status,
+            (unsigned)max_tx_octets,
+            (unsigned)max_tx_time,
+            (unsigned)max_rx_octets,
+            (unsigned)max_rx_time);
+  }
+
   /**
    * Initialization of the BLE Services
    */
@@ -583,9 +601,41 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
 #endif /* CFG_DEBUG_APP_TRACE != 0 */
 
           /* USER CODE BEGIN EVT_LE_CONN_UPDATE_COMPLETE */
+          {
+            const hci_le_connection_update_complete_event_rp0 *const event =
+                (const hci_le_connection_update_complete_event_rp0 *)p_meta_evt->data;
+            exo_hub_central_client_on_connection_update_complete(event->Status,
+                                                                 event->Connection_Handle,
+                                                                 event->Conn_Interval,
+                                                                 event->Conn_Latency,
+                                                                 event->Supervision_Timeout);
+          }
 
           /* USER CODE END EVT_LE_CONN_UPDATE_COMPLETE */
           break;
+
+        case HCI_LE_DATA_LENGTH_CHANGE_SUBEVT_CODE:
+        {
+          const hci_le_data_length_change_event_rp0 *const event =
+              (const hci_le_data_length_change_event_rp0 *)p_meta_evt->data;
+          exo_hub_central_client_on_data_length_change(event->Connection_Handle,
+                                                       event->MaxTxOctets,
+                                                       event->MaxTxTime,
+                                                       event->MaxRxOctets,
+                                                       event->MaxRxTime);
+          break;
+        }
+
+        case HCI_LE_PHY_UPDATE_COMPLETE_SUBEVT_CODE:
+        {
+          const hci_le_phy_update_complete_event_rp0 *const event =
+              (const hci_le_phy_update_complete_event_rp0 *)p_meta_evt->data;
+          exo_hub_central_client_on_phy_update_complete(event->Status,
+                                                        event->Connection_Handle,
+                                                        event->TX_PHY,
+                                                        event->RX_PHY);
+          break;
+        }
 
         case HCI_LE_CONNECTION_COMPLETE_SUBEVT_CODE:
         {

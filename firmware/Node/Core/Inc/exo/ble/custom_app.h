@@ -70,6 +70,15 @@ void Custom_APP_Init(void);
 void Custom_APP_Notification(Custom_App_ConnHandle_Not_evt_t *pNotification);
 /* USER CODE BEGIN EF */
 tBleStatus Custom_APP_SendPipeFrame(Custom_STM_Char_Opcode_t char_opcode, const uint8_t *payload, uint8_t length);
+/* Controller callbacks publish counters only. The foreground upload pump
+ * snapshots them and performs all flash/GATT work outside callback context. */
+void Custom_APP_NotificationComplete(void);
+void Custom_APP_TxPoolAvailable(uint16_t available_buffers);
+uint32_t Custom_APP_NotificationCompleteCount(void);
+uint32_t Custom_APP_TxPoolEventCount(void);
+uint16_t Custom_APP_LastTxPoolBuffers(void);
+uint32_t Custom_APP_DisconnectCount(void);
+void Custom_APP_ProcessControlWrites(void);
 
 /* USER CODE END EF */
 
