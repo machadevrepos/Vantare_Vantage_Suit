@@ -18,9 +18,11 @@ void exo_hub_central_client_set_discovery_hold(uint8_t hold);
 /* Arm one direct-address re-connect of a dropped Node while discovery is
  * held for an active session; ignored outside the hold. */
 void exo_hub_central_client_request_targeted_reconnect(uint8_t node_id);
-/* Session-upload link timing: fast=1 -> 7.5-15 ms connection events while
- * chunks flow; fast=0 restores the 30-50 ms multi-link timing. */
-void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast);
+/* Session-upload link timing: fast=1 requests the supplied sanitized interval
+ * through the global completion-driven arbiter; fast=0 restores the 30-50 ms
+ * multi-link timing. Request queuing/acceptance is never confirmation. */
+void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
+                                                uint8_t fast_interval);
 
 uint8_t exo_hub_central_client_broadcast_blepipe(uint8_t msg_type,
                                                  uint16_t src_id,

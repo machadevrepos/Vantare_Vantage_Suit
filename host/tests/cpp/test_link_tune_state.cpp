@@ -2,6 +2,7 @@
 #include <iostream>
 
 #include <exo/ble/link_tune_state.h>
+#include <exo/protocol/record_transfer_tuning.h>
 
 namespace {
 
@@ -17,6 +18,7 @@ int failures = 0;
 using Model = exo::LinkTuneState;
 using State = Model::State;
 using Procedure = Model::Procedure;
+using TuningWire = exo::RecordTransferTuningWire;
 
 void complete_fast_tune(Model &model, uint8_t link, uint16_t handle,
                         uint32_t generation, uint32_t &now)
@@ -181,6 +183,60 @@ void test_fast_to_slow_interval_uses_the_current_generation_only()
   EXPECT_TRUE(model.telemetry(0U).confirmed_interval == Model::kSlowIntervalMin);
 }
 
+void test_supported_fast_intervals_are_snapshotted_per_link()
+{
+  Model model;
+  uint32_t now = 10U;
+  EXPECT_TRUE(model.connect(0U, 0x0040U, now));
+  EXPECT_TRUE(model.connect(1U, 0x0041U, now));
+  now += Model::kCommissioningStartDelayMs;
+  const uint32_t generation0 = model.telemetry(0U).generation;
+  const uint32_t generation1 = model.telemetry(1U).generation;
+  complete_fast_tune(model, 0U, 0x0040U, generation0, now);
+  complete_fast_tune(model, 1U, 0x0041U, generation1, now);
+
+  EXPECT_TRUE(model.begin_fast_preparation(0U, generation0, 6U));
+  const Model::Request first = model.issue_next(now);
+  EXPECT_TRUE(first.valid());
+  EXPECT_TRUE(first.link == 0U);
+  EXPECT_TRUE(first.interval_min == 6U && first.interval_max == 6U);
+  EXPECT_TRUE(model.on_request_accepted(first, now));
+
+  /* A different link may snapshot the next benchmark value while the global
+   * arbiter still owns link 0's completion. It must not mutate that request. */
+  EXPECT_TRUE(model.begin_fast_preparation(1U, generation1, 9U));
+  EXPECT_TRUE(!model.issue_next(now).valid());
+  EXPECT_TRUE(model.on_interval_complete(first.handle, generation0,
+                                         Model::kStatusSuccess, 6U, now));
+  const Model::Request second = model.issue_next(now);
+  EXPECT_TRUE(second.valid());
+  EXPECT_TRUE(second.link == 1U);
+  EXPECT_TRUE(second.interval_min == 9U && second.interval_max == 9U);
+}
+
+void test_invalid_interval_falls_back_and_stale_generation_cannot_change_it()
+{
+  Model model;
+  uint32_t now = 10U;
+  EXPECT_TRUE(model.connect(0U, 0x0040U, now));
+  now += Model::kCommissioningStartDelayMs;
+  const uint32_t old_generation = model.telemetry(0U).generation;
+  complete_fast_tune(model, 0U, 0x0040U, old_generation, now);
+  EXPECT_TRUE(model.disconnect(0U, 0x0040U));
+  EXPECT_TRUE(model.connect(0U, 0x0041U, now));
+  const uint32_t generation = model.telemetry(0U).generation;
+  EXPECT_TRUE(generation == old_generation + 1U);
+  EXPECT_TRUE(!model.begin_fast_preparation(0U, old_generation, 6U));
+
+  now += Model::kCommissioningStartDelayMs;
+  complete_fast_tune(model, 0U, 0x0041U, generation, now);
+  EXPECT_TRUE(model.begin_fast_preparation(0U, generation, 7U));
+  const Model::Request fallback = model.issue_next(now);
+  EXPECT_TRUE(fallback.valid());
+  EXPECT_TRUE(fallback.interval_min == Model::kFastIntervalMin);
+  EXPECT_TRUE(fallback.interval_max == Model::kFastIntervalMax);
+}
+
 constexpr bool transition_names_are_distinct()
 {
   return static_cast<uint8_t>(State::NeedDle) != static_cast<uint8_t>(State::WaitDle) &&
@@ -251,12 +307,96 @@ constexpr bool compile_time_failure_and_generation_contract()
          model.telemetry(0U).state == State::Degraded && model.collection_allowed(0U);
 }
 
+constexpr bool compile_time_transfer_tuning_wire_contract()
+{
+  uint8_t legacy[TuningWire::kV1Length]{};
+  legacy[0] = TuningWire::kCommand;
+  legacy[1] = TuningWire::kVersion1;
+  const auto v1 = TuningWire::decode(legacy, sizeof(legacy));
+  if (!v1.valid || v1.version != TuningWire::kVersion1 ||
+      v1.fast_interval != Model::kFastIntervalMin) {
+    return false;
+  }
+
+  uint8_t extended[TuningWire::kV2Length]{};
+  extended[0] = TuningWire::kCommand;
+  extended[1] = TuningWire::kVersion2;
+  extended[TuningWire::kFastIntervalOffset] = 9U;
+  const auto ci9 = TuningWire::decode(extended, sizeof(extended));
+  if (!ci9.valid || ci9.version != TuningWire::kVersion2 || ci9.fast_interval != 9U) {
+    return false;
+  }
+  extended[TuningWire::kFastIntervalOffset] = 6U;
+  if (TuningWire::decode(extended, sizeof(extended)).fast_interval != 6U) {
+    return false;
+  }
+  extended[TuningWire::kFastIntervalOffset] = 12U;
+  if (TuningWire::decode(extended, sizeof(extended)).fast_interval != 12U) {
+    return false;
+  }
+  extended[TuningWire::kFastIntervalOffset] = 7U;
+  if (TuningWire::decode(extended, sizeof(extended)).fast_interval != 12U) {
+    return false;
+  }
+  return !TuningWire::decode(legacy, sizeof(legacy) - 1U).valid &&
+         !TuningWire::decode(extended, sizeof(extended) - 1U).valid;
+}
+
+constexpr bool compile_time_per_link_interval_race_contract()
+{
+  Model model{};
+  uint32_t now = Model::kCommissioningStartDelayMs;
+  if (!model.connect(0U, 0x0040U, 0U) || !model.connect(1U, 0x0041U, 0U)) {
+    return false;
+  }
+  for (uint8_t link = 0U; link < 2U; ++link) {
+    const uint16_t handle = static_cast<uint16_t>(0x0040U + link);
+    const uint32_t generation = model.telemetry(link).generation;
+    Model::Request request = model.issue_next(now);
+    if (request.link != link || request.procedure != Procedure::Dle ||
+        !model.on_request_accepted(request, now) ||
+        !model.on_dle_complete(handle, generation, 251U, 251U, now)) {
+      return false;
+    }
+    request = model.issue_next(now);
+    if (request.link != link || request.procedure != Procedure::Phy ||
+        !model.on_request_accepted(request, now) ||
+        !model.on_phy_complete(handle, generation, Model::kStatusSuccess, 2U, 2U, now)) {
+      return false;
+    }
+  }
+  const uint32_t generation0 = model.telemetry(0U).generation;
+  const uint32_t generation1 = model.telemetry(1U).generation;
+  if (!model.begin_fast_preparation(0U, generation0, 6U)) {
+    return false;
+  }
+  const Model::Request ci6 = model.issue_next(now);
+  if (ci6.link != 0U || ci6.interval_min != 6U || ci6.interval_max != 6U ||
+      !model.on_request_accepted(ci6, now) ||
+      !model.begin_fast_preparation(1U, generation1, 9U) ||
+      model.issue_next(now).valid() ||
+      !model.on_interval_complete(ci6.handle, generation0, Model::kStatusSuccess, 6U, now)) {
+    return false;
+  }
+  const Model::Request ci9 = model.issue_next(now);
+  if (ci9.link != 1U || ci9.interval_min != 9U || ci9.interval_max != 9U ||
+      !model.disconnect(1U, ci9.handle) || !model.connect(1U, 0x0042U, now)) {
+    return false;
+  }
+  return !model.begin_fast_preparation(1U, generation1, 6U) &&
+         model.telemetry(1U).generation == generation1 + 1U;
+}
+
 static_assert(transition_names_are_distinct(),
               "The compile-time transition-state contract must stay distinct");
 static_assert(compile_time_transition_contract(),
               "The global arbiter must serialize completion-driven retries");
 static_assert(compile_time_failure_and_generation_contract(),
               "Timeout degradation and stale completion rejection must hold");
+static_assert(compile_time_transfer_tuning_wire_contract(),
+              "B5 v1 defaults and B5 v2 interval selection must stay wire compatible");
+static_assert(compile_time_per_link_interval_race_contract(),
+              "Per-link interval snapshots must survive global arbitration and reject stale generations");
 
 }  // namespace
 
@@ -270,6 +410,8 @@ int main()
   test_missing_completion_degrades_but_keeps_collection_available();
   test_stale_or_disconnected_completions_are_rejected();
   test_fast_to_slow_interval_uses_the_current_generation_only();
+  test_supported_fast_intervals_are_snapshotted_per_link();
+  test_invalid_interval_falls_back_and_stale_generation_cannot_change_it();
 
   if (failures != 0) {
     std::cerr << failures << " link tune state test(s) failed\n";

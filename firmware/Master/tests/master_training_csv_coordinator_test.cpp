@@ -3,10 +3,69 @@
 #include <string.h>
 
 #include <exo/protocol/blepipe_proto.h>
+#include <exo/protocol/node_transfer_chunk_counters.h>
+#include <exo/protocol/master_transfer_telemetry.h>
 
 #include <exo/protocol/master_training_csv_coordinator.h>
 
 namespace {
+
+constexpr bool source_chunk_counter_reset_contract()
+{
+    exo::NodeTransferChunkCounters counters{};
+    counters.begin_source(1U);
+    counters.note_unique_accepted();
+    counters.note_unique_accepted();
+    counters.note_duplicate();
+    if (counters.source_id() != 1U || counters.unique_accepted() != 2U ||
+            counters.duplicates() != 1U) {
+        return false;
+    }
+    counters.begin_source(2U);
+    if (counters.source_id() != 2U || counters.unique_accepted() != 0U ||
+            counters.duplicates() != 0U) {
+        return false;
+    }
+    counters.note_unique_accepted();
+    counters.reset_session();
+    return counters.source_id() == 0U && counters.unique_accepted() == 0U &&
+            counters.duplicates() == 0U;
+}
+
+static_assert(source_chunk_counter_reset_contract(),
+        "Unique and duplicate transfer counters must reset per session/source");
+
+constexpr bool b6_v3_append_only_contract()
+{
+    uint8_t payload[exo::MasterTransferTelemetryWire::kV3Length]{};
+    for (uint16_t index = 0U; index < sizeof(payload); ++index) {
+        payload[index] = 0xA5U;
+    }
+    payload[exo::MasterTransferTelemetryWire::kVersionOffset] = 2U;
+    const exo::MasterTransferTelemetryWire::V3Fields fields{
+        9U, 2U, 0x12345678UL, 0x90ABCDEFUL
+    };
+    if (!exo::MasterTransferTelemetryWire::append_v3(payload, sizeof(payload), fields) ||
+            payload[exo::MasterTransferTelemetryWire::kVersionOffset] != 3U ||
+            payload[exo::MasterTransferTelemetryWire::kConfiguredFastIntervalOffset] != 9U ||
+            payload[exo::MasterTransferTelemetryWire::kCounterSourceOffset] != 2U) {
+        return false;
+    }
+    for (uint16_t index = 0U; index < exo::MasterTransferTelemetryWire::kV2Length; ++index) {
+        if (index != exo::MasterTransferTelemetryWire::kVersionOffset && payload[index] != 0xA5U) {
+            return false;
+        }
+    }
+    return payload[61] == 0x78U && payload[62] == 0x56U &&
+            payload[63] == 0x34U && payload[64] == 0x12U &&
+            payload[65] == 0xEFU && payload[66] == 0xCDU &&
+            payload[67] == 0xABU && payload[68] == 0x90U &&
+            !exo::MasterTransferTelemetryWire::append_v3(
+                    payload, exo::MasterTransferTelemetryWire::kV3Length - 1U, fields);
+}
+
+static_assert(b6_v3_append_only_contract(),
+        "B6 v3 must preserve the legacy 19-byte and v2 59-byte prefixes");
 
 struct FakeState {
     exo::SessionHeader master_header{};
@@ -491,6 +550,9 @@ int main()
     queue_done.total_size = sizeof(final_payload);
     queue_done.payload_crc32 = final_payload.payload_crc32;
     final_policy.on_node_record_done(queue_done);
+    if (final_policy.chunk_counter_source_id() != 1U ||
+            final_policy.unique_accepted_chunk_count() != 0U ||
+            final_policy.duplicate_chunk_count() != 0U) return 55;
     final_policy.service_reliable_control(0U);
     final_policy.service_reliable_control(1U);
     reset_reliable_tx();
@@ -499,17 +561,25 @@ int main()
             1U, 702U, 0U, reinterpret_cast<const uint8_t *>(&final_payload),
             sizeof(final_payload), true);
     final_policy.on_node_reliable_frame(1U, final_frame, final_len, 10U);
+    if (final_policy.unique_accepted_chunk_count() != 1U ||
+            final_policy.duplicate_chunk_count() != 0U) return 56;
     final_policy.service_reliable_control(11U);
     if (g_reliable_tx.count != 1U ||
             g_reliable_tx.type[0] != exo::RecordReliableType::AckWindow ||
             final_policy.state() != exo::TrainingCsvState::ReceiveNode) {
         return 39;
     }
+    final_policy.on_node_reliable_frame(1U, final_frame, final_len, 11U);
+    if (final_policy.unique_accepted_chunk_count() != 1U ||
+            final_policy.duplicate_chunk_count() != 1U) return 57;
     final_policy.service(recorder, 12U);
     if (final_policy.state() != exo::TrainingCsvState::ValidateNode) return 40;
 
     final_policy.note_suppressed_relay();
-    if (final_policy.received_chunk_count() != 1U ||
+    if (final_policy.received_chunk_count() != 2U ||
+            final_policy.chunk_counter_source_id() != 1U ||
+            final_policy.unique_accepted_chunk_count() != 1U ||
+            final_policy.duplicate_chunk_count() != 1U ||
             final_policy.suppressed_relay_count() != 1U ||
             final_policy.sd_flush_count() != 1U ||
             final_policy.sd_flush_max_duration_ms() != 7U) {

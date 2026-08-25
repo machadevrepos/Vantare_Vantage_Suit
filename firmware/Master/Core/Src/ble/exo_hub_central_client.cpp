@@ -1421,7 +1421,8 @@ void exo_hub_central_client_init(void)
 /* Queue upload timing through the same completion-driven arbiter as DLE/PHY.
  * A transfer may proceed after a fast-preparation timeout (Degraded), but its
  * slow restore is only queued after that source completes. */
-void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast)
+void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
+                                                uint8_t fast_interval)
 {
   uint8_t i;
   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
@@ -1431,10 +1432,11 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast)
     {
       const exo::LinkTuneState::Telemetry &t = g_link_tune.telemetry(i);
       const uint8_t queued = (uint8_t)(fast != 0U
-          ? g_link_tune.begin_fast_preparation(i, t.generation)
+          ? g_link_tune.begin_fast_preparation(i, t.generation, fast_interval)
           : g_link_tune.begin_slow_restore(i, t.generation));
-      EXO_LOG("[BLE][HUB][XFER] timing queue node=%u slot=%u fast=%u accepted=%u gen=%lu\r\n",
+      EXO_LOG("[BLE][HUB][XFER] timing queue node=%u slot=%u fast=%u ci_cfg=%u queued=%u gen=%lu\r\n",
               (unsigned)node_id, (unsigned)i, (unsigned)(fast != 0U),
+              (unsigned)exo::RecordTransferTuningWire::sanitize_fast_interval(fast_interval),
               (unsigned)queued, (unsigned long)t.generation);
       exo_report_link_tune(i);
       return;

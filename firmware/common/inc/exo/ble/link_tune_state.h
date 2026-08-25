@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 
+#include <exo/protocol/record_transfer_tuning.h>
+
 namespace exo {
 
 /*
@@ -42,8 +44,9 @@ class LinkTuneState {
   static constexpr uint16_t kRequestedDleOctets = 251U;
   static constexpr uint16_t kRequestedDleTimeUs = 0x0848U;
   static constexpr uint8_t kRequestedPhy = 2U;
-  static constexpr uint16_t kFastIntervalMin = 0x000CU;
-  static constexpr uint16_t kFastIntervalMax = 0x000CU;
+  static constexpr uint16_t kFastIntervalMin =
+      RecordTransferTuningWire::kDefaultFastInterval;
+  static constexpr uint16_t kFastIntervalMax = kFastIntervalMin;
   static constexpr uint16_t kSlowIntervalMin = 0x0018U;
   static constexpr uint16_t kSlowIntervalMax = 0x0028U;
   static constexpr uint32_t kRetryDelayMs = 50U;
@@ -111,6 +114,7 @@ class LinkTuneState {
     entry.connected_at_ms = now_ms;
     entry.retry_at_ms = now_ms + kCommissioningStartDelayMs;
     entry.interval = Interval::Slow;
+    entry.fast_interval = kFastIntervalMin;
     return true;
   }
 
@@ -278,6 +282,11 @@ class LinkTuneState {
   }
 
   constexpr bool begin_fast_preparation(uint8_t link, uint32_t generation) {
+    return begin_fast_preparation(link, generation, kFastIntervalMin);
+  }
+
+  constexpr bool begin_fast_preparation(uint8_t link, uint32_t generation,
+                                        uint8_t fast_interval) {
     if (link >= kLinkCount) {
       return false;
     }
@@ -287,6 +296,7 @@ class LinkTuneState {
         (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded)) {
       return false;
     }
+    entry.fast_interval = RecordTransferTuningWire::sanitize_fast_interval(fast_interval);
     entry.interval = Interval::Fast;
     entry.telemetry.state = State::NeedInterval;
     entry.retry_at_ms = 0U;
@@ -312,6 +322,7 @@ class LinkTuneState {
     uint32_t retry_at_ms = 0U;
     uint32_t deadline_ms = 0U;
     Interval interval = Interval::Fast;
+    uint16_t fast_interval = kFastIntervalMin;
     bool fast_after_commission = false;
     bool connected = false;
   };
@@ -334,12 +345,12 @@ class LinkTuneState {
     return status == kStatusCommandDisallowed || status == kStatusControllerBusy;
   }
 
-  static constexpr uint16_t interval_min(Interval interval) {
-    return interval == Interval::Fast ? kFastIntervalMin : kSlowIntervalMin;
+  static constexpr uint16_t interval_min(Interval interval, uint16_t fast_interval) {
+    return interval == Interval::Fast ? fast_interval : kSlowIntervalMin;
   }
 
-  static constexpr uint16_t interval_max(Interval interval) {
-    return interval == Interval::Fast ? kFastIntervalMax : kSlowIntervalMax;
+  static constexpr uint16_t interval_max(Interval interval, uint16_t fast_interval) {
+    return interval == Interval::Fast ? fast_interval : kSlowIntervalMax;
   }
 
   constexpr Request make_request(uint8_t link, Entry &entry) {
@@ -358,8 +369,8 @@ class LinkTuneState {
     } else {
       request.procedure = Procedure::Interval;
       request.interval = entry.interval;
-      request.interval_min = interval_min(entry.interval);
-      request.interval_max = interval_max(entry.interval);
+      request.interval_min = interval_min(entry.interval, entry.fast_interval);
+      request.interval_max = interval_max(entry.interval, entry.fast_interval);
       entry.telemetry.requested_interval_min = request.interval_min;
       entry.telemetry.requested_interval_max = request.interval_max;
     }

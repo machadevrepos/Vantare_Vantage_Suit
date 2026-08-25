@@ -35,6 +35,8 @@
 #include <exo/utils/includer.h>
 #include <exo/utils/acquisition_diagnostics.h>
 #include <exo/protocol/ble_record_protocol.h>
+#include <exo/protocol/record_transfer_tuning.h>
+#include <exo/protocol/master_transfer_telemetry.h>
 #include <exo/protocol/ble_session_control.h>
 #include <exo/protocol/ble_stream_v2.h>
 #include <exo/utils/exo_logger.h>
@@ -228,8 +230,7 @@ namespace {
 	constexpr uint32_t kLocalRecordChunkGapMs = 1U;
 	constexpr uint8_t kLocalRecordBurstLimit = 4U;
 	constexpr uint8_t kLocalRecordFinalizeIcmDrainPasses = 16U;
-	constexpr uint8_t kRecordTransferTuningCmd = 0xB5U;
-	constexpr uint8_t kRecordTransferTuningVersion = 1U;
+	constexpr uint8_t kRecordTransferTuningCmd = exo::RecordTransferTuningWire::kCommand;
 	constexpr uint8_t kTrainingCsvStatusReportId = 0xB6U;
 	constexpr uint8_t kRecordTransferFlagFastInterval = 0x01U;
 	constexpr uint8_t kRecordTransferFlagDebugRawRelay = 0x02U;
@@ -534,6 +535,9 @@ namespace {
 			uint8_t nack_burst_chunks = 4U;
 			uint8_t master_burst_limit = kLocalRecordBurstLimit;
 			uint8_t master_chunk_gap_ms = static_cast<uint8_t>(kLocalRecordChunkGapMs);
+			/* Effective sanitized request for the next active-upload LL update.
+			 * Confirmation remains exclusively in the connection-update event. */
+			uint8_t configured_fast_interval = exo::RecordTransferTuningWire::kDefaultFastInterval;
 			/* bit0 = fast (15 ms) connection interval for the active-upload link.
 			 * On by default and force-set in the tuning apply so a preset that
 			 * ships 0 cannot silently disable the throughput timing.
@@ -703,7 +707,9 @@ namespace {
 
 	static bool apply_record_transfer_tuning_payload(const uint8_t *payload, uint16_t length)
 			{
-		if (payload == nullptr || length < 12U || payload[0] != kRecordTransferTuningCmd || payload[1] != kRecordTransferTuningVersion) {
+		const exo::RecordTransferTuningWire::DecodeResult tuning =
+				exo::RecordTransferTuningWire::decode(payload, length);
+		if (!tuning.valid) {
 			return false;
 		}
 		master_training_csv_coordinator.set_receiver_credit(payload[2]);
@@ -718,11 +724,13 @@ namespace {
 		g_record_transfer_runtime.nack_burst_chunks = clamp_u8(payload[8], 1U, 16U);
 		g_record_transfer_runtime.master_burst_limit = clamp_u8(payload[9], 1U, 8U);
 		g_record_transfer_runtime.master_chunk_gap_ms = clamp_u8(payload[10], 0U, 5U);
+		g_record_transfer_runtime.configured_fast_interval = tuning.fast_interval;
 		/* Force bit0 (fast active-upload interval) on regardless of the preset:
 		 * the desktop currently ships 0, which would disable the fast timing the
 		 * transfer throughput depends on. Other flag bits pass through. */
 		g_record_transfer_runtime.flags = static_cast<uint8_t>(payload[11] | kRecordTransferFlagFastInterval);
-		EXO_LOG("[REC][CFG] cr=%u ackc=%u ackms=%u hbms=%u nckb=%u mb=%u mgms=%u fl=0x%02X\r\n",
+		EXO_LOG("[REC][CFG] v=%u cr=%u ackc=%u ackms=%u hbms=%u nckb=%u mb=%u mgms=%u fl=0x%02X ci_cfg=%u\r\n",
+				static_cast<unsigned>(tuning.version),
 				static_cast<unsigned>(g_record_transfer_runtime.credit),
 				static_cast<unsigned>(g_record_transfer_runtime.ack_every_chunks),
 				static_cast<unsigned>(g_record_transfer_runtime.ack_every_ms),
@@ -730,7 +738,8 @@ namespace {
 				static_cast<unsigned>(g_record_transfer_runtime.nack_burst_chunks),
 				static_cast<unsigned>(g_record_transfer_runtime.master_burst_limit),
 				static_cast<unsigned>(g_record_transfer_runtime.master_chunk_gap_ms),
-				static_cast<unsigned>(g_record_transfer_runtime.flags));
+				static_cast<unsigned>(g_record_transfer_runtime.flags),
+				static_cast<unsigned>(g_record_transfer_runtime.configured_fast_interval));
 		return true;
 	}
 
@@ -1287,7 +1296,9 @@ namespace {
 				 * suspect in the 2026-08-22 zero-progress stalls — A/B it on
 				 * hardware before enabling by default. */
 				if ((g_record_transfer_runtime.flags & kRecordTransferFlagFastInterval) != 0U) {
-					exo_hub_central_client_set_transfer_timing(g_pending_node_done.node_id, 1U);
+					exo_hub_central_client_set_transfer_timing(
+							g_pending_node_done.node_id, 1U,
+							g_record_transfer_runtime.configured_fast_interval);
 				}
 				g_have_pending_node_done = false;
 				g_pending_node_manifest_last_tick = 0U;
@@ -3269,7 +3280,8 @@ int main(void)
 						static_cast<unsigned>((master_training_csv_coordinator.cleanup_pending_mask() & cleanup_bit) != 0U ? 1U : 0U),
 						static_cast<unsigned>(released ? 1U : 0U));
 				/* Upload finished: hand the link back to multi-link timing. */
-				exo_hub_central_client_set_transfer_timing(source_id, 0U);
+			exo_hub_central_client_set_transfer_timing(source_id, 0U,
+					g_record_transfer_runtime.configured_fast_interval);
 			} else {
 				EXO_LOG("[TRAIN][CSV] source complete source=%u bno=%lu icm=%lu completed=0x%02X\r\n",
 						static_cast<unsigned>(source_id),
@@ -3287,13 +3299,15 @@ int main(void)
 					training_state == exo::TrainingCsvState::CsvError) {
 				const uint8_t stall_node = master_training_csv_coordinator.failure_node_id();
 				if (stall_node >= 1U && stall_node <= 4U) {
-					exo_hub_central_client_set_transfer_timing(stall_node, 0U);
+					exo_hub_central_client_set_transfer_timing(stall_node, 0U,
+							g_record_transfer_runtime.configured_fast_interval);
 				}
 			}
 			if (training_state == exo::TrainingCsvState::StageError) {
 				const uint8_t failed_node = master_training_csv_coordinator.failure_node_id();
 				if (failed_node >= 1U && failed_node <= 4U) {
-					exo_hub_central_client_set_transfer_timing(failed_node, 0U);
+					exo_hub_central_client_set_transfer_timing(failed_node, 0U,
+							g_record_transfer_runtime.configured_fast_interval);
 				}
 				EXO_LOG("[TRN] inv s=%lu c=%u st=%u so=%u sf=%d co=%u cf=%d\r\n",
 						static_cast<unsigned long>(master_training_csv_coordinator.active_session_id()),
@@ -3344,10 +3358,10 @@ int main(void)
 				training_state == exo::TrainingCsvState::ReceiveNode &&
 				static_cast<int32_t>(training_status_now_ms - master_training_csv_status_last_emit_ms) >= 500;
 		if (training_status_changed || training_status_progress_tick) {
-			/* Bytes 0-18 retain the v1 state/progress layout. Bytes 19+ form the
-			 * compact v2 receive-plane aggregate consumed by the desktop status
-			 * view: effective flow control, queue, ACK, relay and SD metrics. */
-			uint8_t training_report[59]{};
+			/* Bytes 0-18 retain the legacy state/progress layout and bytes 20-58
+			 * retain the v2 receive-plane aggregate. Version 3 appends configured
+			 * interval and per-source unique/duplicate evidence after byte 58. */
+			uint8_t training_report[exo::MasterTransferTelemetryWire::kV3Length]{};
 			training_report[0] = static_cast<uint8_t>(training_state);
 			training_report[1] = master_training_csv_coordinator.expected_source_mask();
 			training_report[2] = training_completed_mask;
@@ -3392,6 +3406,14 @@ int main(void)
 			put_u32(47U, master_training_csv_coordinator.suppressed_relay_count());
 			put_u32(51U, master_training_csv_coordinator.sd_flush_count());
 			put_u32(55U, master_training_csv_coordinator.sd_flush_max_duration_ms());
+			const exo::MasterTransferTelemetryWire::V3Fields v3_fields {
+					g_record_transfer_runtime.configured_fast_interval,
+					master_training_csv_coordinator.chunk_counter_source_id(),
+					master_training_csv_coordinator.unique_accepted_chunk_count(),
+					master_training_csv_coordinator.duplicate_chunk_count()
+			};
+			(void) exo::MasterTransferTelemetryWire::append_v3(
+					training_report, static_cast<uint16_t>(sizeof(training_report)), v3_fields);
 			(void) Custom_APP_SendCmdReport(kTrainingCsvStatusReportId,
 					training_report, static_cast<uint8_t>(sizeof(training_report)));
 			master_training_csv_status_last_emit_ms = training_status_now_ms;

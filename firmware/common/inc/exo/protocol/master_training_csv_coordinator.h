@@ -6,6 +6,7 @@
 #include "app_fatfs.h"
 #include <exo/protocol/ble_record_protocol.h>
 #include <exo/protocol/master_node_reliable_control.h>
+#include <exo/protocol/node_transfer_chunk_counters.h>
 #include <exo/storage/master_node_session_stager.h>
 #include <exo/protocol/master_node_transfer_window.h>
 #include <exo/storage/master_sd_session_recorder.h>
@@ -308,6 +309,7 @@ return;
 }
 reliable_defer_services_ = 1U;
 active_node_id_ = static_cast<uint8_t>(done.node_id);
+chunk_counters_.begin_source(active_node_id_);
 node_bno_index_ = node_icm_index_ = 0U;
 /* Fresh stall window: chunks start from scratch for this source. */
 last_progress_ms_ = 0U;
@@ -343,6 +345,7 @@ switch (inspection.decision) {
 case NodeTransferDecision::Ignore:
 return;
 case NodeTransferDecision::Duplicate:
+chunk_counters_.note_duplicate();
 if (queue_ack_window(transfer_window_.next_chunk())) {
 chunks_since_ack_ = 0U; /* the re-ACK already refreshed credit */
 }
@@ -371,6 +374,7 @@ break;
 	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
 	return;
 }
+	chunk_counters_.note_unique_accepted();
 	/* Deferred path only: copy the payload to RAM in BLE context. FatFs and
 	 * duplicate read-back remain exclusive to the foreground drain. */
 	PendingChunk &slot =
@@ -608,6 +612,9 @@ uint8_t pending_chunk_count() const { return pending_count_; }
 uint8_t queue_high_water() const { return queue_high_water_; }
 uint32_t queue_overflow_count() const { return queue_overflow_count_; }
 uint32_t received_chunk_count() const { return received_chunk_count_; }
+uint8_t chunk_counter_source_id() const { return chunk_counters_.source_id(); }
+uint32_t unique_accepted_chunk_count() const { return chunk_counters_.unique_accepted(); }
+uint32_t duplicate_chunk_count() const { return chunk_counters_.duplicates(); }
 uint32_t ack_attempt_count() const { return ack_attempt_count_; }
 uint32_t ack_success_count() const { return ack_success_count_; }
 uint32_t ack_failure_count() const { return ack_failure_count_; }
@@ -728,6 +735,7 @@ void reset_receive_telemetry()
 queue_high_water_ = 0U;
 queue_overflow_count_ = 0U;
 received_chunk_count_ = 0U;
+chunk_counters_.reset_session();
 ack_attempt_count_ = 0U;
 ack_success_count_ = 0U;
 ack_failure_count_ = 0U;
@@ -969,6 +977,7 @@ bool pending_final_ = false;
 uint8_t queue_high_water_ = 0U;
 uint32_t queue_overflow_count_ = 0U;
 uint32_t received_chunk_count_ = 0U;
+NodeTransferChunkCounters chunk_counters_{};
 uint32_t ack_attempt_count_ = 0U;
 uint32_t ack_success_count_ = 0U;
 uint32_t ack_failure_count_ = 0U;
