@@ -337,6 +337,9 @@ if (received_chunk_count_ < UINT32_MAX) ++received_chunk_count_;
 const uint8_t *payload = frame + sizeof(header);
 const bool crc_ok = MasterNodeReliableControl::crc16_ccitt(payload,
 header.payload_len) == header.payload_crc16;
+if (crc_ok && (header.flags & kRecordFlagRetransmit) != 0U) {
+chunk_counters_.note_retransmitted();
+}
 const bool final_chunk = (header.flags & kRecordFlagFinalChunk) != 0U;
 const NodeTransferInspection inspection = transfer_window_.inspect(node_id,
 header.session_id, header.chunk_index, header.byte_offset,
@@ -345,7 +348,6 @@ switch (inspection.decision) {
 case NodeTransferDecision::Ignore:
 return;
 case NodeTransferDecision::Duplicate:
-chunk_counters_.note_duplicate();
 if (queue_ack_window(transfer_window_.next_chunk())) {
 chunks_since_ack_ = 0U; /* the re-ACK already refreshed credit */
 }
@@ -614,7 +616,7 @@ uint32_t queue_overflow_count() const { return queue_overflow_count_; }
 uint32_t received_chunk_count() const { return received_chunk_count_; }
 uint8_t chunk_counter_source_id() const { return chunk_counters_.source_id(); }
 uint32_t unique_accepted_chunk_count() const { return chunk_counters_.unique_accepted(); }
-uint32_t duplicate_chunk_count() const { return chunk_counters_.duplicates(); }
+uint32_t retransmitted_frame_count() const { return chunk_counters_.retransmitted(); }
 uint32_t ack_attempt_count() const { return ack_attempt_count_; }
 uint32_t ack_success_count() const { return ack_success_count_; }
 uint32_t ack_failure_count() const { return ack_failure_count_; }

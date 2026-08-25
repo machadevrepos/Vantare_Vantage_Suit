@@ -3410,7 +3410,7 @@ int main(void)
 					g_record_transfer_runtime.configured_fast_interval,
 					master_training_csv_coordinator.chunk_counter_source_id(),
 					master_training_csv_coordinator.unique_accepted_chunk_count(),
-					master_training_csv_coordinator.duplicate_chunk_count()
+					master_training_csv_coordinator.retransmitted_frame_count()
 			};
 			(void) exo::MasterTransferTelemetryWire::append_v3(
 					training_report, static_cast<uint16_t>(sizeof(training_report)), v3_fields);

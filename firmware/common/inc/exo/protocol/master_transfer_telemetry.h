@@ -15,13 +15,13 @@ struct MasterTransferTelemetryWire {
   static constexpr uint8_t kConfiguredFastIntervalOffset = 59U;
   static constexpr uint8_t kCounterSourceOffset = 60U;
   static constexpr uint8_t kUniqueAcceptedOffset = 61U;
-  static constexpr uint8_t kDuplicateOffset = 65U;
+  static constexpr uint8_t kRetransmittedOffset = 65U;
 
   struct V3Fields {
     uint8_t configured_fast_interval = 12U;
     uint8_t counter_source_id = 0U;
     uint32_t unique_accepted_chunks = 0U;
-    uint32_t duplicate_chunks = 0U;
+    uint32_t retransmitted_frames = 0U;
   };
 
   static constexpr bool append_v3(uint8_t *payload, uint16_t length,
@@ -33,7 +33,7 @@ struct MasterTransferTelemetryWire {
     payload[kConfiguredFastIntervalOffset] = fields.configured_fast_interval;
     payload[kCounterSourceOffset] = fields.counter_source_id;
     put_u32(payload, kUniqueAcceptedOffset, fields.unique_accepted_chunks);
-    put_u32(payload, kDuplicateOffset, fields.duplicate_chunks);
+    put_u32(payload, kRetransmittedOffset, fields.retransmitted_frames);
     return true;
   }
 

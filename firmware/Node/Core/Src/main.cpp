@@ -768,7 +768,9 @@ static void node_blepipe_process_recording_upload()
 		if (!node_blepipe_send_reliable_frame(exo::RecordReliableType::Chunk,
 				static_cast<uint16_t>(node_blepipe_current_id()), g_node_upload_session_id,
 				g_node_upload_next_chunk, offset, chunk, chunk_size,
-				((offset + chunk_size) >= g_node_upload_total_size) ? exo::kRecordFlagFinalChunk : 0U,
+				exo::record_reliable_chunk_flags(
+						(offset + chunk_size) >= g_node_upload_total_size,
+						g_node_upload_retx_remaining > 0U),
 				&encoded_len, &tx_status)) {
 			const exo::NodeUploadPump::SendResult result =
 					(tx_status == BLE_STATUS_BUSY) ? exo::NodeUploadPump::SendResult::Busy :

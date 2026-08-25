@@ -71,6 +71,13 @@ enum RecordReliableFlags : uint16_t {
     kRecordFlagCrcMismatch = 0x0008U
 };
 
+constexpr uint16_t record_reliable_chunk_flags(bool final_chunk, bool retransmit)
+{
+    return static_cast<uint16_t>(
+            (final_chunk ? static_cast<uint16_t>(kRecordFlagFinalChunk) : 0U) |
+            (retransmit ? static_cast<uint16_t>(kRecordFlagRetransmit) : 0U));
+}
+
 enum class RecordLaneId : uint8_t {
     Control = 0x00,
     MasterData = 0x01,

@@ -16,24 +16,31 @@ constexpr bool source_chunk_counter_reset_contract()
     counters.begin_source(1U);
     counters.note_unique_accepted();
     counters.note_unique_accepted();
-    counters.note_duplicate();
+    counters.note_retransmitted();
     if (counters.source_id() != 1U || counters.unique_accepted() != 2U ||
-            counters.duplicates() != 1U) {
+            counters.retransmitted() != 1U) {
         return false;
     }
     counters.begin_source(2U);
     if (counters.source_id() != 2U || counters.unique_accepted() != 0U ||
-            counters.duplicates() != 0U) {
+            counters.retransmitted() != 0U) {
         return false;
     }
     counters.note_unique_accepted();
     counters.reset_session();
     return counters.source_id() == 0U && counters.unique_accepted() == 0U &&
-            counters.duplicates() == 0U;
+            counters.retransmitted() == 0U;
 }
 
 static_assert(source_chunk_counter_reset_contract(),
-        "Unique and duplicate transfer counters must reset per session/source");
+        "Unique and retransmitted transfer counters must reset per session/source");
+
+static_assert(exo::record_reliable_chunk_flags(false, false) == 0U &&
+        exo::record_reliable_chunk_flags(true, false) == exo::kRecordFlagFinalChunk &&
+        exo::record_reliable_chunk_flags(false, true) == exo::kRecordFlagRetransmit &&
+        exo::record_reliable_chunk_flags(true, true) ==
+                static_cast<uint16_t>(exo::kRecordFlagFinalChunk | exo::kRecordFlagRetransmit),
+        "Node chunk flags must compose final and retransmit evidence independently");
 
 constexpr bool b6_v3_append_only_contract()
 {
@@ -144,7 +151,7 @@ void reset_reliable_tx()
 
 uint16_t make_chunk_frame(uint8_t *frame, size_t capacity, uint8_t node_id,
         uint32_t session_id, uint32_t chunk_index, const uint8_t *payload,
-        uint16_t payload_len, bool final_chunk = false)
+        uint16_t payload_len, bool final_chunk = false, bool retransmit = false)
 {
     if (frame == nullptr || payload == nullptr ||
             capacity < sizeof(exo::RecordReliableFrameHeader) + payload_len) {
@@ -161,7 +168,7 @@ uint16_t make_chunk_frame(uint8_t *frame, size_t capacity, uint8_t node_id,
     header.byte_offset = chunk_index * exo::kRecordReliableDefaultChunkSize;
     header.payload_len = payload_len;
     header.payload_crc16 = exo::MasterNodeReliableControl::crc16_ccitt(payload, payload_len);
-    header.flags = final_chunk ? static_cast<uint16_t>(exo::kRecordFlagFinalChunk) : 0U;
+    header.flags = exo::record_reliable_chunk_flags(final_chunk, retransmit);
     memcpy(frame, &header, sizeof(header));
     memcpy(frame + sizeof(header), payload, payload_len);
     return static_cast<uint16_t>(sizeof(header) + payload_len);
@@ -552,17 +559,17 @@ int main()
     final_policy.on_node_record_done(queue_done);
     if (final_policy.chunk_counter_source_id() != 1U ||
             final_policy.unique_accepted_chunk_count() != 0U ||
-            final_policy.duplicate_chunk_count() != 0U) return 55;
+            final_policy.retransmitted_frame_count() != 0U) return 55;
     final_policy.service_reliable_control(0U);
     final_policy.service_reliable_control(1U);
     reset_reliable_tx();
     uint8_t final_frame[sizeof(exo::RecordReliableFrameHeader) + sizeof(final_payload)]{};
     const uint16_t final_len = make_chunk_frame(final_frame, sizeof(final_frame),
             1U, 702U, 0U, reinterpret_cast<const uint8_t *>(&final_payload),
-            sizeof(final_payload), true);
+            sizeof(final_payload), true, true);
     final_policy.on_node_reliable_frame(1U, final_frame, final_len, 10U);
     if (final_policy.unique_accepted_chunk_count() != 1U ||
-            final_policy.duplicate_chunk_count() != 0U) return 56;
+            final_policy.retransmitted_frame_count() != 1U) return 56;
     final_policy.service_reliable_control(11U);
     if (g_reliable_tx.count != 1U ||
             g_reliable_tx.type[0] != exo::RecordReliableType::AckWindow ||
@@ -571,15 +578,29 @@ int main()
     }
     final_policy.on_node_reliable_frame(1U, final_frame, final_len, 11U);
     if (final_policy.unique_accepted_chunk_count() != 1U ||
-            final_policy.duplicate_chunk_count() != 1U) return 57;
+            final_policy.retransmitted_frame_count() != 2U) return 57;
+
+    uint8_t unflagged_duplicate[sizeof(final_frame)]{};
+    const uint16_t unflagged_len = make_chunk_frame(unflagged_duplicate,
+            sizeof(unflagged_duplicate), 1U, 702U, 0U,
+            reinterpret_cast<const uint8_t *>(&final_payload),
+            sizeof(final_payload), true, false);
+    final_policy.on_node_reliable_frame(1U, unflagged_duplicate, unflagged_len, 11U);
+    if (final_policy.retransmitted_frame_count() != 2U) return 58;
+
+    uint8_t corrupt_retransmit[sizeof(final_frame)]{};
+    memcpy(corrupt_retransmit, final_frame, sizeof(corrupt_retransmit));
+    corrupt_retransmit[sizeof(corrupt_retransmit) - 1U] ^= 0x01U;
+    final_policy.on_node_reliable_frame(1U, corrupt_retransmit, final_len, 11U);
+    if (final_policy.retransmitted_frame_count() != 2U) return 59;
     final_policy.service(recorder, 12U);
     if (final_policy.state() != exo::TrainingCsvState::ValidateNode) return 40;
 
     final_policy.note_suppressed_relay();
-    if (final_policy.received_chunk_count() != 2U ||
+    if (final_policy.received_chunk_count() != 4U ||
             final_policy.chunk_counter_source_id() != 1U ||
             final_policy.unique_accepted_chunk_count() != 1U ||
-            final_policy.duplicate_chunk_count() != 1U ||
+            final_policy.retransmitted_frame_count() != 2U ||
             final_policy.suppressed_relay_count() != 1U ||
             final_policy.sd_flush_count() != 1U ||
             final_policy.sd_flush_max_duration_ms() != 7U) {
