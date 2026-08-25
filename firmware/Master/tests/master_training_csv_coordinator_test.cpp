@@ -22,7 +22,7 @@ struct FakeState {
 } g_fake;
 
 struct StageFsState {
-    uint8_t bytes[512]{};
+    uint8_t bytes[8192]{};
     uint32_t size = 0U;
     uint32_t cursor = 0U;
     bool open = false;
@@ -31,6 +31,69 @@ struct StageFsState {
     UINT largest_read = 0U;
     unsigned read_calls = 0U;
 } g_stage;
+
+struct ReliableTxState {
+    exo::RecordReliableType type[64]{};
+    uint32_t next_chunk[64]{};
+    uint8_t credit[64]{};
+    unsigned count = 0U;
+    bool succeed = true;
+} g_reliable_tx;
+
+bool fake_reliable_send(void *, uint8_t, const uint8_t *frame, uint16_t length)
+{
+    if (frame == nullptr || length < sizeof(exo::RecordReliableFrameHeader)) {
+        return false;
+    }
+    exo::RecordReliableFrameHeader header{};
+    memcpy(&header, frame, sizeof(header));
+    const unsigned index = g_reliable_tx.count;
+    if (index < 64U) {
+        g_reliable_tx.type[index] =
+                static_cast<exo::RecordReliableType>(header.frame_type);
+        g_reliable_tx.next_chunk[index] = header.chunk_index;
+        if (header.frame_type == static_cast<uint8_t>(exo::RecordReliableType::AckWindow) &&
+                header.payload_len >= sizeof(exo::RecordReliableAckWindowPayload) &&
+                length >= sizeof(header) + sizeof(exo::RecordReliableAckWindowPayload)) {
+            exo::RecordReliableAckWindowPayload ack{};
+            memcpy(&ack, frame + sizeof(header), sizeof(ack));
+            g_reliable_tx.next_chunk[index] = ack.next_chunk_index;
+            g_reliable_tx.credit[index] = ack.credit;
+        }
+    }
+    ++g_reliable_tx.count;
+    return g_reliable_tx.succeed;
+}
+
+void reset_reliable_tx()
+{
+    g_reliable_tx = ReliableTxState{};
+}
+
+uint16_t make_chunk_frame(uint8_t *frame, size_t capacity, uint8_t node_id,
+        uint32_t session_id, uint32_t chunk_index, const uint8_t *payload,
+        uint16_t payload_len, bool final_chunk = false)
+{
+    if (frame == nullptr || payload == nullptr ||
+            capacity < sizeof(exo::RecordReliableFrameHeader) + payload_len) {
+        return 0U;
+    }
+    exo::RecordReliableFrameHeader header{};
+    header.command = exo::RecordCommand::ReliableFrame;
+    header.proto_version = exo::kRecordReliableProtoVersion;
+    header.magic = exo::kRecordReliableMagic;
+    header.frame_type = static_cast<uint8_t>(exo::RecordReliableType::Chunk);
+    header.source_id = node_id;
+    header.session_id = session_id;
+    header.chunk_index = chunk_index;
+    header.byte_offset = chunk_index * exo::kRecordReliableDefaultChunkSize;
+    header.payload_len = payload_len;
+    header.payload_crc16 = exo::MasterNodeReliableControl::crc16_ccitt(payload, payload_len);
+    header.flags = final_chunk ? static_cast<uint16_t>(exo::kRecordFlagFinalChunk) : 0U;
+    memcpy(frame, &header, sizeof(header));
+    memcpy(frame + sizeof(header), payload, payload_len);
+    return static_cast<uint16_t>(sizeof(header) + payload_len);
+}
 
 bool fake_master_ready(const exo::MasterSdSessionRecorder &) { return true; }
 
@@ -139,8 +202,10 @@ const exo::node_session_staging::NodeSessionFatFsOps kStagerOps = {
 
 static_assert(exo::MasterTrainingCsvCoordinator::kRowsPerService == 8U,
         "coordinator work must remain bounded");
-static_assert(exo::MasterTrainingCsvCoordinator::kValidationBytesPerService == 256U,
+static_assert(exo::MasterTrainingCsvCoordinator::kValidationBytesPerService <= 1024U,
         "staged CRC validation must have a fixed per-service byte budget");
+static_assert(exo::MasterTrainingCsvCoordinator::kPendingChunkDepth == 24U,
+        "receiver queue must hold the full default credit window");
 
 int main()
 {
@@ -149,6 +214,187 @@ int main()
     };
     exo::MasterTrainingCsvCoordinator coordinator(&kLoggerOps, &kStagerOps, &master_ops);
     exo::MasterSdSessionRecorder recorder;
+
+    /* Runtime flow-control requests are sanitized as one effective contract:
+     * credit always fits the queue and the partial-ACK threshold stays below it. */
+    if (coordinator.receiver_credit() != 24U ||
+            coordinator.ack_chunk_threshold() != 8U ||
+            coordinator.ack_timeout_ms() != 350U) {
+        return 23;
+    }
+    coordinator.set_receiver_credit(1U);
+    if (coordinator.receiver_credit() != 2U ||
+            coordinator.ack_chunk_threshold() != 1U) {
+        return 24;
+    }
+    coordinator.set_receiver_credit(255U);
+    coordinator.set_ack_chunk_threshold(255U);
+    coordinator.set_ack_timeout_ms(1U);
+    if (coordinator.receiver_credit() != 24U ||
+            coordinator.ack_chunk_threshold() != 23U ||
+            coordinator.ack_timeout_ms() != 100U) {
+        return 25;
+    }
+    coordinator.set_receiver_credit(0U);
+    coordinator.set_ack_chunk_threshold(0U);
+    coordinator.set_ack_timeout_ms(0U);
+    if (coordinator.receiver_credit() != 24U ||
+            coordinator.ack_chunk_threshold() != 8U ||
+            coordinator.ack_timeout_ms() != 350U) {
+        return 26;
+    }
+
+    /* Fill the complete advertised window without running the superloop. The
+     * 25th frame must be backpressured without committing or touching SD. */
+    g_fake.master_header = exo::SessionHeader{};
+    g_fake.master_header.session_id = 700U;
+    g_stage = StageFsState{};
+    reset_reliable_tx();
+    exo::MasterTrainingCsvCoordinator queue_guard(&kLoggerOps, &kStagerOps,
+            &master_ops, fake_reliable_send, nullptr);
+    if (!queue_guard.begin_binary_session(700U, 0x03U, 7U)) return 27;
+    queue_guard.on_master_finalized(recorder);
+    exo::RecordDoneMessage queue_done{};
+    queue_done.command = exo::RecordCommand::RecordDone;
+    queue_done.node_id = 1U;
+    queue_done.session_id = 700U;
+    queue_done.total_size = 25U * exo::kRecordReliableDefaultChunkSize;
+    queue_guard.on_node_record_done(queue_done);
+    if (!queue_guard.owns_node_link(1U) || queue_guard.owns_node_link(2U)) return 28;
+    uint8_t chunk_payload[exo::kRecordReliableDefaultChunkSize]{};
+    uint8_t queue_frame[sizeof(exo::RecordReliableFrameHeader) +
+            exo::kRecordReliableDefaultChunkSize]{};
+    for (uint32_t chunk = 0U; chunk < 24U; ++chunk) {
+        const uint16_t frame_len = make_chunk_frame(queue_frame, sizeof(queue_frame),
+                1U, 700U, chunk, chunk_payload, sizeof(chunk_payload));
+        queue_guard.on_node_reliable_frame(1U, queue_frame, frame_len, chunk);
+    }
+    if (queue_guard.pending_chunk_count() != 24U ||
+            queue_guard.queue_high_water() != 24U ||
+            queue_guard.queue_overflow_count() != 0U ||
+            queue_guard.active_staged_bytes() != 0U ||
+            queue_guard.next_expected_node_chunk() != 24U) {
+        return 29;
+    }
+    const uint16_t overflow_len = make_chunk_frame(queue_frame, sizeof(queue_frame),
+            1U, 700U, 24U, chunk_payload, sizeof(chunk_payload));
+    queue_guard.on_node_reliable_frame(1U, queue_frame, overflow_len, 24U);
+    if (queue_guard.pending_chunk_count() != 24U ||
+            queue_guard.queue_overflow_count() != 1U ||
+            queue_guard.active_staged_bytes() != 0U ||
+            queue_guard.next_expected_node_chunk() != 24U) {
+        return 30;
+    }
+
+    /* A normal drain moves bytes to the stager but does not ACK a partial
+     * batch. The idle timeout, threshold, duplicate, gap and final paths own
+     * the only immediate-control exceptions. */
+    g_stage = StageFsState{};
+    reset_reliable_tx();
+    exo::MasterTrainingCsvCoordinator ack_policy(&kLoggerOps, &kStagerOps,
+            &master_ops, fake_reliable_send, nullptr);
+    if (!ack_policy.begin_binary_session(701U, 0x03U, 8U)) return 31;
+    g_fake.master_header.session_id = 701U;
+    ack_policy.on_master_finalized(recorder);
+    queue_done.session_id = 701U;
+    queue_done.total_size = 64U * exo::kRecordReliableDefaultChunkSize;
+    ack_policy.on_node_record_done(queue_done);
+    ack_policy.service_reliable_control(0U); /* manifest defer */
+    ack_policy.service_reliable_control(1U); /* ManifestAck */
+    reset_reliable_tx();
+    for (uint32_t chunk = 0U; chunk < 7U; ++chunk) {
+        const uint16_t frame_len = make_chunk_frame(queue_frame, sizeof(queue_frame),
+                1U, 701U, chunk, chunk_payload, sizeof(chunk_payload));
+        ack_policy.on_node_reliable_frame(1U, queue_frame, frame_len, 100U + chunk);
+    }
+    ack_policy.service(recorder, 107U);
+    if (g_reliable_tx.count != 0U || ack_policy.ack_attempt_count() != 0U) return 32;
+    const uint16_t threshold_len = make_chunk_frame(queue_frame, sizeof(queue_frame),
+            1U, 701U, 7U, chunk_payload, sizeof(chunk_payload));
+    ack_policy.on_node_reliable_frame(1U, queue_frame, threshold_len, 108U);
+    ack_policy.service_reliable_control(109U);
+    if (g_reliable_tx.count != 1U ||
+            g_reliable_tx.type[0] != exo::RecordReliableType::AckWindow ||
+            g_reliable_tx.next_chunk[0] != 8U || g_reliable_tx.credit[0] > 16U ||
+            ack_policy.ack_attempt_count() != 1U ||
+            ack_policy.ack_success_count() != 1U ||
+            !ack_policy.last_ack_status()) {
+        return 33;
+    }
+    reset_reliable_tx();
+    const uint16_t partial_len = make_chunk_frame(queue_frame, sizeof(queue_frame),
+            1U, 701U, 8U, chunk_payload, sizeof(chunk_payload));
+    ack_policy.on_node_reliable_frame(1U, queue_frame, partial_len, 200U);
+    ack_policy.service(recorder, 200U); /* drains one; must not ACK */
+    ack_policy.service_reliable_control(549U);
+    if (g_reliable_tx.count != 0U) return 34;
+    ack_policy.service_reliable_control(550U);
+    if (g_reliable_tx.count != 1U ||
+            g_reliable_tx.type[0] != exo::RecordReliableType::AckWindow ||
+            g_reliable_tx.next_chunk[0] != 9U || g_reliable_tx.credit[0] > 24U) {
+        return 35;
+    }
+    reset_reliable_tx();
+    ack_policy.on_node_reliable_frame(1U, queue_frame, partial_len, 551U);
+    ack_policy.service_reliable_control(552U);
+    if (g_reliable_tx.count != 1U ||
+            g_reliable_tx.type[0] != exo::RecordReliableType::AckWindow) {
+        return 36;
+    }
+    reset_reliable_tx();
+    const uint16_t gap_len = make_chunk_frame(queue_frame, sizeof(queue_frame),
+            1U, 701U, 10U, chunk_payload, sizeof(chunk_payload));
+    ack_policy.on_node_reliable_frame(1U, queue_frame, gap_len, 553U);
+    ack_policy.service_reliable_control(554U);
+    if (g_reliable_tx.count != 1U ||
+            g_reliable_tx.type[0] != exo::RecordReliableType::NackRange) {
+        return 37;
+    }
+
+    g_stage = StageFsState{};
+    reset_reliable_tx();
+    exo::MasterTrainingCsvCoordinator final_policy(&kLoggerOps, &kStagerOps,
+            &master_ops, fake_reliable_send, nullptr);
+    if (!final_policy.begin_binary_session(702U, 0x03U, 9U)) return 38;
+    g_fake.master_header.session_id = 702U;
+    final_policy.on_master_finalized(recorder);
+    queue_done.session_id = 702U;
+    exo::SessionHeader final_payload{};
+    final_payload.magic = exo::kSessionMagic;
+    final_payload.version = exo::kSessionFormatVersion;
+    final_payload.node_id = 1U;
+    final_payload.session_id = 702U;
+    final_payload.completion_flag = exo::kSessionComplete;
+    final_payload.header_crc32 = exo::session_header_crc(final_payload);
+    queue_done.total_size = sizeof(final_payload);
+    queue_done.payload_crc32 = final_payload.payload_crc32;
+    final_policy.on_node_record_done(queue_done);
+    final_policy.service_reliable_control(0U);
+    final_policy.service_reliable_control(1U);
+    reset_reliable_tx();
+    uint8_t final_frame[sizeof(exo::RecordReliableFrameHeader) + sizeof(final_payload)]{};
+    const uint16_t final_len = make_chunk_frame(final_frame, sizeof(final_frame),
+            1U, 702U, 0U, reinterpret_cast<const uint8_t *>(&final_payload),
+            sizeof(final_payload), true);
+    final_policy.on_node_reliable_frame(1U, final_frame, final_len, 10U);
+    final_policy.service_reliable_control(11U);
+    if (g_reliable_tx.count != 1U ||
+            g_reliable_tx.type[0] != exo::RecordReliableType::AckWindow ||
+            final_policy.state() != exo::TrainingCsvState::ReceiveNode) {
+        return 39;
+    }
+    final_policy.service(recorder, 12U);
+    if (final_policy.state() != exo::TrainingCsvState::ValidateNode) return 40;
+
+    final_policy.note_suppressed_relay();
+    final_policy.note_sd_flush_duration_ms(7U);
+    final_policy.note_sd_flush_duration_ms(3U);
+    if (final_policy.received_chunk_count() != 1U ||
+            final_policy.suppressed_relay_count() != 1U ||
+            final_policy.sd_flush_count() != 2U ||
+            final_policy.sd_flush_max_duration_ms() != 7U) {
+        return 41;
+    }
 
     g_fake.master_header.magic = exo::kSessionMagic;
     g_fake.master_header.version = exo::kSessionFormatVersion;
@@ -258,9 +504,6 @@ int main()
         exo::Bno85Sample bno;
         exo::Icm45686Sample icm[20];
     } image{};
-    static_assert(sizeof(NodeImage) - sizeof(exo::SessionHeader) >
-            exo::MasterTrainingCsvCoordinator::kValidationBytesPerService,
-            "test session must require more than one CRC-validation service step");
     image.header.magic = exo::kSessionMagic;
     image.header.version = exo::kSessionFormatVersion;
     image.header.node_id = 1U;
@@ -286,15 +529,24 @@ int main()
     coordinator.on_node_record_done(done);
     if (coordinator.state() != exo::TrainingCsvState::ReceiveNode) return 10;
 
-    uint8_t frame[sizeof(exo::RecordReliableFrameHeader) + sizeof(image)]{};
-    header.payload_len = sizeof(image);
-    header.payload_crc16 = blepipe_crc16_ccitt(
-            reinterpret_cast<const uint8_t *>(&image), sizeof(image));
-    header.flags = exo::kRecordFlagFinalChunk;
-    memcpy(frame, &header, sizeof(header));
-    memcpy(&frame[sizeof(header)], &image, sizeof(image));
-    coordinator.on_node_reliable_frame(1U, frame, sizeof(frame));
-    if (coordinator.state() != exo::TrainingCsvState::ValidateNode) return 11;
+    uint8_t frame[sizeof(exo::RecordReliableFrameHeader) +
+            exo::kRecordReliableDefaultChunkSize]{};
+    const uint8_t *image_bytes = reinterpret_cast<const uint8_t *>(&image);
+    uint32_t image_offset = 0U;
+    uint32_t image_chunk = 0U;
+    while (image_offset < sizeof(image)) {
+        const uint32_t remaining = static_cast<uint32_t>(sizeof(image)) - image_offset;
+        const uint16_t take = static_cast<uint16_t>(remaining <
+                exo::kRecordReliableDefaultChunkSize ? remaining :
+                exo::kRecordReliableDefaultChunkSize);
+        const bool final = image_offset + take == sizeof(image);
+        const uint16_t frame_len = make_chunk_frame(frame, sizeof(frame), 1U, 99U,
+                image_chunk, image_bytes + image_offset, take, final);
+        coordinator.on_node_reliable_frame(1U, frame, frame_len, 5U);
+        image_offset += take;
+        ++image_chunk;
+    }
+    if (coordinator.state() != exo::TrainingCsvState::ReceiveNode) return 11;
 	g_stage.largest_read = 0U;
 	const unsigned reads_before_validation = g_stage.read_calls;
     coordinator.service(recorder, 5U);

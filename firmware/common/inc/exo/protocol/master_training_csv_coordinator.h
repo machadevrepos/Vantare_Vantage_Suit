@@ -64,14 +64,18 @@ static constexpr uint32_t kSessionStallMs = 30000U;
  * link cannot discard an entire capture. */
 static constexpr uint32_t kNodeStallMs = 30000U;
 static constexpr uint8_t kNodeReceiverCredit = 24U;
+static constexpr uint8_t kDefaultAckChunkThreshold = 8U;
+static constexpr uint32_t kDefaultAckTimeoutMs = 350U;
+static constexpr uint32_t kMinAckTimeoutMs = 100U;
+static constexpr uint32_t kMaxAckTimeoutMs = 5000U;
 /* Re-advertise the receive window when the active node stops sending, so a lost
  * ACK does not idle the link until the stall timeout expires. */
 static constexpr uint32_t kNodeAckRearmMs = 300U;
 /* Accepted chunks are copied here from the BLE ingest context and staged to SD
  * from the superloop (drain_pending_chunks), so the every-4KB stager flush and
- * duplicate read-back never run inside a radio event handler. Depth 8 matches
- * receiver_credit_: the node never has more in flight than this. */
-static constexpr uint8_t kPendingChunkDepth = 8U;
+ * duplicate read-back never run inside a radio event handler. Depth 24 matches
+ * the maximum advertised receiver credit. */
+static constexpr uint8_t kPendingChunkDepth = 24U;
 /* ACK batching: fewer credit-refresh transmissions on the data link means the
  * forward (node->master) chunk stream is interrupted 8x less often. Must stay
  * below the granted credit (kNodeReceiverCredit = 24) so the node always has
@@ -81,7 +85,6 @@ static constexpr uint8_t kPendingChunkDepth = 8U;
  * 2026-08-22 zero-progress bisect. That wedge's real cause was a chunk-size
  * overflow (fixed in 9e67a7d); re-enabled here on top of DLE + 2M PHY, but
  * A/B this and the 15 ms interval together on hardware before relying on them. */
-static constexpr uint8_t kAckBatchChunks = 8U;
 struct PendingChunk {
 uint8_t node_id;
 uint32_t session_id;
@@ -96,8 +99,9 @@ const training_csv_coordinator::MasterRecordingOps *master_ops = nullptr,
 MasterNodeReliableControl::SendFn reliable_send = nullptr,
 void *reliable_context = nullptr)
 : logger_(logger_ops), stager_(stager_ops),
-reliable_control_(reliable_send, reliable_context),
-master_ops_(master_ops != nullptr ? master_ops :
+  reliable_control_(reliable_transport_thunk, this),
+  reliable_send_(reliable_send), reliable_context_(reliable_context),
+  master_ops_(master_ops != nullptr ? master_ops :
 &training_csv_coordinator::kDefaultMasterRecordingOps)
 {
 }
@@ -105,16 +109,37 @@ master_ops_(master_ops != nullptr ? master_ops :
  * inbound phone-write handler: every ACK/NACK would re-enter the command
  * dispatcher and be echoed back to the desktop tool. Point it straight at the
  * node link instead. */
-/* Credit the receiver grants the node per ACK. Default 8; the dashboard's
- * transfer-tuning command raises it (up to 24, sanitizer-capped) so the node
- * keeps more chunks in flight per ACK round-trip. */
+/* Effective flow control is always self-consistent: the receiver never grants
+ * more chunks than fit in the deferred queue, and a partial ACK always fires
+ * before the sender can exhaust that grant. Zero selects the tuned default. */
 void set_receiver_credit(uint8_t credit)
 {
-receiver_credit_ = credit == 0U ? kNodeReceiverCredit : credit;
+uint8_t effective = credit == 0U ? kNodeReceiverCredit : credit;
+if (effective < 2U) effective = 2U;
+if (effective > kPendingChunkDepth) effective = kPendingChunkDepth;
+receiver_credit_ = effective;
+if (ack_chunk_threshold_ >= receiver_credit_)
+ack_chunk_threshold_ = static_cast<uint8_t>(receiver_credit_ - 1U);
+}
+void set_ack_chunk_threshold(uint8_t threshold)
+{
+uint8_t effective = threshold == 0U ? kDefaultAckChunkThreshold : threshold;
+if (effective == 0U) effective = 1U;
+if (effective >= receiver_credit_)
+effective = static_cast<uint8_t>(receiver_credit_ - 1U);
+ack_chunk_threshold_ = effective;
+}
+void set_ack_timeout_ms(uint32_t timeout_ms)
+{
+uint32_t effective = timeout_ms == 0U ? kDefaultAckTimeoutMs : timeout_ms;
+if (effective < kMinAckTimeoutMs) effective = kMinAckTimeoutMs;
+if (effective > kMaxAckTimeoutMs) effective = kMaxAckTimeoutMs;
+ack_timeout_ms_ = effective;
 }
 void set_reliable_transport(MasterNodeReliableControl::SendFn send_fn, void *context)
 {
-reliable_control_.set_transport(send_fn, context);
+reliable_send_ = send_fn;
+reliable_context_ = context;
 }
 bool begin_session(uint32_t session_id, uint8_t expected_source_mask)
 {
@@ -129,6 +154,7 @@ clear_failure();
 reliable_control_.reset();
 transfer_window_.reset();
 pending_reset();
+reset_receive_telemetry();
 reliable_defer_services_ = 0U;
 last_progress_ms_ = 0U;
 progress_seq_ = 0U;
@@ -285,6 +311,11 @@ state_ = TrainingCsvState::ReceiveNode;
 }
 void on_node_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length)
 {
+on_node_reliable_frame(node_id, frame, length, last_receive_ms_);
+}
+void on_node_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length,
+uint32_t now_ms)
+{
 if (partial_finalized_ || frame == nullptr ||
 length < sizeof(RecordReliableFrameHeader) || node_id < 1U || node_id > 4U) return;
 RecordReliableFrameHeader header{};
@@ -296,6 +327,7 @@ header.frame_type != static_cast<uint8_t>(RecordReliableType::Chunk) ||
 header.source_id != node_id || header.session_id != active_session_id_ ||
 static_cast<size_t>(sizeof(header)) + header.payload_len != length ||
 state_ != TrainingCsvState::ReceiveNode || node_id != active_node_id_) return;
+if (received_chunk_count_ < UINT32_MAX) ++received_chunk_count_;
 const uint8_t *payload = frame + sizeof(header);
 const bool crc_ok = MasterNodeReliableControl::crc16_ccitt(payload,
 header.payload_len) == header.payload_crc16;
@@ -307,9 +339,9 @@ switch (inspection.decision) {
 case NodeTransferDecision::Ignore:
 return;
 case NodeTransferDecision::Duplicate:
-(void)reliable_control_.ack_window(transfer_window_.next_chunk(),
-	receiver_credit_);
+if (queue_ack_window(transfer_window_.next_chunk())) {
 chunks_since_ack_ = 0U; /* the re-ACK already refreshed credit */
+}
 return;
 case NodeTransferDecision::NackGap:
 (void)reliable_control_.nack_range(inspection.request_chunk, 1U);
@@ -322,13 +354,19 @@ case NodeTransferDecision::Accept:
 case NodeTransferDecision::Complete:
 break;
 }
+	if (pending_count_ >= kPendingChunkDepth) {
+		/* A sender that exceeds its advertised window is backpressured in RAM.
+		 * Do not advance the transfer window and never touch FatFs here. */
+		if (queue_overflow_count_ < UINT32_MAX) ++queue_overflow_count_;
+		(void)reliable_control_.nack_range(transfer_window_.next_chunk(), 1U);
+		return;
+	}
 	if (!transfer_window_.commit(inspection)) {
 	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
 	return;
 }
-if (pending_count_ < kPendingChunkDepth) {
-	/* Deferred path: copy the payload to RAM, commit the window and ACK here;
-	 * the SD staging happens in drain_pending_chunks() from the superloop. */
+	/* Deferred path only: copy the payload to RAM in BLE context. FatFs and
+	 * duplicate read-back remain exclusive to the foreground drain. */
 	PendingChunk &slot =
 	pending_chunks_[(pending_head_ + pending_count_) % kPendingChunkDepth];
 	slot.node_id = node_id;
@@ -337,24 +375,18 @@ if (pending_count_ < kPendingChunkDepth) {
 	slot.len = header.payload_len;
 	memcpy(slot.data, payload, header.payload_len);
 	++pending_count_;
+	if (pending_count_ > queue_high_water_) queue_high_water_ = pending_count_;
 	if (inspection.decision == NodeTransferDecision::Complete) pending_final_ = true;
-} else if (!stager_.accept_chunk(node_id, header.session_id, header.byte_offset,
-	payload, header.payload_len)) {
-	/* Queue full: fall back to the synchronous stage so no chunk is lost. */
-	fail(TrainingCsvState::StageError, TrainingFailSite::Site3);
-	return;
-	} else if (inspection.decision == NodeTransferDecision::Complete) {
-		state_ = TrainingCsvState::ValidateNode;
-}
 ++progress_seq_;
-/* ACK every kAckBatchChunks accepted chunks instead of every chunk: each ACK
+last_receive_ms_ = now_ms;
+last_receive_valid_ = true;
+/* ACK after the effective threshold instead of every chunk: each ACK
  * is a radio transmission competing with data on the same link. Batch stays
  * below receiver_credit_ so the node always has granted chunks in flight;
- * duplicates/gaps re-ACK immediately and the queue drain flushes the tail. */
-if (++chunks_since_ack_ >= kAckBatchChunks ||
+ * duplicates/gaps/final and the idle timeout remain immediate controls. */
+if (++chunks_since_ack_ >= ack_chunk_threshold_ ||
 		inspection.decision == NodeTransferDecision::Complete) {
-	chunks_since_ack_ = 0U;
-	(void)reliable_control_.ack_window(inspection.next_chunk, receiver_credit_);
+	if (queue_ack_window(inspection.next_chunk)) chunks_since_ack_ = 0U;
 }
 }
 /* Flush queued reliable-control frames (ACK windows, NACKs) without the
@@ -368,6 +400,7 @@ if (reliable_defer_services_ != 0U) {
 --reliable_defer_services_;
 return;
 }
+(void)queue_idle_partial_ack(now_ms);
 (void)reliable_control_.service(now_ms);
 }
 void service(MasterSdSessionRecorder &recorder, uint32_t now_ms)
@@ -375,6 +408,7 @@ void service(MasterSdSessionRecorder &recorder, uint32_t now_ms)
 if (reliable_defer_services_ != 0U) {
 --reliable_defer_services_;
 } else {
+(void)queue_idle_partial_ack(now_ms);
 (void)reliable_control_.service(now_ms);
 }
 drain_pending_chunks();
@@ -491,7 +525,7 @@ case TrainingCsvState::StageError:
 finalize_partial(now_ms); break;
 case TrainingCsvState::ReceiveNode:
 if ((now_ms - last_progress_ms_) >= kNodeStallMs) abandon_active_node(now_ms);
-else (void)reliable_control_.rearm_ack_window(now_ms, kNodeAckRearmMs);
+else (void)reliable_control_.rearm_ack_window(now_ms, ack_timeout_ms_);
 break;
 case TrainingCsvState::BinaryFinalizeNode:
 if ((now_ms - last_progress_ms_) >= kNodeStallMs) {
@@ -560,6 +594,46 @@ uint32_t next_expected_node_chunk() const { return transfer_window_.next_chunk()
 uint32_t next_expected_node_offset() const { return transfer_window_.next_offset(); }
 bool reliable_control_pending() const { return reliable_control_.pending(); }
 uint32_t reliable_control_attempt_count() const { return reliable_control_.attempt_count(); }
+uint8_t receiver_credit() const { return receiver_credit_; }
+uint8_t ack_chunk_threshold() const { return ack_chunk_threshold_; }
+uint32_t ack_timeout_ms() const { return ack_timeout_ms_; }
+uint8_t pending_chunk_count() const { return pending_count_; }
+uint8_t queue_high_water() const { return queue_high_water_; }
+uint32_t queue_overflow_count() const { return queue_overflow_count_; }
+uint32_t received_chunk_count() const { return received_chunk_count_; }
+uint32_t ack_attempt_count() const { return ack_attempt_count_; }
+uint32_t ack_success_count() const { return ack_success_count_; }
+uint32_t ack_failure_count() const { return ack_failure_count_; }
+bool last_ack_status() const { return last_ack_status_; }
+uint32_t suppressed_relay_count() const { return suppressed_relay_count_; }
+uint32_t sd_flush_count() const { return sd_flush_count_; }
+uint32_t sd_flush_max_duration_ms() const { return sd_flush_max_duration_ms_; }
+void note_suppressed_relay()
+{
+if (suppressed_relay_count_ < UINT32_MAX) ++suppressed_relay_count_;
+}
+void note_sd_flush_duration_ms(uint32_t duration_ms)
+{
+if (sd_flush_count_ < UINT32_MAX) ++sd_flush_count_;
+if (duration_ms > sd_flush_max_duration_ms_) sd_flush_max_duration_ms_ = duration_ms;
+}
+bool owns_node_link(uint16_t source_id) const
+{
+if (source_id < 1U || source_id > 4U) return false;
+switch (state_) {
+case TrainingCsvState::Idle:
+case TrainingCsvState::Complete:
+case TrainingCsvState::CsvError:
+case TrainingCsvState::StageError:
+return false;
+default:
+break;
+}
+const uint8_t source_bit = static_cast<uint8_t>(1U << source_id);
+return (expected_source_mask_ & source_bit) != 0U &&
+(completed_source_mask_ & source_bit) == 0U &&
+(failed_source_mask_ & source_bit) == 0U;
+}
 TrainingFailSite failure_site() const { return failure_site_; }
 uint8_t failure_node_id() const { return failure_node_id_; }
 node_session_staging::NodeSessionStageOperation failure_stager_operation() const
@@ -570,6 +644,73 @@ training_csv::TrainingCsvLogOperation failure_csv_operation() const
 FRESULT failure_csv_result() const { return failure_csv_result_; }
 void fail_durability() { fail(binary_only_ ? TrainingCsvState::StageError : TrainingCsvState::CsvError, TrainingFailSite::Site20); }
 private:
+static bool reliable_transport_thunk(void *context, uint8_t node_id,
+const uint8_t *frame, uint16_t length)
+{
+if (context == nullptr) return false;
+return static_cast<MasterTrainingCsvCoordinator *>(context)->
+send_reliable_frame(node_id, frame, length);
+}
+bool send_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length)
+{
+bool sent = false;
+if (reliable_send_ != nullptr) {
+sent = reliable_send_(reliable_context_, node_id, frame, length);
+} else if (exo_hub_ble_write != nullptr && frame != nullptr && length <= 0xFFU) {
+sent = exo_hub_ble_write(frame, static_cast<uint8_t>(length)) != 0U;
+}
+if (frame != nullptr && length >= sizeof(RecordReliableFrameHeader)) {
+RecordReliableFrameHeader header{};
+memcpy(&header, frame, sizeof(header));
+if (header.command == RecordCommand::ReliableFrame &&
+header.frame_type == static_cast<uint8_t>(RecordReliableType::AckWindow)) {
+if (ack_attempt_count_ < UINT32_MAX) ++ack_attempt_count_;
+last_ack_status_ = sent;
+if (sent) {
+if (ack_success_count_ < UINT32_MAX) ++ack_success_count_;
+} else if (ack_failure_count_ < UINT32_MAX) {
+++ack_failure_count_;
+}
+}
+}
+return sent;
+}
+uint8_t available_ack_credit() const
+{
+const uint8_t free_slots = static_cast<uint8_t>(kPendingChunkDepth - pending_count_);
+return free_slots < receiver_credit_ ? free_slots : receiver_credit_;
+}
+bool queue_ack_window(uint32_t next_chunk)
+{
+const uint8_t credit = available_ack_credit();
+return credit != 0U && reliable_control_.ack_window(next_chunk, credit);
+}
+bool queue_idle_partial_ack(uint32_t now_ms)
+{
+if (state_ != TrainingCsvState::ReceiveNode || chunks_since_ack_ == 0U ||
+!last_receive_valid_ ||
+static_cast<uint32_t>(now_ms - last_receive_ms_) < ack_timeout_ms_) {
+return false;
+}
+if (!queue_ack_window(transfer_window_.next_chunk())) return false;
+chunks_since_ack_ = 0U;
+return true;
+}
+void reset_receive_telemetry()
+{
+queue_high_water_ = 0U;
+queue_overflow_count_ = 0U;
+received_chunk_count_ = 0U;
+ack_attempt_count_ = 0U;
+ack_success_count_ = 0U;
+ack_failure_count_ = 0U;
+last_ack_status_ = false;
+suppressed_relay_count_ = 0U;
+sd_flush_count_ = 0U;
+sd_flush_max_duration_ms_ = 0U;
+last_receive_ms_ = 0U;
+last_receive_valid_ = false;
+}
 /* Stage accepted chunks to SD outside the BLE ingest context. FIFO order
  * preserves the transfer window's byte-offset sequence. */
 void drain_pending_chunks()
@@ -584,12 +725,6 @@ if (!stager_.accept_chunk(slot.node_id, slot.session_id,
 }
 	pending_head_ = static_cast<uint8_t>((pending_head_ + 1U) % kPendingChunkDepth);
 	--pending_count_;
-}
-/* Flush a trailing partial ACK batch so the node never idles waiting for
- * credit it has already earned (covers stream pauses and the last chunk). */
-if (chunks_since_ack_ > 0U) {
-	chunks_since_ack_ = 0U;
-	(void)reliable_control_.ack_window(transfer_window_.next_chunk(), receiver_credit_);
 }
 if (pending_final_) {
 pending_final_ = false;
@@ -797,12 +932,24 @@ MasterTrainingCsvLogger logger_;
 MasterNodeSessionStager stager_;
 MasterNodeTransferWindow transfer_window_;
 MasterNodeReliableControl reliable_control_;
+MasterNodeReliableControl::SendFn reliable_send_ = nullptr;
+void *reliable_context_ = nullptr;
 MasterSessionTimestampLedger ledger_;
 PendingChunk pending_chunks_[kPendingChunkDepth]{};
 uint8_t pending_head_ = 0U;
 uint8_t pending_count_ = 0U;
 uint8_t chunks_since_ack_ = 0U;
 bool pending_final_ = false;
+uint8_t queue_high_water_ = 0U;
+uint32_t queue_overflow_count_ = 0U;
+uint32_t received_chunk_count_ = 0U;
+uint32_t ack_attempt_count_ = 0U;
+uint32_t ack_success_count_ = 0U;
+uint32_t ack_failure_count_ = 0U;
+bool last_ack_status_ = false;
+uint32_t suppressed_relay_count_ = 0U;
+uint32_t sd_flush_count_ = 0U;
+uint32_t sd_flush_max_duration_ms_ = 0U;
 const training_csv_coordinator::MasterRecordingOps *master_ops_;
 SessionHeader master_header_{};
 uint32_t active_session_id_ = 0U;
@@ -815,6 +962,10 @@ uint8_t completed_source_mask_ = 0U;
 uint8_t failed_source_mask_ = 0U;
 uint8_t active_node_id_ = 0U;
 uint8_t receiver_credit_ = kNodeReceiverCredit;
+uint8_t ack_chunk_threshold_ = kDefaultAckChunkThreshold;
+uint32_t ack_timeout_ms_ = kDefaultAckTimeoutMs;
+uint32_t last_receive_ms_ = 0U;
+bool last_receive_valid_ = false;
 uint8_t reliable_defer_services_ = 0U;
 #if EXO_MASTER_BINARY_ONLY_BUILD
 static constexpr bool binary_only_ = true;

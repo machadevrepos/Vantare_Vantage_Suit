@@ -1,5 +1,6 @@
 #include <exo/ble/exo_hub_central_client.h>
 #include <exo/ble/link_tune_state.h>
+#include <exo/protocol/ble_record_protocol.h>
 
 #include <string.h>
 
@@ -54,9 +55,12 @@ extern "C" uint8_t APP_BLE_LeafClientPrepareScan(void);
 extern "C" void APP_BLE_LeafClientScanIdle(void);
 extern "C" uint8_t APP_BLE_LeafClientPhoneConnected(void);
 extern "C" void exo_hub_leaf_control_ingest(uint8_t node_id,
-                                        uint8_t msg_type,
-                                        const uint8_t *payload,
-                                        uint16_t payload_len);
+                                         uint8_t msg_type,
+                                         const uint8_t *payload,
+                                         uint16_t payload_len);
+extern "C" uint8_t exo_master_training_owns_node_link(uint8_t node_id);
+extern "C" uint8_t exo_master_training_raw_download_debug_enabled(void);
+extern "C" void exo_master_training_note_suppressed_relay(void);
 
 /* Four physical suit nodes; CFG_BLE_NUM_LINK still reserves the browser link. */
 #define EXO_HUB_LEAF_MAX                 4U
@@ -1134,7 +1138,7 @@ static uint8_t exo_hub_maybe_queue_record_done(const uint8_t *payload,
   accepted = exo_hub_leaf_record_done_ingest(payload, length);
   if (accepted != 0U)
   {
-    EXO_LOG("[LEAF] done supp_phone r=%s n=%u s=%lu sz=%lu c=%08lX\r\n",
+    EXO_LOG("[LEAF] done queued r=%s n=%u s=%lu sz=%lu c=%08lX\r\n",
             reason,
             (unsigned)done.node_id,
             (unsigned long)done.session_id,
@@ -1149,6 +1153,46 @@ static uint8_t exo_hub_maybe_queue_record_done(const uint8_t *payload,
           (unsigned long)done.session_id,
           (unsigned long)done.total_size);
   return 0U;
+}
+
+static uint8_t exo_is_raw_artifact_frame(const uint8_t *payload, uint16_t length)
+{
+  exo::RecordReliableFrameHeader header;
+  if (payload == 0 || length == 0U)
+  {
+    return 0U;
+  }
+  if (payload[0] == static_cast<uint8_t>(exo::RecordCommand::RecordDone))
+  {
+    return 1U;
+  }
+  if (length < sizeof(header))
+  {
+    return 0U;
+  }
+  memcpy(&header, payload, sizeof(header));
+  if (header.command != exo::RecordCommand::ReliableFrame ||
+      header.proto_version != exo::kRecordReliableProtoVersion ||
+      header.magic != exo::kRecordReliableMagic)
+  {
+    return 0U;
+  }
+  return (header.frame_type == static_cast<uint8_t>(exo::RecordReliableType::Manifest) ||
+          header.frame_type == static_cast<uint8_t>(exo::RecordReliableType::Chunk)) ? 1U : 0U;
+}
+
+static uint8_t exo_suppress_raw_artifact_relay(uint8_t node_id,
+                                                const uint8_t *payload,
+                                                uint16_t length)
+{
+  if (node_id == 0U || exo_is_raw_artifact_frame(payload, length) == 0U ||
+      exo_master_training_owns_node_link(node_id) == 0U ||
+      exo_master_training_raw_download_debug_enabled() != 0U)
+  {
+    return 0U;
+  }
+  exo_master_training_note_suppressed_relay();
+  return 1U;
 }
 
 static void exo_clear_app_record_ready_mask(uint8_t mask)
@@ -1297,7 +1341,9 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
               (unsigned)decode_status,
               (unsigned)length,
               (unsigned)data[0]);
-      if (exo_hub_maybe_queue_record_done(data, length, "decode_fail") != 0U)
+      exo_hub_leaf_record_frame_ingest(exo_leaf_slot_node_id(slot), data, length);
+      (void)exo_hub_maybe_queue_record_done(data, length, "decode_fail");
+      if (exo_suppress_raw_artifact_relay(exo_leaf_slot_node_id(slot), data, length) != 0U)
       {
         return;
       }
@@ -1339,7 +1385,8 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
             (unsigned)decode_status);
 #endif
     exo_hub_leaf_record_frame_ingest(exo_leaf_slot_node_id(slot), payload, payload_len);
-    if (exo_hub_maybe_queue_record_done(payload, payload_len, "raw_forward") != 0U)
+    (void)exo_hub_maybe_queue_record_done(payload, payload_len, "raw_forward");
+    if (exo_suppress_raw_artifact_relay(exo_leaf_slot_node_id(slot), payload, payload_len) != 0U)
     {
       return;
     }
