@@ -1233,15 +1233,15 @@ input[type="checkbox"] {
         const configuredFastIntervalUnits = payload[59];
         const supportedInterval = SUPPORTED_FAST_INTERVAL_UNITS.includes(configuredFastIntervalUnits);
         const uniqueAcceptedChunks = readU32(payload, 61);
-        const duplicateChunks = readU32(payload, 65);
+        const retransmittedFrames = readU32(payload, 65);
         Object.assign(status, {
           configuredFastIntervalUnits,
           configuredFastIntervalMs: supportedInterval ? configuredFastIntervalUnits * 1.25 : null,
           counterNodeId: payload[60],
           uniqueAcceptedChunks,
-          duplicateChunks,
-          duplicateRatioPct: uniqueAcceptedChunks > 0
-            ? (duplicateChunks / uniqueAcceptedChunks) * 100
+          retransmittedFrames,
+          retransmissionRatioPct: uniqueAcceptedChunks > 0
+            ? (retransmittedFrames / uniqueAcceptedChunks) * 100
             : null
         });
       }
@@ -1265,8 +1265,8 @@ input[type="checkbox"] {
         : ` configured/requested fast CI=unavailable (${v3Unavailable})`;
       const chunkCounters = status.flowV3Available
         ? ` NODE${status.counterNodeId || "?"} chunks unique=${status.uniqueAcceptedChunks}` +
-          ` duplicate=${status.duplicateChunks}` +
-          ` ratio=${status.duplicateRatioPct === null ? "unknown (unique=0)" : `${status.duplicateRatioPct.toFixed(3)}%`}`
+          ` retransmitted_frames=${status.retransmittedFrames}` +
+          ` ratio=${status.retransmissionRatioPct === null ? "unknown (unique=0)" : `${status.retransmissionRatioPct.toFixed(3)}%`}`
         : ` chunk counters=unavailable (${v3Unavailable})`;
       return `Effective transfer: effective credit=${status.effectiveCredit}` +
         configuredInterval +

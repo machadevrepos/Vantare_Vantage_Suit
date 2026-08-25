@@ -345,7 +345,7 @@ class ExoskeletonTelemetryContractTests(unittest.TestCase):
         self.assertIn("ACK attempts=0 ok=0 failed=0 last=unknown (not attempted)", result)
         self.assertNotIn("last=failed", result)
 
-    def test_b6_v3_decodes_configured_interval_and_per_node_chunk_ratio(self):
+    def test_b6_v3_decodes_configured_interval_and_retransmission_ratio(self):
         result = _run_contract(
             """(() => {
               const api = globalThis.ExoskeletonTelemetry;
@@ -384,11 +384,11 @@ class ExoskeletonTelemetryContractTests(unittest.TestCase):
         self.assertEqual(status["configuredFastIntervalMs"], 7.5)
         self.assertEqual(status["counterNodeId"], 4)
         self.assertEqual(status["uniqueAcceptedChunks"], 20000)
-        self.assertEqual(status["duplicateChunks"], 19)
-        self.assertAlmostEqual(status["duplicateRatioPct"], 0.095)
+        self.assertEqual(status["retransmittedFrames"], 19)
+        self.assertAlmostEqual(status["retransmissionRatioPct"], 0.095)
         self.assertIn("configured/requested fast CI=7.5 ms (units=6; not confirmation)", result["display"])
-        self.assertIn("NODE4 chunks unique=20000 duplicate=19 ratio=0.095%", result["display"])
-        self.assertIsNone(result["zero"]["duplicateRatioPct"])
+        self.assertIn("NODE4 chunks unique=20000 retransmitted_frames=19 ratio=0.095%", result["display"])
+        self.assertIsNone(result["zero"]["retransmissionRatioPct"])
         self.assertIn("ratio=unknown (unique=0)", result["zeroDisplay"])
         self.assertNotIn("Infinity", result["zeroDisplay"])
         self.assertNotIn("NaN", result["zeroDisplay"])
