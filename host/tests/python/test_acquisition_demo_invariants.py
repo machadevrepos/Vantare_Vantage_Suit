@@ -121,9 +121,11 @@ checks = [
      "A Node drop during discovery hold must arm direct-address recovery instead of waiting"),
     ("nack_pending_" in reliable and
      reliable.index("if (nack_pending_) return send_nack(now_ms);") <
-     reliable.index("if (ack_pending_) return send_ack_window(now_ms);") and
+     reliable.index("if (ack_pending_ && initial_credit_allowed && initial_credit_sent_)") and
+     reliable.index("if (manifest_blocked) return false;") <
+     reliable.index("if (ack_pending_ && initial_credit_allowed && initial_credit_sent_)") and
      reliable.index("nack_pending_ = true;") < reliable.index("bool send_nack(uint32_t now_ms)"),
-     "Gap/corrupt NACKs must own a dedicated slot outranking ACK windows so a queued ManifestAck can never drop recovery"),
+     "Gap/corrupt NACKs must outrank ACK windows while initial upload credit remains gated"),
     ("abandon_and_unlink" in stager and "stage_started_" in stager and
      coordinator.count("stager_.abandon_and_unlink();") >= 3,
      "Abandoned/failed node stages must be unlinked so run indexes stay reusable and no truncated R####N#.BIN survives"),
