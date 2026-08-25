@@ -141,7 +141,9 @@ For each source and sensor:
 
 ## Operator-visible transfer evidence
 
-Keep raw download/debug relay **off** for every throughput run. The default path suppresses raw Manifest/Chunk relay to the browser and retains compact progress, which prevents browser work from becoming part of the Node-to-Master benchmark. The explicit raw download/debug checkbox may be used for diagnosis only; it is read-only, leaves ACK/credit/verify ownership with the Master, and invalidates a performance run because it adds browser traffic.
+Keep **Master raw-relay trace (read-only)** off for every throughput run. The default path suppresses raw Manifest/Chunk relay to the browser and retains compact progress, which prevents browser work from becoming part of the Node-to-Master benchmark. Enabling the trace observes raw frames only: the browser does not allocate an artifact or send Manifest ACK, ACK, NACK, Pause, or Verify control; the Master remains the sole transfer owner. Trace traffic still invalidates a performance run because it adds browser work and BLE traffic.
+
+The older browser-owned manual downloader is a separate development-only path available only when the desktop source is built with binary-first mode disabled. It is not selected by the trace checkbox and is not exposed as an operator mode in the production binary-first console.
 
 For each active Node, capture the browser fields below in the saved console log:
 
@@ -149,16 +151,16 @@ For each active Node, capture the browser fields below in the saved console log:
 - request acceptance is not confirmation: DLE octets, PHY, and interval count only when a completion event reports them;
 - a zero DLE value remains `unknown`; it is never interpreted as a confirmed 27-byte default;
 - Node `LINK_STATS` DLE outcome/request status/attempts, controller maximum, negotiated TX/RX octets, accepted bytes and notifications, busy/resource counts, notification-complete events, TX-pool events/buffers, watchdog wakes, terminal errors, and flash-read time;
-- effective `0xB6` receiver credit, ACK chunk threshold/timeout, queue pending/high-water/overflow, received chunks, ACK attempts/success/failure/last status, suppressed raw-relay count, and SD flush count/maximum duration;
+- effective `0xB6` receiver credit, ACK chunk threshold/timeout, configured/requested fast interval, queue pending/high-water/overflow, received chunks, ACK attempts/success/failure/last status, suppressed raw-relay count, SD flush count/maximum duration, counter Node ID, unique accepted chunks, duplicate chunks, and guarded duplicate/unique ratio;
 - staged/total bytes, instantaneous and per-Node average KiB/s, validation result, and terminal collection state.
 
-If the browser reports a legacy 19-byte `0xB6` status, the collection state remains usable but the effective flow-control fields are unavailable. Do not use that run for the throughput benchmark.
+If the browser reports a legacy 19-byte `0xB6` status, the collection state remains usable but the effective flow-control fields are unavailable. A 59-byte v2 status has flow-control evidence but lacks the executable interval echo and per-Node counters. Do not use either for the throughput benchmark; matrix runs require the 69-byte `0xB6` v3 report.
 
 ## Hardware throughput benchmark matrix
 
 Benchmark all nine interval/credit combinations below. ACK threshold must always be strictly below the effective credit; the suggested values keep the comparison reproducible.
 
-| Confirmed connection interval | Effective credit 8 | Effective credit 16 | Effective credit 24 |
+| Requested/effective configured fast CI (separately DISC-confirmed) | Effective credit 8 | Effective credit 16 | Effective credit 24 |
 |---|---:|---:|---:|
 | 15 ms | ACK threshold 4 | ACK threshold 8 | ACK threshold 8 |
 | 11.25 ms | ACK threshold 4 | ACK threshold 8 | ACK threshold 8 |
@@ -166,12 +168,14 @@ Benchmark all nine interval/credit combinations below. ACK threshold must always
 
 For every matrix cell:
 
-1. Apply the requested credit and ACK threshold, then use the **effective** values echoed in `0xB6` as the run configuration. Reject a run if the echo differs and the difference is not recorded.
-2. Require completion evidence for the selected interval. Record requested and confirmed interval separately; command acceptance alone does not qualify the cell.
-3. Use realistic production-sized session artifacts, not a small synthetic transfer. Record the requested capture duration and exact artifact size.
-4. Run three transfers for each Node (`NODE1` through `NODE4`), resetting only the session/run index between trials. This gives 12 per-Node observations for the cell.
-5. Run three complete four-Node collections in the normal sequential order `NODE1 -> NODE2 -> NODE3 -> NODE4`.
-6. Save the browser log and the five SD binaries for every complete collection. Record RF setup, board IDs, power source, browser/OS version, firmware commit, build configuration, and any reconnect.
+1. Select `15 ms`, `11.25 ms`, or `7.5 ms` in **Requested Node Fast CI**, set the requested credit and ACK threshold, and click **Apply Tuning**. The browser sends B5 v2 with interval units `12`, `9`, or `6` respectively.
+2. In **Effective Transfer / Configured Request**, verify that `0xB6` v3 echoes the selected interval units and the intended effective credit/ACK threshold. This is configured/requested evidence, not controller completion. Reject or explicitly invalidate a run when the effective echo differs from its matrix cell.
+3. Separately inspect **DISC Confirmed Interval** for the active Node. Require a successful interval completion reporting the same units selected for the cell. A tuning ACK, interval-request event, queued request, or accepted command does not qualify the cell.
+4. Confirm that the `0xB6` counter Node ID matches the active Node. Record unique accepted and duplicate chunks plus the displayed ratio. When unique is zero, the browser must show the ratio as unknown rather than dividing by zero; such a transfer does not qualify as a completed benchmark observation.
+5. Use realistic production-sized session artifacts, not a small synthetic transfer. Record the requested capture duration and exact artifact size.
+6. Run three transfers for each Node (`NODE1` through `NODE4`), resetting only the session/run index between trials. This gives 12 per-Node observations for the cell.
+7. Run three complete four-Node collections in the normal sequential order `NODE1 -> NODE2 -> NODE3 -> NODE4`.
+8. Save the browser log and the five SD binaries for every complete collection. Record RF setup, board IDs, power source, browser/OS version, firmware commit, build configuration, and any reconnect.
 
 For every Node transfer, calculate sustained payload throughput as:
 
@@ -189,7 +193,7 @@ A configuration passes only when every required run meets all of these gates:
 - the manifest size, staged byte count, committed SD file size, and independently copied workstation file size are exactly equal;
 - header CRC32 and payload CRC32 pass independently for every Master and Node binary;
 - every source reaches an explicit validated/committed terminal state; there are no stalls, queue overflows, terminal pump errors, ACK failures, or unclassified errors;
-- retransmission ratio is below **0.1%** for every Node, calculated as retransmitted chunks divided by received unique chunks times 100; record the raw numerator and denominator even when both recovery counters and NACKs are zero;
+- duplicate/unique ratio is below **0.1%** for every Node, calculated as duplicate chunks divided by unique accepted chunks times 100; record both raw counters even when duplicate and NACK counts are zero;
 - effective ACK threshold remains below effective credit, pending queue never exceeds capacity, and queue overflow remains zero;
 - raw-relay suppression advances during Node artifact upload while staged-byte compact progress remains visible;
 - the browser remains responsive: controls react, the console can scroll/copy, progress continues to update, and there is no visible freeze lasting one second or longer; record any browser long task, disconnect, or dropped notification as a failed run;

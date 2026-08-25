@@ -751,16 +751,20 @@ input[type="checkbox"] {
         <span id="transferRate" class="mono" title="Live node&rarr;Master upload rate during collection (from staged bytes in the 0xB6 status report)">idle</span>
       </div>
       <div class="row">
-        <label>Master Link Evidence</label>
+        <label>Master Link State Evidence</label>
         <span id="masterLinkTelemetry" class="mono">unknown (awaiting completion evidence)</span>
+      </div>
+      <div class="row">
+        <label>DISC Confirmed Interval</label>
+        <span id="confirmedIntervalTelemetry" class="mono">unknown (awaiting interval completion)</span>
       </div>
       <div class="row">
         <label>Node Upload Evidence</label>
         <span id="nodeUploadTelemetry" class="mono">unknown (awaiting Node LINK_STATS)</span>
       </div>
       <div class="row">
-        <label>Effective Transfer</label>
-        <span id="effectiveTransferTelemetry" class="mono">unavailable (awaiting 0xB6 v2)</span>
+        <label>Effective Transfer / Configured Request</label>
+        <span id="effectiveTransferTelemetry" class="mono">unavailable (awaiting 0xB6)</span>
       </div>
       <div class="row">
         <label>Session Nodes</label>
@@ -782,6 +786,15 @@ input[type="checkbox"] {
         <div class="row">
           <label for="transferCreditInput">Credit</label>
           <input id="transferCreditInput" type="number" min="2" max="24" value="24">
+        </div>
+        <div class="row">
+          <label for="transferFastIntervalSelect">Requested Node Fast CI</label>
+          <select id="transferFastIntervalSelect">
+            <option value="12" selected>15 ms</option>
+            <option value="9">11.25 ms</option>
+            <option value="6">7.5 ms</option>
+          </select>
+          <span class="note">Configured request only; qualify a run using separate DISC completion evidence.</span>
         </div>
         <div class="row">
           <label for="transferAckChunksInput">ACK Chunks</label>
@@ -806,9 +819,9 @@ input[type="checkbox"] {
           <input id="transferMasterGapMsInput" type="number" min="0" max="5" value="1">
         </div>
         <div class="row">
-          <label for="transferRawRelayDebugInput">Raw download/debug relay</label>
+          <label for="transferRawRelayDebugInput">Master raw-relay trace (read-only)</label>
           <input id="transferRawRelayDebugInput" type="checkbox">
-          <span class="note">Debug only: mirrors raw Node artifact frames while the Master retains ACK/credit ownership.</span>
+          <span class="note">Debug only: observes raw Node artifact frames; the browser never downloads, ACKs, NACKs, or verifies them.</span>
         </div>
       </div>
       <div class="transfer-box">
@@ -996,6 +1009,7 @@ input[type="checkbox"] {
     "use strict";
 
     const RAW_RELAY_DEBUG_FLAG = 0x02;
+    const SUPPORTED_FAST_INTERVAL_UNITS = Object.freeze([12, 9, 6]);
     const DLE_OUTCOMES = ["unknown", "requested", "confirmed", "degraded", "failed"];
     const MASTER_LINK_PHASES = [
       "need_dle", "wait_dle", "need_phy", "wait_phy", "need_interval",
@@ -1013,6 +1027,55 @@ input[type="checkbox"] {
     function readU32(payload, offset) {
       return (payload[offset] | (payload[offset + 1] << 8) |
         (payload[offset + 2] << 16) | (payload[offset + 3] << 24)) >>> 0;
+    }
+
+    function normalizeFastIntervalUnits(value) {
+      const parsed = Number.parseInt(value, 10);
+      return SUPPORTED_FAST_INTERVAL_UNITS.includes(parsed) ? parsed : 12;
+    }
+
+    function fastIntervalMs(units) {
+      return normalizeFastIntervalUnits(units) * 1.25;
+    }
+
+    function decodeTransferTuningPayload(payload) {
+      if (!(payload instanceof Uint8Array) || payload.length < 2 || payload[0] !== 0xB5) {
+        return { valid: false, reason: "header" };
+      }
+      const version = payload[1];
+      if (version === 1) {
+        return payload.length >= 12
+          ? { valid: true, version, fastIntervalUnits: 12, fastIntervalMs: 15 }
+          : { valid: false, reason: "short_v1", version };
+      }
+      if (version === 2) {
+        if (payload.length < 13) return { valid: false, reason: "short_v2", version };
+        const fastIntervalUnits = normalizeFastIntervalUnits(payload[12]);
+        return {
+          valid: true,
+          version,
+          fastIntervalUnits,
+          fastIntervalMs: fastIntervalMs(fastIntervalUnits)
+        };
+      }
+      return { valid: false, reason: `version${version}`, version };
+    }
+
+    function buildTransferTuningPayload(command, tuning) {
+      const payload = new Uint8Array(13);
+      const view = new DataView(payload.buffer);
+      payload[0] = Number(command) & 0xFF;
+      payload[1] = 2;
+      payload[2] = Number(tuning?.credit) & 0xFF;
+      payload[3] = Number(tuning?.ackEveryChunks) & 0xFF;
+      view.setUint16(4, Number(tuning?.ackEveryMs) || 0, true);
+      view.setUint16(6, Number(tuning?.controlHeartbeatMs) || 0, true);
+      payload[8] = Number(tuning?.nackBurstChunks) & 0xFF;
+      payload[9] = Number(tuning?.masterBurstLimit) & 0xFF;
+      payload[10] = Number(tuning?.masterChunkGapMs) & 0xFF;
+      payload[11] = Number(tuning?.flags) & 0xFF;
+      payload[12] = normalizeFastIntervalUnits(tuning?.fastIntervalUnits);
+      return payload;
     }
 
     function dleOutcomeLabel(outcome) {
@@ -1127,6 +1190,7 @@ input[type="checkbox"] {
       const hasStaged = payload.length >= 15;
       const hasStagedTotal = payload.length >= 19;
       const hasFlowV2 = payload.length >= 59 && payload[19] >= 2;
+      const hasFlowV3 = payload.length >= 69 && payload[19] >= 3;
       const status = {
         valid: true,
         state: payload[0],
@@ -1142,7 +1206,8 @@ input[type="checkbox"] {
         cleanupPendingMask: hasMasks ? payload[10] : 0,
         stagedBytes: hasStaged ? readU32(payload, 11) : null,
         stagedTotal: hasStagedTotal ? readU32(payload, 15) : null,
-        flowVersion: hasFlowV2 ? payload[19] : null
+        flowVersion: hasFlowV2 ? payload[19] : null,
+        flowV3Available: hasFlowV3
       };
       if (hasFlowV2) {
         Object.assign(status, {
@@ -1159,7 +1224,25 @@ input[type="checkbox"] {
           lastAckOk: payload[46] !== 0,
           suppressedRelay: readU32(payload, 47),
           sdFlushes: readU32(payload, 51),
-          sdFlushMaxMs: readU32(payload, 55)
+          sdFlushMaxMs: readU32(payload, 55),
+          extensionBytes: Array.from(payload.slice(hasFlowV3 ? 69 : 59)),
+          extensionDecoded: hasFlowV3
+        });
+      }
+      if (hasFlowV3) {
+        const configuredFastIntervalUnits = payload[59];
+        const supportedInterval = SUPPORTED_FAST_INTERVAL_UNITS.includes(configuredFastIntervalUnits);
+        const uniqueAcceptedChunks = readU32(payload, 61);
+        const duplicateChunks = readU32(payload, 65);
+        Object.assign(status, {
+          configuredFastIntervalUnits,
+          configuredFastIntervalMs: supportedInterval ? configuredFastIntervalUnits * 1.25 : null,
+          counterNodeId: payload[60],
+          uniqueAcceptedChunks,
+          duplicateChunks,
+          duplicateRatioPct: uniqueAcceptedChunks > 0
+            ? (duplicateChunks / uniqueAcceptedChunks) * 100
+            : null
         });
       }
       return status;
@@ -1169,18 +1252,53 @@ input[type="checkbox"] {
       if (!status || !status.valid || status.flowVersion === null) {
         return "Effective transfer: unavailable (legacy 0xB6 status)";
       }
+      const lastAck = status.ackAttempts === 0
+        ? "unknown (not attempted)"
+        : (status.lastAckOk ? "ok" : "failed");
+      const v3Unavailable = status.flowVersion >= 3
+        ? "requires complete 0xB6 v3"
+        : "requires 0xB6 v3";
+      const configuredInterval = status.flowV3Available
+        ? (status.configuredFastIntervalMs === null
+          ? ` configured/requested fast CI=unknown (units=${status.configuredFastIntervalUnits}; not confirmation)`
+          : ` configured/requested fast CI=${status.configuredFastIntervalMs} ms (units=${status.configuredFastIntervalUnits}; not confirmation)`)
+        : ` configured/requested fast CI=unavailable (${v3Unavailable})`;
+      const chunkCounters = status.flowV3Available
+        ? ` NODE${status.counterNodeId || "?"} chunks unique=${status.uniqueAcceptedChunks}` +
+          ` duplicate=${status.duplicateChunks}` +
+          ` ratio=${status.duplicateRatioPct === null ? "unknown (unique=0)" : `${status.duplicateRatioPct.toFixed(3)}%`}`
+        : ` chunk counters=unavailable (${v3Unavailable})`;
       return `Effective transfer: effective credit=${status.effectiveCredit}` +
+        configuredInterval +
         ` ACK=${status.ackChunkThreshold} chunks/${status.ackTimeoutMs} ms` +
         ` queue pending=${status.pendingQueue} high-water=${status.queueHighWater} overflow=${status.queueOverflow}` +
         ` received=${status.receivedChunks}` +
         ` ACK attempts=${status.ackAttempts} ok=${status.ackSuccesses} failed=${status.ackFailures}` +
-        ` last=${status.lastAckOk ? "ok" : "failed"}` +
+        ` last=${lastAck}` +
         ` raw relay suppressed=${status.suppressedRelay} (compact progress remains active)` +
-        ` SD flushes=${status.sdFlushes} max=${status.sdFlushMaxMs} ms`;
+        ` SD flushes=${status.sdFlushes} max=${status.sdFlushMaxMs} ms` +
+        chunkCounters;
     }
 
     function rawRelayDebugEnabled(flags) {
       return ((Number(flags) || 0) & RAW_RELAY_DEBUG_FLAG) !== 0;
+    }
+
+    function artifactRelayMode(binaryFirstMode, flags) {
+      if (!binaryFirstMode) return "browser_manual";
+      return rawRelayDebugEnabled(flags) ? "master_raw_read_only" : "compact_progress";
+    }
+
+    function dispatchArtifactRelay(mode, frame, handlers = {}) {
+      if (mode === "master_raw_read_only") {
+        if (typeof handlers.onReadOnly === "function") handlers.onReadOnly(frame);
+        return "read_only";
+      }
+      if (mode === "browser_manual") {
+        if (typeof handlers.onBrowserControl === "function") handlers.onBrowserControl(frame);
+        return "browser_control";
+      }
+      return "suppressed";
     }
 
     function normalizeFlowControl(credit, ackChunkThreshold) {
@@ -1198,13 +1316,20 @@ input[type="checkbox"] {
 
     globalThis.ExoskeletonTelemetry = Object.freeze({
       RAW_RELAY_DEBUG_FLAG,
+      SUPPORTED_FAST_INTERVAL_UNITS,
       dleOutcomeLabel,
       decodeNodeUploadLinkStats,
       formatNodeUploadLinkStats,
       formatMasterLinkEvent,
+      decodeTransferTuningPayload,
+      buildTransferTuningPayload,
+      normalizeFastIntervalUnits,
+      fastIntervalMs,
       decodeTrainingStatusPayload,
       formatEffectiveTransfer,
       rawRelayDebugEnabled,
+      artifactRelayMode,
+      dispatchArtifactRelay,
       normalizeFlowControl
     });
   })();
@@ -1484,6 +1609,7 @@ input[type="checkbox"] {
       nackBurstChunks: 4,
       masterBurstLimit: 4,
       masterChunkGapMs: 1,
+      fastIntervalUnits: 12,
       flags: 0
     },
     balanced: {
@@ -1494,6 +1620,7 @@ input[type="checkbox"] {
       nackBurstChunks: 8,
       masterBurstLimit: 6,
       masterChunkGapMs: 1,
+      fastIntervalUnits: 12,
       flags: 0
     },
     aggressive: {
@@ -1504,6 +1631,7 @@ input[type="checkbox"] {
       nackBurstChunks: 8,
       masterBurstLimit: 8,
       masterChunkGapMs: 0,
+      fastIntervalUnits: 12,
       flags: 0
     }
   };
@@ -1521,9 +1649,11 @@ input[type="checkbox"] {
     sessionIdInput: el("sessionIdInput"), durationInput: el("durationInput"), leadTimeInput: el("leadTimeInput"), startRecordBtn: el("startRecordBtn"),
     sessionState: el("sessionState"), sessionNodes: el("sessionNodes"),
     transferRate: el("transferRate"), masterLinkTelemetry: el("masterLinkTelemetry"),
+    confirmedIntervalTelemetry: el("confirmedIntervalTelemetry"),
     nodeUploadTelemetry: el("nodeUploadTelemetry"), effectiveTransferTelemetry: el("effectiveTransferTelemetry"),
     transferProfileSelect: el("transferProfileSelect"), applyTransferTuningBtn: el("applyTransferTuningBtn"),
     transferCreditInput: el("transferCreditInput"), transferAckChunksInput: el("transferAckChunksInput"),
+    transferFastIntervalSelect: el("transferFastIntervalSelect"),
     transferAckMsInput: el("transferAckMsInput"), transferHeartbeatMsInput: el("transferHeartbeatMsInput"),
     transferNackBurstInput: el("transferNackBurstInput"), transferMasterBurstInput: el("transferMasterBurstInput"),
     transferMasterGapMsInput: el("transferMasterGapMsInput"), transferRawRelayDebugInput: el("transferRawRelayDebugInput"),
@@ -1587,6 +1717,7 @@ input[type="checkbox"] {
     // Last Master SD collector status report (wire-compatible with coordinator v1).
     trainingCsv: { state: 0, expected: 0, completed: 0 },
     masterLinkTelemetry: new Map(),
+    confirmedIntervalTelemetry: new Map(),
     nodeUploadTelemetry: new Map(),
     // One-shot latch for the "all expected sources collected" log line; the
     // firmware reports 0xB6 only on state/completed-mask changes.
@@ -1683,7 +1814,7 @@ input[type="checkbox"] {
   ui.applyTransferTuningBtn.addEventListener("click", () => applyRecordTransferTuning(true, "manual_apply"));
   [ui.transferCreditInput, ui.transferAckChunksInput, ui.transferAckMsInput, ui.transferHeartbeatMsInput,
     ui.transferNackBurstInput, ui.transferMasterBurstInput, ui.transferMasterGapMsInput,
-    ui.transferRawRelayDebugInput]
+    ui.transferFastIntervalSelect, ui.transferRawRelayDebugInput]
     .forEach((input) => input.addEventListener("change", () => {
       ui.transferProfileSelect.value = "custom";
     }));
@@ -1905,6 +2036,16 @@ input[type="checkbox"] {
       .join(" | ");
   }
 
+  function renderConfirmedIntervalTelemetry(nodeId, text) {
+    const key = nodeId || 0;
+    state.confirmedIntervalTelemetry.set(key, text);
+    if (!ui.confirmedIntervalTelemetry) return;
+    ui.confirmedIntervalTelemetry.textContent = [...state.confirmedIntervalTelemetry.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([id, value]) => `${id ? `NODE${id}` : "unknown node"}: ${value}`)
+      .join(" | ");
+  }
+
   function renderNodeUploadTelemetry(stats) {
     if (!stats || !stats.valid) return;
     const text = ExoskeletonTelemetry.formatNodeUploadLinkStats(stats);
@@ -1921,12 +2062,14 @@ input[type="checkbox"] {
   function resetTelemetryEvidence(resetLinks) {
     if (resetLinks) {
       state.masterLinkTelemetry.clear();
+      state.confirmedIntervalTelemetry.clear();
       state.nodeUploadTelemetry.clear();
       if (ui.masterLinkTelemetry) ui.masterLinkTelemetry.textContent = "unknown (awaiting completion evidence)";
+      if (ui.confirmedIntervalTelemetry) ui.confirmedIntervalTelemetry.textContent = "unknown (awaiting interval completion)";
       if (ui.nodeUploadTelemetry) ui.nodeUploadTelemetry.textContent = "unknown (awaiting Node LINK_STATS)";
     }
     if (ui.effectiveTransferTelemetry) {
-      ui.effectiveTransferTelemetry.textContent = "unavailable (awaiting 0xB6 v2)";
+      ui.effectiveTransferTelemetry.textContent = "unavailable (awaiting 0xB6)";
     }
   }
 
@@ -1950,6 +2093,7 @@ input[type="checkbox"] {
     } else if (eventId >= 0x10 && eventId <= 0x16) {
       extra = ExoskeletonTelemetry.formatMasterLinkEvent(eventId, stateValue, value);
       renderMasterLinkTelemetry(nodeId, extra);
+      if (eventId === 0x12) renderConfirmedIntervalTelemetry(nodeId, extra);
     } else {
       extra = `state=${stateValue} value=${value}`;
     }
@@ -1981,6 +2125,7 @@ input[type="checkbox"] {
       masterChunkGapMs: clamp(parseInt(raw?.masterChunkGapMs, 10) || RECORD_TUNING_PRESETS.balanced.masterChunkGapMs,
         RECORD_TUNING_LIMITS.masterChunkGapMs.min,
         RECORD_TUNING_LIMITS.masterChunkGapMs.max),
+      fastIntervalUnits: ExoskeletonTelemetry.normalizeFastIntervalUnits(raw?.fastIntervalUnits),
       flags: clamp(parseInt(raw?.flags, 10) || 0, 0, 255),
       profile: "custom"
     };
@@ -1992,6 +2137,7 @@ input[type="checkbox"] {
       preset.nackBurstChunks === tuning.nackBurstChunks &&
       preset.masterBurstLimit === tuning.masterBurstLimit &&
       preset.masterChunkGapMs === tuning.masterChunkGapMs &&
+      preset.fastIntervalUnits === tuning.fastIntervalUnits &&
       preset.flags === tuning.flags);
     if (matchedProfile) {
       tuning.profile = matchedProfile[0];
@@ -2013,6 +2159,7 @@ input[type="checkbox"] {
     ui.transferNackBurstInput.value = String(active.nackBurstChunks);
     ui.transferMasterBurstInput.value = String(active.masterBurstLimit);
     ui.transferMasterGapMsInput.value = String(active.masterChunkGapMs);
+    ui.transferFastIntervalSelect.value = String(active.fastIntervalUnits);
     if (ui.transferRawRelayDebugInput) {
       ui.transferRawRelayDebugInput.checked = ExoskeletonTelemetry.rawRelayDebugEnabled(active.flags);
     }
@@ -2027,6 +2174,7 @@ input[type="checkbox"] {
       nackBurstChunks: ui.transferNackBurstInput.value,
       masterBurstLimit: ui.transferMasterBurstInput.value,
       masterChunkGapMs: ui.transferMasterGapMsInput.value,
+      fastIntervalUnits: ui.transferFastIntervalSelect.value,
       flags: ui.transferRawRelayDebugInput?.checked ? ExoskeletonTelemetry.RAW_RELAY_DEBUG_FLAG : 0
     }, ui.transferProfileSelect.value || "custom");
   }
@@ -2035,26 +2183,14 @@ input[type="checkbox"] {
     const next = clampRecordTransferTuning(tuning, tuning?.profile || "custom");
     state.recordTransferTuning = next;
     syncTransferTuningUi(next);
-    const relayMode = ExoskeletonTelemetry.rawRelayDebugEnabled(next.flags)
-      ? "raw-download/debug" : "compact-progress";
-    log(`RECORD tuning ${reason}: profile=${next.profile} credit=${next.credit} ack_chunks=${next.ackEveryChunks} ack_ms=${next.ackEveryMs} heartbeat_ms=${next.controlHeartbeatMs} nack_burst=${next.nackBurstChunks} master_burst=${next.masterBurstLimit} master_gap_ms=${next.masterChunkGapMs} relay_mode=${relayMode}`);
+    const relayMode = ExoskeletonTelemetry.artifactRelayMode(BINARY_FIRST_SD_MODE, next.flags);
+    log(`RECORD tuning ${reason}: profile=${next.profile} credit=${next.credit} ack_chunks=${next.ackEveryChunks} ack_ms=${next.ackEveryMs} heartbeat_ms=${next.controlHeartbeatMs} nack_burst=${next.nackBurstChunks} master_burst=${next.masterBurstLimit} master_gap_ms=${next.masterChunkGapMs} configured_requested_ci=${ExoskeletonTelemetry.fastIntervalMs(next.fastIntervalUnits)}ms/${next.fastIntervalUnits}units (not confirmation) relay_mode=${relayMode}`);
     return next;
   }
 
   function buildTransferTuningPayload(tuning) {
-    const payload = new Uint8Array(12);
-    const dv = new DataView(payload.buffer);
-    dv.setUint8(0, CMD.RECORD_TRANSFER_TUNING);
-    dv.setUint8(1, 1);
-    dv.setUint8(2, tuning.credit);
-    dv.setUint8(3, tuning.ackEveryChunks);
-    dv.setUint16(4, tuning.ackEveryMs, true);
-    dv.setUint16(6, tuning.controlHeartbeatMs, true);
-    dv.setUint8(8, tuning.nackBurstChunks);
-    dv.setUint8(9, tuning.masterBurstLimit);
-    dv.setUint8(10, tuning.masterChunkGapMs);
-    dv.setUint8(11, tuning.flags || 0);
-    return payload;
+    return ExoskeletonTelemetry.buildTransferTuningPayload(
+      CMD.RECORD_TRANSFER_TUNING, tuning);
   }
 
   async function applyRecordTransferTuning(sendToMaster = true, reason = "ui_apply") {
@@ -2108,6 +2244,18 @@ input[type="checkbox"] {
     return `${sessionId >>> 0}:${sourceId >>> 0}`;
   }
 
+  const masterRawRelayTrace = { frames: 0, bytes: 0, lastLogMs: 0 };
+
+  function observeMasterRawRelayFrame(frame) {
+    masterRawRelayTrace.frames += 1;
+    masterRawRelayTrace.bytes += Number(frame?.wireBytes) || 0;
+    const now = performance.now();
+    if (frame?.kind === "manifest" || (now - masterRawRelayTrace.lastLogMs) >= 1000) {
+      logDebug(`Master raw-relay trace: kind=${frame?.kind || "artifact"} source=${sourceLabel(frame?.sourceId || 0)} session=${frame?.sessionId || 0} frames=${masterRawRelayTrace.frames} bytes=${masterRawRelayTrace.bytes} control=none`);
+      masterRawRelayTrace.lastLogMs = now;
+    }
+  }
+
   // A node keeps one send cursor and one credit counter, so only one receiver can
   // drive it. Node chunks are relayed to us for progress display, but while the
   // Master is staging that node to SD it owns the flow control: our NACKs used to
@@ -2121,7 +2269,7 @@ input[type="checkbox"] {
     if (!transfer) return false;
     const nodeId = transfer.nodeId >>> 0;
     if (nodeId < 1 || nodeId > 4) return false;
-    // Explicit raw relay is a read-only download/debug mirror. The Master still
+    // Explicit raw relay is an observation-only trace. The Master still
     // owns ACK/credit/verify decisions, even if its first 0xB6 status update has
     // not reached the browser yet.
     if (ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags)) return true;
@@ -3416,7 +3564,14 @@ input[type="checkbox"] {
   }
 
   function queueChunkAck(transfer, forceRecovery) {
-    if (!getRecordAckWriteChar() || !transfer) {
+    if (!transfer) {
+      return;
+    }
+    if (masterStagedSource(transfer)) {
+      logDebug(`RECORD legacy control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} reason=master_owned`);
+      return;
+    }
+    if (!getRecordAckWriteChar()) {
       return;
     }
     const hasMissing = forceRecovery && (transfer.expectedOffset < transfer.totalSize);
@@ -3443,7 +3598,14 @@ input[type="checkbox"] {
   }
 
   function queueReliableControl(transfer, frameType, payload, chunkIndex = 0, byteOffset = 0, flags = 0) {
-    if (!getRecordAckWriteChar() || !transfer) {
+    if (!transfer) {
+      return;
+    }
+    if (masterStagedSource(transfer)) {
+      logDebug(`RECORD reliable control suppressed: source=${sourceLabel(transfer.nodeId)} session=${transfer.sessionId} type=${frameType} reason=master_owned`);
+      return;
+    }
+    if (!getRecordAckWriteChar()) {
       return;
     }
     const raw = new Uint8Array(RECORD_REL.HEADER_SIZE + payload.length);
@@ -4340,12 +4502,15 @@ input[type="checkbox"] {
       return;
     }
     if (command === RECORD.SESSION_CHUNK) {
-      const binaryFirstLegacyChunk = BINARY_FIRST_SD_MODE && command === RECORD.SESSION_CHUNK;
-      if (binaryFirstLegacyChunk &&
-          !ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags)) {
-        return;
-      }
-      handleSessionChunk(data);
+      const relayMode = ExoskeletonTelemetry.artifactRelayMode(
+        BINARY_FIRST_SD_MODE, currentReliableTuning().flags);
+      ExoskeletonTelemetry.dispatchArtifactRelay(relayMode, {
+        kind: "legacy_chunk",
+        wireBytes: data.length
+      }, {
+        onReadOnly: observeMasterRawRelayFrame,
+        onBrowserControl: () => handleSessionChunk(data)
+      });
       return;
     }
     if (command === V2.FRAME_ID) {
@@ -4553,17 +4718,25 @@ input[type="checkbox"] {
       log(`RECORD reliable payload crc fail source=${sourceLabel(sourceId)} session=${sessionId} type=${frameType}`);
       return;
     }
-    const binaryFirstReliableBulk = BINARY_FIRST_SD_MODE && (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK);
-    if (binaryFirstReliableBulk &&
-        !ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags)) {
-      return;
-    }
-    if (frameType === RECORD_REL.MANIFEST) {
-      handleReliableManifest(sourceId, sessionId, payload);
-      return;
-    }
-    if (frameType === RECORD_REL.CHUNK) {
-      handleReliableChunk(sourceId, sessionId, chunkIndex, byteOffset, payload, flags);
+    if (frameType === RECORD_REL.MANIFEST || frameType === RECORD_REL.CHUNK) {
+      const relayMode = ExoskeletonTelemetry.artifactRelayMode(
+        BINARY_FIRST_SD_MODE, currentReliableTuning().flags);
+      const kind = frameType === RECORD_REL.MANIFEST ? "manifest" : "chunk";
+      ExoskeletonTelemetry.dispatchArtifactRelay(relayMode, {
+        kind,
+        sourceId,
+        sessionId,
+        wireBytes: data.length
+      }, {
+        onReadOnly: observeMasterRawRelayFrame,
+        onBrowserControl: () => {
+          if (frameType === RECORD_REL.MANIFEST) {
+            handleReliableManifest(sourceId, sessionId, payload);
+          } else {
+            handleReliableChunk(sourceId, sessionId, chunkIndex, byteOffset, payload, flags);
+          }
+        }
+      });
       return;
     }
     if (frameType === RECORD_REL.COMMIT_DONE) {
@@ -4604,15 +4777,19 @@ input[type="checkbox"] {
       handleRecordDonePayload(sourceId, sessionId, payload);
       return;
     }
-    if (BINARY_FIRST_SD_MODE &&
-        !ExoskeletonTelemetry.rawRelayDebugEnabled(currentReliableTuning().flags) &&
-        (laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
-        msgType === RECORD_V3.MSG_CHUNK) {
-      return;
-    }
     if ((laneId === RECORD_V3.LANE_MASTER_DATA || laneId === RECORD_V3.LANE_NODE_DATA || laneId === RECORD_V3.LANE_RETX) &&
         msgType === RECORD_V3.MSG_CHUNK) {
-      handleSessionChunkPayload(sourceId, sessionId, offset, payload, sequence);
+      const relayMode = ExoskeletonTelemetry.artifactRelayMode(
+        BINARY_FIRST_SD_MODE, currentReliableTuning().flags);
+      ExoskeletonTelemetry.dispatchArtifactRelay(relayMode, {
+        kind: "v3_chunk",
+        sourceId,
+        sessionId,
+        wireBytes: data.length
+      }, {
+        onReadOnly: observeMasterRawRelayFrame,
+        onBrowserControl: () => handleSessionChunkPayload(sourceId, sessionId, offset, payload, sequence)
+      });
       return;
     }
     if (laneId === RECORD_V3.LANE_CONTROL && msgType === RECORD_V3.MSG_BARRIER) {
