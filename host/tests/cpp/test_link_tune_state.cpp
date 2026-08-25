@@ -16,6 +16,7 @@ int failures = 0;
 } while (0)
 
 using Model = exo::LinkTuneState;
+using RearmState = exo::TransferLinkRearmState;
 using State = Model::State;
 using Procedure = Model::Procedure;
 using TuningWire = exo::RecordTransferTuningWire;
@@ -671,6 +672,78 @@ constexpr bool compile_time_fast_reselection_during_slow_restore_contract()
          fast.interval == Model::Interval::Fast && fast.interval_min == 6U;
 }
 
+constexpr bool compile_time_active_source_reconnect_contract()
+{
+  Model model{};
+  RearmState rearm{};
+  uint32_t now = Model::kCommissioningStartDelayMs;
+  if (!rearm.begin_source(2U, 6U) || rearm.active_node_id() != 2U ||
+      rearm.fast_interval() != 6U || !model.connect(2U, 0x0042U, 0U)) return false;
+  uint32_t generation = model.telemetry(2U).generation;
+  if (!rearm.on_link_connected(2U, generation) ||
+      !model.begin_fast_preparation(2U, generation, rearm.fast_interval())) return false;
+  Model::Request request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now) ||
+      rearm.preparation_resolved(2U, generation,
+          model.transfer_preparation_resolved(2U, generation)) ||
+      !model.disconnect(2U, request.handle)) return false;
+  rearm.on_link_disconnected(2U);
+  if (rearm.preparation_resolved(2U, generation, true)) return false;
+
+  /* A Ready generation on another link cannot release the active source. */
+  if (!model.connect(0U, 0x0040U, now) ||
+      rearm.on_link_connected(1U, model.telemetry(0U).generation)) return false;
+  now += Model::kCommissioningStartDelayMs;
+  request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now) ||
+      !model.on_dle_complete(request.handle, request.generation, 251U, 251U, now)) return false;
+  request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now) ||
+      !model.on_phy_complete(request.handle, request.generation,
+                             Model::kStatusSuccess, 2U, 2U, now) ||
+      rearm.preparation_resolved(2U, model.telemetry(0U).generation, true)) return false;
+
+  /* No duplicate RecordDone is needed: retained source intent re-arms the new
+   * connection generation, while the old generation remains permanently stale. */
+  if (!model.connect(2U, 0x0052U, now)) return false;
+  const uint32_t reconnect_generation = model.telemetry(2U).generation;
+  if (reconnect_generation != generation + 1U ||
+      !rearm.on_link_connected(2U, reconnect_generation) ||
+      !model.begin_fast_preparation(2U, reconnect_generation,
+                                    rearm.fast_interval()) ||
+      rearm.preparation_resolved(2U, generation, true)) return false;
+  now += Model::kCommissioningStartDelayMs;
+  request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now) ||
+      !model.on_dle_complete(request.handle, reconnect_generation, 251U, 251U, now)) return false;
+  request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now) ||
+      !model.on_phy_complete(request.handle, reconnect_generation,
+                             Model::kStatusSuccess, 2U, 2U, now)) return false;
+  request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now) ||
+      !model.on_interval_complete(request.handle, reconnect_generation,
+                                  Model::kStatusSuccess, 6U, now) ||
+      !rearm.preparation_resolved(2U, reconnect_generation,
+          model.transfer_preparation_resolved(2U, reconnect_generation))) return false;
+
+  /* A mid-transfer reconnect uses the same retained intent. Explicit tuning
+   * degradation on the new generation releases ACK-window resume. */
+  if (!model.disconnect(2U, request.handle)) return false;
+  rearm.on_link_disconnected(2U);
+  if (!model.connect(2U, 0x0062U, now)) return false;
+  generation = model.telemetry(2U).generation;
+  if (!rearm.on_link_connected(2U, generation) ||
+      !model.begin_fast_preparation(2U, generation, rearm.fast_interval())) return false;
+  now += Model::kCommissioningStartDelayMs;
+  request = model.issue_next(now);
+  if (!model.on_request_accepted(request, now)) return false;
+  now += Model::kProcedureTimeoutMs;
+  return model.on_timeout(now) &&
+         rearm.preparation_resolved(2U, generation,
+             model.transfer_preparation_resolved(2U, generation));
+}
+
 static_assert(transition_names_are_distinct(),
               "The compile-time transition-state contract must stay distinct");
 static_assert(compile_time_transition_contract(),
@@ -691,6 +764,8 @@ static_assert(compile_time_transfer_gate_fallback_contract(),
               "The source gate must allow explicit fallback but reject disconnects and stale generations");
 static_assert(compile_time_fast_reselection_during_slow_restore_contract(),
               "A reselected source must finish fast preparation after an in-flight slow restore");
+static_assert(compile_time_active_source_reconnect_contract(),
+              "Reconnect must re-arm only the retained active source on its new generation");
 
 }  // namespace
 

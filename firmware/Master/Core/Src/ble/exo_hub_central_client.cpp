@@ -176,7 +176,6 @@ typedef struct
   uint16_t link_dle_rx_oct;
   uint8_t link_tx_phy;
   uint8_t link_rx_phy;
-  uint32_t transfer_tune_generation;
 } exo_leaf_slot_t;
 
 static exo_leaf_slot_t g_leaf_slots[EXO_HUB_LEAF_MAX];
@@ -198,6 +197,7 @@ static uint8_t g_targeted_reconnect_node_id = 0U;
 static uint32_t g_targeted_reconnect_after_ms = 0U;
 static uint8_t g_targeted_reconnect_attempts = 0U;
 static exo::LinkTuneState g_link_tune;
+static exo::TransferLinkRearmState g_transfer_link_rearm;
 
 static const uint8_t k_blepipe_service_uuid[16] = { 0x3f, 0x88, 0x10, 0x00, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
 static const uint8_t k_blepipe_data_uuid[16]    = { 0x3f, 0x88, 0x10, 0x01, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
@@ -248,9 +248,9 @@ static void exo_leaf_slot_reset_handles(exo_leaf_slot_t *slot)
 
 static void exo_leaf_slot_mark_backoff(exo_leaf_slot_t *slot)
 {
+  g_transfer_link_rearm.on_link_disconnected(exo_leaf_slot_node_id(slot));
   slot->state = EXO_LEAF_SLOT_BACKOFF;
   slot->connection_handle = 0xFFFFU;
-  slot->transfer_tune_generation = 0U;
   slot->retry_after_ms = HAL_GetTick() + EXO_HUB_BACKOFF_MS;
   exo_leaf_slot_reset_handles(slot);
   g_connect_busy = 0U;
@@ -1401,6 +1401,7 @@ void exo_hub_central_client_init(void)
 {
   memset(g_leaf_slots, 0, sizeof(g_leaf_slots));
   g_link_tune = exo::LinkTuneState{};
+  g_transfer_link_rearm = exo::TransferLinkRearmState{};
   g_scan_requested = 0U;
   g_scan_active = 0U;
   g_connect_busy = 0U;
@@ -1420,6 +1421,19 @@ void exo_hub_central_client_init(void)
           (unsigned)CFG_BLE_NUM_LINK);
 }
 
+static uint8_t exo_arm_active_transfer_slot(uint8_t slot_index)
+{
+  exo_leaf_slot_t *const slot = &g_leaf_slots[slot_index];
+  const uint8_t node_id = exo_leaf_slot_node_id(slot);
+  const exo::LinkTuneState::Telemetry &t = g_link_tune.telemetry(slot_index);
+  if (!g_transfer_link_rearm.on_link_connected(node_id, t.generation))
+  {
+    return 0U;
+  }
+  return (uint8_t)g_link_tune.begin_fast_preparation(
+      slot_index, t.generation, g_transfer_link_rearm.fast_interval());
+}
+
 /* Queue upload timing through the same completion-driven arbiter as DLE/PHY.
  * A transfer may proceed after a fast-preparation timeout (Degraded), but its
  * slow restore is only queued after that source completes. */
@@ -1427,26 +1441,23 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
                                                 uint8_t fast_interval)
 {
   uint8_t i;
+  if (fast != 0U)
+  {
+    (void)g_transfer_link_rearm.begin_source(node_id, fast_interval);
+  }
+  else
+  {
+    (void)g_transfer_link_rearm.end_source(node_id);
+  }
   for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
   {
-    if (g_leaf_slots[i].node_id == node_id &&
+    if (exo_leaf_slot_node_id(&g_leaf_slots[i]) == node_id &&
         g_leaf_slots[i].connection_handle != 0xFFFFU)
     {
       const exo::LinkTuneState::Telemetry &t = g_link_tune.telemetry(i);
       const uint8_t queued = (uint8_t)(fast != 0U
-          ? g_link_tune.begin_fast_preparation(i, t.generation, fast_interval)
+          ? exo_arm_active_transfer_slot(i)
           : g_link_tune.begin_slow_restore(i, t.generation));
-      if (fast != 0U)
-      {
-        /* Snapshot the selected connection generation even when the tuning
-         * state is already Failed: that is an explicit reliable-upload
-         * fallback, while a later reconnect must not inherit this token. */
-        g_leaf_slots[i].transfer_tune_generation = t.generation;
-      }
-      else
-      {
-        g_leaf_slots[i].transfer_tune_generation = 0U;
-      }
       EXO_LOG("[BLE][HUB][XFER] timing queue node=%u slot=%u fast=%u ci_cfg=%u queued=%u gen=%lu\r\n",
               (unsigned)node_id, (unsigned)i, (unsigned)(fast != 0U),
               (unsigned)exo::RecordTransferTuningWire::sanitize_fast_interval(fast_interval),
@@ -1464,13 +1475,14 @@ uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id)
   {
     const exo_leaf_slot_t *const slot = &g_leaf_slots[i];
     if (exo_leaf_slot_node_id(slot) != node_id ||
-        slot->connection_handle == 0xFFFFU ||
-        slot->transfer_tune_generation == 0U)
+        slot->connection_handle == 0xFFFFU)
     {
       continue;
     }
-    return (uint8_t)g_link_tune.transfer_preparation_resolved(
-        i, slot->transfer_tune_generation);
+    const exo::LinkTuneState::Telemetry &t = g_link_tune.telemetry(i);
+    return (uint8_t)g_transfer_link_rearm.preparation_resolved(
+        node_id, t.generation,
+        g_link_tune.transfer_preparation_resolved(i, t.generation));
   }
   return 0U;
 }
@@ -1811,9 +1823,17 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
   /* LL requests stay out of this connection-complete event. The model starts
    * after the 600 ms feature-exchange settle delay and advances only after the
    * matching completion event, not after a guessed inter-command delay. */
-  (void)g_link_tune.connect((uint8_t)(slot - &g_leaf_slots[0]), connection_handle,
-                            HAL_GetTick());
-  exo_report_link_tune((uint8_t)(slot - &g_leaf_slots[0]));
+  const uint8_t slot_index = (uint8_t)(slot - &g_leaf_slots[0]);
+  (void)g_link_tune.connect(slot_index, connection_handle, HAL_GetTick());
+  if (g_transfer_link_rearm.active_node_id() == exo_leaf_slot_node_id(slot))
+  {
+    const uint8_t queued = exo_arm_active_transfer_slot(slot_index);
+    EXO_LOG("[BLE][HUB][XFER] reconnect rearm node=%u slot=%u queued=%u gen=%lu\r\n",
+            (unsigned)exo_leaf_slot_node_id(slot), (unsigned)slot_index,
+            (unsigned)queued,
+            (unsigned long)g_link_tune.telemetry(slot_index).generation);
+  }
+  exo_report_link_tune(slot_index);
   exo_begin_mtu_exchange(slot);
 }
 

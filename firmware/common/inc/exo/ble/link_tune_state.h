@@ -553,4 +553,66 @@ class LinkTuneState {
   bool active_accepted_ = false;
 };
 
+/* Central-owned upload intent outlives any one BLE connection. The LL tuning
+ * model remains per-link/per-generation; this small seam records which single
+ * source should be rebound when that Node reconnects. */
+class TransferLinkRearmState {
+ public:
+  constexpr bool begin_source(uint8_t node_id, uint8_t fast_interval) {
+    if (!valid_node(node_id)) {
+      return false;
+    }
+    active_node_id_ = node_id;
+    fast_interval_ = RecordTransferTuningWire::sanitize_fast_interval(fast_interval);
+    armed_generation_ = 0U;
+    armed_ = false;
+    return true;
+  }
+
+  constexpr bool end_source(uint8_t node_id) {
+    if (node_id != active_node_id_) {
+      return false;
+    }
+    active_node_id_ = 0U;
+    armed_generation_ = 0U;
+    armed_ = false;
+    return true;
+  }
+
+  constexpr void on_link_disconnected(uint8_t node_id) {
+    if (node_id == active_node_id_) {
+      armed_generation_ = 0U;
+      armed_ = false;
+    }
+  }
+
+  constexpr bool on_link_connected(uint8_t node_id, uint32_t generation) {
+    if (node_id != active_node_id_) {
+      return false;
+    }
+    armed_generation_ = generation;
+    armed_ = true;
+    return true;
+  }
+
+  constexpr bool preparation_resolved(uint8_t node_id, uint32_t generation,
+                                      bool link_tune_resolved) const {
+    return armed_ && node_id == active_node_id_ &&
+           generation == armed_generation_ && link_tune_resolved;
+  }
+
+  constexpr uint8_t active_node_id() const { return active_node_id_; }
+  constexpr uint8_t fast_interval() const { return fast_interval_; }
+
+ private:
+  static constexpr bool valid_node(uint8_t node_id) {
+    return node_id >= 1U && node_id <= LinkTuneState::kLinkCount;
+  }
+
+  uint32_t armed_generation_ = 0U;
+  uint8_t active_node_id_ = 0U;
+  uint8_t fast_interval_ = LinkTuneState::kFastIntervalMin;
+  bool armed_ = false;
+};
+
 }  // namespace exo
