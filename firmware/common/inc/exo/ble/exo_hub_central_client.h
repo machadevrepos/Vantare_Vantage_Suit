@@ -51,6 +51,20 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
                                                    const uint8_t *peer_address);
 void exo_hub_central_client_on_disconnection_complete(uint16_t connection_handle,
                                                       uint8_t reason);
+void exo_hub_central_client_on_data_length_change(uint16_t connection_handle,
+                                                  uint16_t max_tx_octets,
+                                                  uint16_t max_tx_time,
+                                                  uint16_t max_rx_octets,
+                                                  uint16_t max_rx_time);
+void exo_hub_central_client_on_phy_update_complete(uint8_t status,
+                                                   uint16_t connection_handle,
+                                                   uint8_t tx_phy,
+                                                   uint8_t rx_phy);
+void exo_hub_central_client_on_connection_update_complete(uint8_t status,
+                                                          uint16_t connection_handle,
+                                                          uint16_t conn_interval,
+                                                          uint16_t conn_latency,
+                                                          uint16_t supervision_timeout);
 
 #ifdef __cplusplus
 }

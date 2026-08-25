@@ -34,7 +34,7 @@ void complete_fast_tune(Model &model, uint8_t link, uint16_t handle,
   EXPECT_TRUE(request.valid());
   EXPECT_TRUE(request.procedure == Procedure::Phy);
   EXPECT_TRUE(model.on_request_accepted(request, now));
-  EXPECT_TRUE(model.on_phy_complete(handle, generation, 2U, 2U, now));
+  EXPECT_TRUE(model.on_phy_complete(handle, generation, Model::kStatusSuccess, 2U, 2U, now));
 
   EXPECT_TRUE(model.telemetry(link).state == State::Ready);
 }
@@ -53,8 +53,8 @@ void test_serialized_four_link_arbitration()
     const uint32_t generation = model.telemetry(link).generation;
     complete_fast_tune(model, link, handle, generation, now);
     EXPECT_TRUE(model.telemetry(link).state == State::Ready);
-    EXPECT_TRUE(!model.issue_next(now).valid());
   }
+  EXPECT_TRUE(!model.issue_next(now).valid());
 }
 
 void test_transient_error_retries_without_releasing_the_global_arbiter()
@@ -74,6 +74,39 @@ void test_transient_error_retries_without_releasing_the_global_arbiter()
   EXPECT_TRUE(retry.valid());
   EXPECT_TRUE(retry.procedure == Procedure::Dle);
   EXPECT_TRUE(retry.generation == first.generation);
+}
+
+void test_transient_failures_are_bounded_and_degrade()
+{
+  Model model;
+  uint32_t now = Model::kCommissioningStartDelayMs;
+  EXPECT_TRUE(model.connect(0U, 0x0040U, 0U));
+  for (uint8_t attempt = 0U; attempt < Model::kMaxTransientAttempts; ++attempt) {
+    const Model::Request request = model.issue_next(now);
+    EXPECT_TRUE(request.valid());
+    EXPECT_TRUE(model.on_request_status(request, Model::kStatusCommandDisallowed, now));
+    now += Model::kRetryDelayMs;
+  }
+  EXPECT_TRUE(model.telemetry(0U).state == State::Degraded);
+  EXPECT_TRUE(model.collection_allowed(0U));
+  EXPECT_TRUE(model.telemetry(0U).retries == Model::kMaxTransientAttempts);
+  EXPECT_TRUE(!model.issue_next(now).valid());
+}
+
+void test_nonzero_completion_status_retries_the_active_procedure()
+{
+  Model model;
+  const uint32_t now = Model::kCommissioningStartDelayMs;
+  EXPECT_TRUE(model.connect(0U, 0x0040U, 0U));
+  Model::Request dle = model.issue_next(now);
+  EXPECT_TRUE(model.on_request_accepted(dle, now));
+  EXPECT_TRUE(model.on_dle_complete(dle.handle, dle.generation, 251U, 251U, now));
+  Model::Request phy = model.issue_next(now);
+  EXPECT_TRUE(model.on_request_accepted(phy, now));
+  EXPECT_TRUE(model.on_phy_complete(phy.handle, phy.generation,
+                                    Model::kStatusCommandDisallowed, 1U, 1U, now));
+  EXPECT_TRUE(model.telemetry(0U).state == State::NeedPhy);
+  EXPECT_TRUE(model.telemetry(0U).confirmed_tx_phy == 0U);
 }
 
 void test_permanent_error_fails_the_link()
@@ -132,7 +165,7 @@ void test_fast_to_slow_interval_uses_the_current_generation_only()
   EXPECT_TRUE(fast.procedure == Procedure::Interval);
   EXPECT_TRUE(fast.interval == Model::Interval::Fast);
   EXPECT_TRUE(model.on_request_accepted(fast, now));
-  EXPECT_TRUE(model.on_interval_complete(0x0040U, generation,
+  EXPECT_TRUE(model.on_interval_complete(0x0040U, generation, Model::kStatusSuccess,
                                          Model::kFastIntervalMin, now));
   EXPECT_TRUE(model.begin_slow_restore(0U, generation));
   const Model::Request slow = model.issue_next(now);
@@ -140,9 +173,9 @@ void test_fast_to_slow_interval_uses_the_current_generation_only()
   EXPECT_TRUE(slow.procedure == Procedure::Interval);
   EXPECT_TRUE(slow.interval == Model::Interval::Slow);
   EXPECT_TRUE(model.on_request_accepted(slow, now));
-  EXPECT_TRUE(!model.on_interval_complete(0x0040U, generation + 1U,
+  EXPECT_TRUE(!model.on_interval_complete(0x0040U, generation + 1U, Model::kStatusSuccess,
                                           Model::kFastIntervalMin, now));
-  EXPECT_TRUE(model.on_interval_complete(0x0040U, generation,
+  EXPECT_TRUE(model.on_interval_complete(0x0040U, generation, Model::kStatusSuccess,
                                          Model::kSlowIntervalMin, now));
   EXPECT_TRUE(model.telemetry(0U).state == State::Ready);
   EXPECT_TRUE(model.telemetry(0U).confirmed_interval == Model::kSlowIntervalMin);
@@ -171,7 +204,7 @@ constexpr bool compile_time_transition_contract()
   const Model::Request phy = model.issue_next(now);
   if (!phy.valid() || phy.procedure != Procedure::Phy ||
       !model.on_request_accepted(phy, now) ||
-      !model.on_phy_complete(phy.handle, phy.generation, 2U, 2U, now) ||
+      !model.on_phy_complete(phy.handle, phy.generation, Model::kStatusSuccess, 2U, 2U, now) ||
       model.telemetry(0U).state != State::Ready) {
     return false;
   }
@@ -231,6 +264,8 @@ int main()
 {
   test_serialized_four_link_arbitration();
   test_transient_error_retries_without_releasing_the_global_arbiter();
+  test_transient_failures_are_bounded_and_degrade();
+  test_nonzero_completion_status_retries_the_active_procedure();
   test_permanent_error_fails_the_link();
   test_missing_completion_degrades_but_keeps_collection_available();
   test_stale_or_disconnected_completions_are_rejected();

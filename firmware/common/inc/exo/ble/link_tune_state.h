@@ -49,11 +49,13 @@ class LinkTuneState {
   static constexpr uint32_t kRetryDelayMs = 50U;
   static constexpr uint32_t kCommissioningStartDelayMs = 600U;
   static constexpr uint32_t kProcedureTimeoutMs = 1500U;
+  static constexpr uint8_t kMaxTransientAttempts = 3U;
   static constexpr uint8_t kStatusSuccess = 0x00U;
   static constexpr uint8_t kStatusCommandDisallowed = 0x0CU;
   static constexpr uint8_t kStatusControllerBusy = 0x3AU;
   static constexpr uint8_t kStatusInvalidParameters = 0x12U;
-  static constexpr uint8_t kStatusTimeout = 0xFFU;
+  static constexpr uint8_t kStatusNotRequested = 0xFFU;
+  static constexpr uint8_t kStatusTimeout = 0xFEU;
 
   struct Request {
     uint8_t link = 0xFFU;
@@ -87,7 +89,7 @@ class LinkTuneState {
     uint16_t confirmed_interval = 0U;
     uint32_t preparation_duration_ms = 0U;
     uint8_t retries = 0U;
-    uint8_t status = kStatusSuccess;
+    uint8_t status = kStatusNotRequested;
   };
 
   constexpr LinkTuneState() = default;
@@ -170,8 +172,13 @@ class LinkTuneState {
     active_accepted_ = false;
     if (is_transient(status)) {
       ++entry.telemetry.retries;
-      entry.telemetry.state = need_state(request.procedure);
-      entry.retry_at_ms = now_ms + kRetryDelayMs;
+      if (entry.telemetry.retries >= kMaxTransientAttempts) {
+        entry.telemetry.state = State::Degraded;
+        entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
+      } else {
+        entry.telemetry.state = need_state(request.procedure);
+        entry.retry_at_ms = now_ms + kRetryDelayMs;
+      }
     } else {
       entry.telemetry.state = State::Failed;
     }
@@ -193,8 +200,11 @@ class LinkTuneState {
     return true;
   }
 
-  constexpr bool on_phy_complete(uint16_t handle, uint32_t generation,
+  constexpr bool on_phy_complete(uint16_t handle, uint32_t generation, uint8_t status,
                        uint8_t tx_phy, uint8_t rx_phy, uint32_t now_ms) {
+    if (status != kStatusSuccess) {
+      return on_completion_status(handle, generation, Procedure::Phy, status, now_ms);
+    }
     if (!matches_completion(handle, generation, Procedure::Phy)) {
       return false;
     }
@@ -215,8 +225,11 @@ class LinkTuneState {
     return true;
   }
 
-  constexpr bool on_interval_complete(uint16_t handle, uint32_t generation,
+  constexpr bool on_interval_complete(uint16_t handle, uint32_t generation, uint8_t status,
                             uint16_t interval, uint32_t now_ms) {
+    if (status != kStatusSuccess) {
+      return on_completion_status(handle, generation, Procedure::Interval, status, now_ms);
+    }
     if (!matches_completion(handle, generation, Procedure::Interval)) {
       return false;
     }
@@ -363,6 +376,14 @@ class LinkTuneState {
                                     Procedure procedure) const {
     return active_accepted_ && active_.procedure == procedure && active_.handle == handle &&
            active_.generation == generation;
+  }
+
+  constexpr bool on_completion_status(uint16_t handle, uint32_t generation,
+                                      Procedure procedure, uint8_t status, uint32_t now_ms) {
+    if (!matches_completion(handle, generation, procedure)) {
+      return false;
+    }
+    return on_request_status(active_, status, now_ms);
   }
 
   constexpr void complete_active() {

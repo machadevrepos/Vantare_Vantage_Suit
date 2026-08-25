@@ -604,11 +604,11 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           {
             const hci_le_connection_update_complete_event_rp0 *const event =
                 (const hci_le_connection_update_complete_event_rp0 *)p_meta_evt->data;
-            hci_le_connection_update_complete_event(event->Status,
-                                                    event->Connection_Handle,
-                                                    event->Conn_Interval,
-                                                    event->Conn_Latency,
-                                                    event->Supervision_Timeout);
+            exo_hub_central_client_on_connection_update_complete(event->Status,
+                                                                 event->Connection_Handle,
+                                                                 event->Conn_Interval,
+                                                                 event->Conn_Latency,
+                                                                 event->Supervision_Timeout);
           }
 
           /* USER CODE END EVT_LE_CONN_UPDATE_COMPLETE */
@@ -618,11 +618,11 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         {
           const hci_le_data_length_change_event_rp0 *const event =
               (const hci_le_data_length_change_event_rp0 *)p_meta_evt->data;
-          hci_le_data_length_change_event(event->Connection_Handle,
-                                          event->MaxTxOctets,
-                                          event->MaxTxTime,
-                                          event->MaxRxOctets,
-                                          event->MaxRxTime);
+          exo_hub_central_client_on_data_length_change(event->Connection_Handle,
+                                                       event->MaxTxOctets,
+                                                       event->MaxTxTime,
+                                                       event->MaxRxOctets,
+                                                       event->MaxRxTime);
           break;
         }
 
@@ -630,10 +630,10 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
         {
           const hci_le_phy_update_complete_event_rp0 *const event =
               (const hci_le_phy_update_complete_event_rp0 *)p_meta_evt->data;
-          hci_le_phy_update_complete_event(event->Status,
-                                           event->Connection_Handle,
-                                           event->TX_PHY,
-                                           event->RX_PHY);
+          exo_hub_central_client_on_phy_update_complete(event->Status,
+                                                        event->Connection_Handle,
+                                                        event->TX_PHY,
+                                                        event->RX_PHY);
           break;
         }
 

@@ -2310,7 +2310,7 @@ void exo_hub_central_client_set_discovery_hold(uint8_t hold)
 /* HCI completion callbacks for the one Master-wide LL arbiter.  The event
  * handler validates handle/generation/state before it may release the next
  * request, so an unrelated or disconnected completion cannot advance a link. */
-void hci_le_data_length_change_event(uint16_t Connection_Handle,
+void exo_hub_central_client_on_data_length_change(uint16_t Connection_Handle,
                                      uint16_t MaxTxOctets,
                                      uint16_t MaxTxTime,
                                      uint16_t MaxRxOctets,
@@ -2339,7 +2339,7 @@ void hci_le_data_length_change_event(uint16_t Connection_Handle,
   }
 }
 
-void hci_le_phy_update_complete_event(uint8_t Status,
+void exo_hub_central_client_on_phy_update_complete(uint8_t Status,
                                       uint16_t Connection_Handle,
                                       uint8_t TX_PHY,
                                       uint8_t RX_PHY)
@@ -2354,12 +2354,8 @@ void hci_le_phy_update_complete_event(uint8_t Status,
   {
     const uint8_t slot_index = (uint8_t)(slot - &g_leaf_slots[0]);
     const uint32_t generation = g_link_tune.telemetry(slot_index).generation;
-    const exo::LinkTuneState::Request request = g_link_tune.active_request();
-    const uint8_t accepted = (uint8_t)(Status == 0U
-        ? g_link_tune.on_phy_complete(Connection_Handle, generation, TX_PHY, RX_PHY, HAL_GetTick())
-        : (request.procedure == exo::LinkTuneState::Procedure::Phy &&
-           request.handle == Connection_Handle &&
-           g_link_tune.on_request_status(request, Status, HAL_GetTick())));
+    const uint8_t accepted = (uint8_t)g_link_tune.on_phy_complete(
+        Connection_Handle, generation, Status, TX_PHY, RX_PHY, HAL_GetTick());
     if (accepted != 0U)
     {
       slot->link_tx_phy = TX_PHY;
@@ -2371,7 +2367,7 @@ void hci_le_phy_update_complete_event(uint8_t Status,
   }
 }
 
-void hci_le_connection_update_complete_event(uint8_t Status,
+void exo_hub_central_client_on_connection_update_complete(uint8_t Status,
                                              uint16_t Connection_Handle,
                                              uint16_t Conn_Interval,
                                              uint16_t Conn_Latency,
@@ -2386,12 +2382,8 @@ void hci_le_connection_update_complete_event(uint8_t Status,
   }
   const uint8_t slot_index = (uint8_t)(slot - &g_leaf_slots[0]);
   const uint32_t generation = g_link_tune.telemetry(slot_index).generation;
-  const exo::LinkTuneState::Request request = g_link_tune.active_request();
-  const uint8_t accepted = (uint8_t)(Status == 0U
-      ? g_link_tune.on_interval_complete(Connection_Handle, generation, Conn_Interval, HAL_GetTick())
-      : (request.procedure == exo::LinkTuneState::Procedure::Interval &&
-         request.handle == Connection_Handle &&
-         g_link_tune.on_request_status(request, Status, HAL_GetTick())));
+  const uint8_t accepted = (uint8_t)g_link_tune.on_interval_complete(
+      Connection_Handle, generation, Status, Conn_Interval, HAL_GetTick());
   if (accepted != 0U)
   {
     exo_send_disc_report(EXO_DISC_EVT_LINK_TIMING, exo_leaf_slot_node_id(slot), slot_index,
