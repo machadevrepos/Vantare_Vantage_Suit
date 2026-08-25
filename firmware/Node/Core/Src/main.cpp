@@ -331,6 +331,7 @@ static volatile uint8_t g_node_rgb_mask = 0U;
 static exo::NodeUploadPump g_node_upload_pump;
 static uint32_t g_node_upload_seen_notification_complete_count = 0U;
 static uint32_t g_node_upload_seen_tx_pool_event_count = 0U;
+static uint32_t g_node_upload_seen_disconnect_count = 0U;
 static uint32_t g_node_upload_flash_read_ms = 0U;
 static uint32_t g_node_upload_diag_last_ms = 0U;
 
@@ -665,13 +666,27 @@ static void node_upload_pump_sync(uint32_t now_ms)
 {
 	const uint32_t notification_complete_count = Custom_APP_NotificationCompleteCount();
 	if (notification_complete_count != g_node_upload_seen_notification_complete_count) {
+		const uint32_t delta = notification_complete_count - g_node_upload_seen_notification_complete_count;
 		g_node_upload_seen_notification_complete_count = notification_complete_count;
-		g_node_upload_pump.on_notification_complete();
+		g_node_upload_pump.on_notification_complete(delta);
 	}
 	const uint32_t tx_pool_event_count = Custom_APP_TxPoolEventCount();
 	if (tx_pool_event_count != g_node_upload_seen_tx_pool_event_count) {
+		const uint32_t delta = tx_pool_event_count - g_node_upload_seen_tx_pool_event_count;
 		g_node_upload_seen_tx_pool_event_count = tx_pool_event_count;
-		g_node_upload_pump.on_tx_pool_available(Custom_APP_LastTxPoolBuffers());
+		g_node_upload_pump.on_tx_pool_available(Custom_APP_LastTxPoolBuffers(), delta);
+	}
+	const uint32_t disconnect_count = Custom_APP_DisconnectCount();
+	if (disconnect_count != g_node_upload_seen_disconnect_count) {
+		g_node_upload_seen_disconnect_count = disconnect_count;
+		/* Keep session/cursor data for a reconnect, but immediately stop the
+		 * foreground pump and allow live preview to resume. RecordDone is sent
+		 * again after reconnect so the Master can resume the same session. */
+		g_node_upload_active = false;
+		g_node_upload_credit = 0U;
+		g_node_record_done_sent = false;
+		g_node_record_done_last_send_ms = 0U;
+		g_node_upload_pump.stop();
 	}
 	if (!g_node_upload_active) {
 		if (g_node_upload_pump.active()) {
@@ -757,6 +772,15 @@ static void node_blepipe_process_recording_upload()
 					(tx_status == BLE_STATUS_INSUFFICIENT_RESOURCES) ? exo::NodeUploadPump::SendResult::InsufficientResources :
 					exo::NodeUploadPump::SendResult::OtherFailure;
 			g_node_upload_pump.on_send_result(result, HAL_GetTick());
+			if (g_node_upload_pump.terminal_error()) {
+				/* This is not a controller-backpressure condition. Preserve the
+				 * reliable upload cursor for reconnect/resume, but never watchdog
+				 * retry a parameter/security/stack failure. */
+				g_node_upload_active = false;
+				g_node_upload_credit = 0U;
+				g_node_record_done_sent = false;
+				g_node_record_done_last_send_ms = 0U;
+			}
 			const uint32_t failed_at_ms = HAL_GetTick();
 			if (g_node_upload_last_fail_log_ms == 0U ||
 			    (failed_at_ms - g_node_upload_last_fail_log_ms) >= kNodeRecordTxFailLogMs) {
@@ -784,9 +808,10 @@ static void node_blepipe_process_recording_upload()
 
 struct __attribute__((packed)) NodeUploadLinkStats {
 	uint8_t version;
-	uint8_t dle_outcome; /* 0=unknown, 1=requested, 2=confirmed */
+	uint8_t dle_outcome; /* 0=unknown, 1=requested, 2=confirmed, 3=degraded, 4=failed */
 	uint8_t dle_request_status;
 	uint8_t upload_active;
+	uint8_t dle_attempts;
 	uint16_t controller_max_tx_octets;
 	uint16_t negotiated_tx_octets;
 	uint16_t negotiated_rx_octets;
@@ -798,6 +823,7 @@ struct __attribute__((packed)) NodeUploadLinkStats {
 	uint32_t notification_complete_count;
 	uint32_t tx_pool_event_count;
 	uint32_t watchdog_wake_count;
+	uint32_t terminal_error_count;
 	uint32_t flash_read_ms;
 };
 
@@ -810,12 +836,13 @@ static void node_blepipe_report_upload_diagnostics()
 	g_node_upload_diag_last_ms = now_ms;
 	const exo_node_ble_dle_status_t dle = exo_node_ble_dle_status();
 	const exo::NodeUploadPump::Metrics &pump = g_node_upload_pump.metrics();
-	const uint8_t dle_outcome = dle.confirmed != 0U ? 2U : (dle.requested != 0U ? 1U : 0U);
+	const uint8_t dle_outcome = dle.commission_state;
 	NodeUploadLinkStats status{};
 	status.version = 1U;
 	status.dle_outcome = dle_outcome;
 	status.dle_request_status = dle.request_status;
 	status.upload_active = g_node_upload_pump.active() ? 1U : 0U;
+	status.dle_attempts = dle.commission_attempts;
 	status.controller_max_tx_octets = dle.controller_max_tx_octets;
 	status.negotiated_tx_octets = dle.negotiated_tx_octets;
 	status.negotiated_rx_octets = dle.negotiated_rx_octets;
@@ -827,18 +854,21 @@ static void node_blepipe_report_upload_diagnostics()
 	status.notification_complete_count = pump.notification_complete_count;
 	status.tx_pool_event_count = pump.tx_pool_event_count;
 	status.watchdog_wake_count = pump.watchdog_wake_count;
+	status.terminal_error_count = pump.terminal_error_count;
 	status.flash_read_ms = g_node_upload_flash_read_ms;
 	const bool telemetry_sent = exo_node_ble_status_notify_enabled() != 0U &&
 		node_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LINK_STATS, BLEPIPE_ID_HUB,
 			reinterpret_cast<const uint8_t *>(&status), static_cast<uint16_t>(sizeof(status)));
-	EXO_LOG("[BLE][NODE][UPLOAD] dle=%u req=0x%02X max=%u tx=%u rx=%u acceptedB=%lu accepted=%lu busy=%lu res=%lu complete=%lu pool=%lu/%u watchdog=%lu flashMs=%lu telemetry=%u\r\n",
-			static_cast<unsigned>(dle_outcome), static_cast<unsigned>(dle.request_status),
+	EXO_LOG("[BLE][NODE][UPLOAD] dle=%u attempts=%u req=0x%02X max=%u tx=%u rx=%u acceptedB=%lu accepted=%lu busy=%lu res=%lu complete=%lu pool=%lu/%u watchdog=%lu terminal=%lu flashMs=%lu telemetry=%u\r\n",
+			static_cast<unsigned>(dle_outcome), static_cast<unsigned>(dle.commission_attempts),
+			static_cast<unsigned>(dle.request_status),
 			static_cast<unsigned>(dle.controller_max_tx_octets), static_cast<unsigned>(dle.negotiated_tx_octets),
 			static_cast<unsigned>(dle.negotiated_rx_octets), static_cast<unsigned long>(pump.accepted_bytes),
 			static_cast<unsigned long>(pump.accepted_count), static_cast<unsigned long>(pump.busy_count),
 			static_cast<unsigned long>(pump.resource_count), static_cast<unsigned long>(pump.notification_complete_count),
 			static_cast<unsigned long>(pump.tx_pool_event_count), static_cast<unsigned>(pump.tx_pool_buffers),
-			static_cast<unsigned long>(pump.watchdog_wake_count), static_cast<unsigned long>(g_node_upload_flash_read_ms),
+			static_cast<unsigned long>(pump.watchdog_wake_count), static_cast<unsigned long>(pump.terminal_error_count),
+			static_cast<unsigned long>(g_node_upload_flash_read_ms),
 			static_cast<unsigned>(telemetry_sent ? 1U : 0U));
 }
 
@@ -1814,6 +1844,7 @@ int main(void)
 		static uint32_t touch_release_ms = 0U;
 		static uint32_t touch_feedback_until_ms = 0U;
 		static bool ignore_touch_until_release = (HAL_GPIO_ReadPin(TOUCH_MCU_GPIO_Port, TOUCH_MCU_Pin) == GPIO_PIN_SET);
+		Custom_APP_ProcessControlWrites();
 		exo_node_ble_link_process();
 
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED

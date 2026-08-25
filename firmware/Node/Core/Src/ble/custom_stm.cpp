@@ -100,15 +100,6 @@ static tBleStatus Generic_STM_App_Update_Char_Ext(uint16_t ConnectionHandle, uin
 /* Functions Definition ------------------------------------------------------*/
 /* USER CODE BEGIN PFD */
 
-/* CPU2 invokes this callback when a notification send previously returned
- * BLE_STATUS_INSUFFICIENT_RESOURCES. Keep it callback-safe: publish only. */
-extern "C" void aci_gatt_tx_pool_available_event(uint16_t Connection_Handle,
-                                                  uint16_t Available_Buffers)
-{
-  (void)Connection_Handle;
-  Custom_APP_TxPoolAvailable(Available_Buffers);
-}
-
 /* USER CODE END PFD */
 
 /* Private functions ----------------------------------------------------------*/
@@ -146,6 +137,7 @@ static SVCCTL_EvtAckStatus_t Custom_STM_Event_Handler(void *Event)
   aci_gatt_write_permit_req_event_rp0   *write_perm_req;
   aci_gatt_read_permit_req_event_rp0    *read_req;
   aci_gatt_notification_complete_event_rp0    *notification_complete;
+  aci_gatt_tx_pool_available_event_rp0 *tx_pool_available;
   Custom_STM_App_Notification_evt_t     Notification;
   /* USER CODE BEGIN Custom_STM_Event_Handler_1 */
 
@@ -417,6 +409,16 @@ static SVCCTL_EvtAckStatus_t Custom_STM_Event_Handler(void *Event)
           /* USER CODE BEGIN EVT_BLUE_GATT_NOTIFICATION_COMPLETE_END */
 
           /* USER CODE END EVT_BLUE_GATT_NOTIFICATION_COMPLETE_END */
+          break;
+        }
+
+        case ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE:
+        {
+          /* This service owns the raw SVCCTL dispatch. Publish the event once
+           * here rather than also defining the generated weak callback. */
+          tx_pool_available = (aci_gatt_tx_pool_available_event_rp0*)blecore_evt->data;
+          Custom_APP_TxPoolAvailable(tx_pool_available->Available_Buffers);
+          return_value = SVCCTL_EvtAckFlowEnable;
           break;
         }
 

@@ -76,14 +76,22 @@ uint8_t UpdateCharData[512];
 uint8_t NotifyCharData[512];
 uint16_t Connection_Handle;
 /* USER CODE BEGIN PV */
-static uint8_t g_pipe_last_control_rx[64];
-static uint8_t g_pipe_last_control_rx_len;
+typedef struct {
+  uint8_t length;
+  uint8_t payload[64];
+} NodeControlFrame_t;
+static NodeControlFrame_t g_pipe_control_frames[4];
+static volatile uint8_t g_pipe_control_head;
+static volatile uint8_t g_pipe_control_tail;
+static volatile uint32_t g_pipe_control_drop_count;
+static uint32_t g_pipe_control_drop_reported;
 static uint8_t g_pipe_data_notify_enabled;
 static uint8_t g_pipe_control_notify_enabled;
 static uint8_t g_pipe_status_notify_enabled;
 static volatile uint32_t g_pipe_notification_complete_count;
 static volatile uint32_t g_pipe_tx_pool_event_count;
 static volatile uint16_t g_pipe_tx_pool_buffers;
+static volatile uint32_t g_pipe_disconnect_count;
 
 /* USER CODE END PV */
 
@@ -135,8 +143,6 @@ void Custom_STM_App_Notification(Custom_STM_App_Notification_evt_t *pNotificatio
 
     case CUSTOM_STM_PIPECTRLRX_WRITE_NO_RESP_EVT:
       /* USER CODE BEGIN CUSTOM_STM_PIPECTRLRX_WRITE_NO_RESP_EVT */
-      NODE_BLE_LOG("[BLE][NODE][GATT] ctrl write-no-rsp len=%u\r\n",
-                  (unsigned)pNotification->DataTransfered.Length);
       Custom_APP_StoreControlWrite(pNotification);
 
       /* USER CODE END CUSTOM_STM_PIPECTRLRX_WRITE_NO_RESP_EVT */
@@ -144,8 +150,6 @@ void Custom_STM_App_Notification(Custom_STM_App_Notification_evt_t *pNotificatio
 
     case CUSTOM_STM_PIPECTRLRX_WRITE_EVT:
       /* USER CODE BEGIN CUSTOM_STM_PIPECTRLRX_WRITE_EVT */
-      NODE_BLE_LOG("[BLE][NODE][GATT] ctrl write len=%u\r\n",
-                  (unsigned)pNotification->DataTransfered.Length);
       Custom_APP_StoreControlWrite(pNotification);
 
       /* USER CODE END CUSTOM_STM_PIPECTRLRX_WRITE_EVT */
@@ -230,12 +234,6 @@ void Custom_STM_App_Notification(Custom_STM_App_Notification_evt_t *pNotificatio
 
 void Custom_APP_Notification(Custom_App_ConnHandle_Not_evt_t *pNotification)
 {
-  /* USER CODE BEGIN CUSTOM_APP_Notification_1 */
-  static uint32_t s_last_conn_log_ms = 0U;
-  static uint32_t s_last_disconn_log_ms = 0U;
-
-  /* USER CODE END CUSTOM_APP_Notification_1 */
-
   switch (pNotification->Custom_Evt_Opcode)
   {
     /* USER CODE BEGIN CUSTOM_APP_Notification_Custom_Evt_Opcode */
@@ -243,20 +241,17 @@ void Custom_APP_Notification(Custom_App_ConnHandle_Not_evt_t *pNotification)
     /* USER CODE END P2PS_CUSTOM_Notification_Custom_Evt_Opcode */
     case CUSTOM_CONN_HANDLE_EVT :
       /* USER CODE BEGIN CUSTOM_CONN_HANDLE_EVT */
-      if ((HAL_GetTick() - s_last_conn_log_ms) > 100U) {
-        NODE_BLE_LOG("[BLE][NODE][LINK] connected\r\n");
-        s_last_conn_log_ms = HAL_GetTick();
-      }
 
       /* USER CODE END CUSTOM_CONN_HANDLE_EVT */
       break;
 
     case CUSTOM_DISCON_HANDLE_EVT :
       /* USER CODE BEGIN CUSTOM_DISCON_HANDLE_EVT */
-      if ((HAL_GetTick() - s_last_disconn_log_ms) > 100U) {
-        NODE_BLE_LOG("[BLE][NODE][LINK] disconnected\r\n");
-        s_last_disconn_log_ms = HAL_GetTick();
-      }
+      g_pipe_data_notify_enabled = 0U;
+      g_pipe_control_notify_enabled = 0U;
+      g_pipe_status_notify_enabled = 0U;
+      g_pipe_control_head = g_pipe_control_tail;
+      ++g_pipe_disconnect_count;
 
       /* USER CODE END CUSTOM_DISCON_HANDLE_EVT */
       break;
@@ -286,8 +281,6 @@ void Custom_APP_Init(void)
 /* USER CODE BEGIN FD */
 tBleStatus Custom_APP_SendPipeFrame(Custom_STM_Char_Opcode_t char_opcode, const uint8_t *payload, uint8_t length)
 {
-  tBleStatus status;
-
   if ((payload == NULL) || (length == 0U)) {
     return BLE_STATUS_INVALID_PARAMS;
   }
@@ -321,14 +314,7 @@ tBleStatus Custom_APP_SendPipeFrame(Custom_STM_Char_Opcode_t char_opcode, const 
       return BLE_STATUS_INVALID_PARAMS;
   }
 
-  status = Custom_STM_App_Update_Char_Variable_Length(char_opcode, (uint8_t *)payload, length);
-  if (char_opcode == CUSTOM_STM_PIPEDATATX) {
-    NODE_BLE_LOG("[BLE][NODE][TX] data notify len=%u status=0x%02X enabled=%u\r\n",
-                 (unsigned)length,
-                 (unsigned)status,
-                 (unsigned)g_pipe_data_notify_enabled);
-  }
-  return status;
+  return Custom_STM_App_Update_Char_Variable_Length(char_opcode, (uint8_t *)payload, length);
 }
 
 extern "C" uint8_t Custom_APP_PipeDataNotifyEnabled(void)
@@ -360,6 +346,31 @@ extern "C" uint32_t Custom_APP_TxPoolEventCount(void)
 extern "C" uint16_t Custom_APP_LastTxPoolBuffers(void)
 {
   return g_pipe_tx_pool_buffers;
+}
+
+extern "C" uint32_t Custom_APP_DisconnectCount(void)
+{
+  return g_pipe_disconnect_count;
+}
+
+extern "C" void Custom_APP_ProcessControlWrites(void)
+{
+  if (g_pipe_control_drop_reported != g_pipe_control_drop_count) {
+    g_pipe_control_drop_reported = g_pipe_control_drop_count;
+    NODE_BLE_LOG("[BLE][NODE][RX] control queue overflow drops=%lu\r\n",
+                 (unsigned long)g_pipe_control_drop_reported);
+  }
+  while (g_pipe_control_head != g_pipe_control_tail) {
+    __DMB();
+    NodeControlFrame_t *frame = &g_pipe_control_frames[g_pipe_control_head];
+    const uint8_t length = frame->length;
+    NODE_BLE_LOG("[BLE][NODE][RX] ctrl len=%u first=0x%02X\r\n",
+                (unsigned)length,
+                length != 0U ? (unsigned)frame->payload[0] : 0U);
+    const uint8_t handled = exo_node_ble_write(frame->payload, length);
+    NODE_BLE_LOG("[BLE][NODE][RX] handled=%u\r\n", (unsigned)handled);
+    g_pipe_control_head = (uint8_t)((g_pipe_control_head + 1U) % 4U);
+  }
 }
 
 /* USER CODE END FD */
@@ -399,20 +410,24 @@ static void Custom_APP_StoreControlWrite(Custom_STM_App_Notification_evt_t *pNot
   }
 
   copy_len = pNotification->DataTransfered.Length;
-  if (copy_len > (uint8_t)sizeof(g_pipe_last_control_rx)) {
-    copy_len = (uint8_t)sizeof(g_pipe_last_control_rx);
+  if (copy_len > (uint8_t)sizeof(g_pipe_control_frames[0].payload)) {
+    copy_len = (uint8_t)sizeof(g_pipe_control_frames[0].payload);
   }
 
-  if (copy_len > 0U) {
-    uint8_t handled;
-    memcpy(g_pipe_last_control_rx, pNotification->DataTransfered.pPayload, copy_len);
-    NODE_BLE_LOG("[BLE][NODE][RX] ctrl len=%u first=0x%02X\r\n",
-                (unsigned)copy_len,
-                (unsigned)g_pipe_last_control_rx[0]);
-    handled = exo_node_ble_write(g_pipe_last_control_rx, copy_len);
-    NODE_BLE_LOG("[BLE][NODE][RX] handled=%u\r\n", (unsigned)handled);
+  if (copy_len == 0U) {
+    return;
   }
-  g_pipe_last_control_rx_len = copy_len;
+
+  const uint8_t next_tail = (uint8_t)((g_pipe_control_tail + 1U) % 4U);
+  if (next_tail == g_pipe_control_head) {
+    ++g_pipe_control_drop_count;
+    return;
+  }
+  NodeControlFrame_t *frame = &g_pipe_control_frames[g_pipe_control_tail];
+  memcpy(frame->payload, pNotification->DataTransfered.pPayload, copy_len);
+  frame->length = copy_len;
+  __DMB();
+  g_pipe_control_tail = next_tail;
 }
 
 uint8_t exo_node_ble_status_notify_enabled(void)

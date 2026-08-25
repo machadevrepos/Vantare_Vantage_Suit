@@ -56,6 +56,8 @@ typedef struct
   uint8_t requested;
   uint8_t confirmed;
   uint8_t request_status;
+  uint8_t commission_state; /* 0=unknown, 1=requested, 2=confirmed, 3=degraded, 4=failed */
+  uint8_t commission_attempts;
 } exo_node_ble_dle_status_t;
 
 /* USER CODE END ET */

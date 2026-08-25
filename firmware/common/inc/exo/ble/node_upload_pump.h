@@ -28,6 +28,7 @@ public:
     uint32_t notification_complete_count = 0U;
     uint32_t tx_pool_event_count = 0U;
     uint32_t watchdog_wake_count = 0U;
+    uint32_t terminal_error_count = 0U;
     uint16_t tx_pool_buffers = 0U;
   };
 
@@ -47,6 +48,7 @@ public:
   void start(uint32_t now_ms, uint8_t credit)
   {
     active_ = true;
+    terminal_error_ = false;
     blocked_ = false;
     credit_ = credit;
     last_blocked_ms_ = now_ms;
@@ -70,15 +72,15 @@ public:
     }
   }
 
-  void on_notification_complete()
+  void on_notification_complete(uint32_t events = 1U)
   {
-    ++metrics_.notification_complete_count;
+    metrics_.notification_complete_count += events;
     wake_from_controller_event();
   }
 
-  void on_tx_pool_available(uint16_t available_buffers)
+  void on_tx_pool_available(uint16_t available_buffers, uint32_t events = 1U)
   {
-    ++metrics_.tx_pool_event_count;
+    metrics_.tx_pool_event_count += events;
     metrics_.tx_pool_buffers = available_buffers;
     wake_from_controller_event();
   }
@@ -103,8 +105,15 @@ public:
         block(now_ms);
         break;
       case SendResult::OtherFailure:
-        /* Preserve the chunk/cursor. A later controller event or watchdog may retry it. */
-        block(now_ms);
+        /* A non-backpressure error has no expected controller wake. Stop the
+         * pump, preserve the reliable cursor externally, and let foreground
+         * control decide when a resumable session is restarted. */
+        (void)now_ms;
+        ++metrics_.terminal_error_count;
+        terminal_error_ = true;
+        active_ = false;
+        blocked_ = false;
+        send_ready_ = false;
         break;
     }
   }
@@ -127,6 +136,7 @@ public:
   }
 
   bool active() const { return active_; }
+  bool terminal_error() const { return terminal_error_; }
   bool live_preview_suppressed() const { return active_; }
   uint8_t credit() const { return credit_; }
   const Metrics &metrics() const { return metrics_; }
@@ -153,11 +163,103 @@ private:
   }
 
   bool active_ = false;
+  bool terminal_error_ = false;
   bool blocked_ = false;
   bool send_ready_ = false;
   uint8_t credit_ = 0U;
   uint32_t last_blocked_ms_ = 0U;
   Metrics metrics_{};
+};
+
+/* Pure, bounded DLE commissioning state. The BLE adapter maps vendor status
+ * codes onto RequestResult and performs commands only when request_due() says
+ * so; an HCI data-length event is the sole confirmation source. */
+class NodeDleCommissioner {
+public:
+  enum class State : uint8_t {
+    Unknown,
+    Requested,
+    Confirmed,
+    Degraded,
+    Failed,
+  };
+
+  enum class RequestResult : uint8_t {
+    Success,
+    Transient,
+    Failed,
+  };
+
+  static constexpr uint32_t kRetryMs = 250U;
+  static constexpr uint32_t kCompletionTimeoutMs = 1000U;
+  static constexpr uint8_t kMaxAttempts = 3U;
+
+  void start(uint32_t now_ms)
+  {
+    state_ = State::Unknown;
+    attempts_ = 0U;
+    next_attempt_ms_ = now_ms;
+    completion_deadline_ms_ = 0U;
+    negotiated_tx_octets_ = 0U;
+    negotiated_rx_octets_ = 0U;
+  }
+
+  bool request_due(uint32_t now_ms) const
+  {
+    return (state_ == State::Unknown || state_ == State::Degraded) &&
+           attempts_ < kMaxAttempts &&
+           static_cast<uint32_t>(now_ms - next_attempt_ms_) < 0x80000000U;
+  }
+
+  void on_request_result(RequestResult result, uint32_t now_ms)
+  {
+    if (!request_due(now_ms)) {
+      return;
+    }
+    ++attempts_;
+    if (result == RequestResult::Success) {
+      state_ = State::Requested;
+      completion_deadline_ms_ = now_ms + kCompletionTimeoutMs;
+    } else if (result == RequestResult::Transient && attempts_ < kMaxAttempts) {
+      state_ = State::Degraded;
+      next_attempt_ms_ = now_ms + kRetryMs;
+    } else {
+      state_ = State::Failed;
+    }
+  }
+
+  void process(uint32_t now_ms)
+  {
+    if (state_ == State::Requested &&
+        static_cast<uint32_t>(now_ms - completion_deadline_ms_) < 0x80000000U) {
+      if (attempts_ < kMaxAttempts) {
+        state_ = State::Degraded;
+        next_attempt_ms_ = now_ms + kRetryMs;
+      } else {
+        state_ = State::Failed;
+      }
+    }
+  }
+
+  void on_complete(uint16_t tx_octets, uint16_t rx_octets)
+  {
+    negotiated_tx_octets_ = tx_octets;
+    negotiated_rx_octets_ = rx_octets;
+    state_ = State::Confirmed;
+  }
+
+  State state() const { return state_; }
+  uint8_t attempts() const { return attempts_; }
+  uint16_t negotiated_tx_octets() const { return negotiated_tx_octets_; }
+  uint16_t negotiated_rx_octets() const { return negotiated_rx_octets_; }
+
+private:
+  State state_ = State::Unknown;
+  uint8_t attempts_ = 0U;
+  uint32_t next_attempt_ms_ = 0U;
+  uint32_t completion_deadline_ms_ = 0U;
+  uint16_t negotiated_tx_octets_ = 0U;
+  uint16_t negotiated_rx_octets_ = 0U;
 };
 
 } // namespace exo

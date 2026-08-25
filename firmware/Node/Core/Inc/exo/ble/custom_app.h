@@ -77,6 +77,8 @@ void Custom_APP_TxPoolAvailable(uint16_t available_buffers);
 uint32_t Custom_APP_NotificationCompleteCount(void);
 uint32_t Custom_APP_TxPoolEventCount(void);
 uint16_t Custom_APP_LastTxPoolBuffers(void);
+uint32_t Custom_APP_DisconnectCount(void);
+void Custom_APP_ProcessControlWrites(void);
 
 /* USER CODE END EF */
 

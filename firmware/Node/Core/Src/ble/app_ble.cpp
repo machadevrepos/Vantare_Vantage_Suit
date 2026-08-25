@@ -27,6 +27,7 @@
 #include "ble.h"
 #include "tl.h"
 #include <exo/ble/app_ble.h>
+#include <exo/ble/node_upload_pump.h>
 
 #include "stm32_seq.h"
 #include "shci.h"
@@ -223,13 +224,14 @@ uint8_t a_AdvData[11] =
 static volatile uint8_t g_node_dle_connect_pending;
 static volatile uint8_t g_node_dle_disconnect_pending;
 static volatile uint8_t g_node_dle_data_length_pending;
+static volatile uint8_t g_node_dle_link_active;
 static volatile uint16_t g_node_dle_connection_handle = 0xFFFFU;
 static volatile uint16_t g_node_dle_event_tx_octets;
 static volatile uint16_t g_node_dle_event_rx_octets;
 static uint16_t g_node_dle_controller_max_tx_octets;
 static uint8_t g_node_dle_requested;
-static uint8_t g_node_dle_confirmed;
 static uint8_t g_node_dle_request_status = BLE_STATUS_INVALID_PARAMS;
+static exo::NodeDleCommissioner g_node_dle_commissioner;
 
 /* USER CODE END PV */
 
@@ -1126,11 +1128,13 @@ static void EXO_Node_UpdateAdvName(void)
 static void EXO_Node_DleConnected(uint16_t connection_handle)
 {
   g_node_dle_connection_handle = connection_handle;
+  g_node_dle_link_active = 1U;
   g_node_dle_connect_pending = 1U;
 }
 
 static void EXO_Node_DleDisconnected(void)
 {
+  g_node_dle_link_active = 0U;
   g_node_dle_disconnect_pending = 1U;
 }
 
@@ -1217,46 +1221,77 @@ extern "C" void exo_node_ble_link_process(void)
 {
   if (g_node_dle_disconnect_pending != 0U) {
     g_node_dle_disconnect_pending = 0U;
-    g_node_dle_connect_pending = 0U;
     g_node_dle_data_length_pending = 0U;
     g_node_dle_requested = 0U;
-    g_node_dle_confirmed = 0U;
     g_node_dle_request_status = BLE_STATUS_INVALID_PARAMS;
     g_node_dle_controller_max_tx_octets = 0U;
     g_node_dle_event_tx_octets = 0U;
     g_node_dle_event_rx_octets = 0U;
+    g_node_dle_commissioner.start(0U);
+    if (g_node_dle_link_active == 0U) {
+      g_node_dle_connect_pending = 0U;
+    }
+  }
+
+  if (g_node_dle_link_active == 0U) {
+    return;
+  }
+
+  const uint32_t now_ms = HAL_GetTick();
+  if (g_node_dle_connect_pending != 0U) {
+    g_node_dle_connect_pending = 0U;
+    g_node_dle_requested = 0U;
+    g_node_dle_request_status = BLE_STATUS_INVALID_PARAMS;
+    g_node_dle_controller_max_tx_octets = 0U;
+    g_node_dle_event_tx_octets = 0U;
+    g_node_dle_event_rx_octets = 0U;
+    g_node_dle_commissioner.start(now_ms);
+
+    uint16_t max_tx_octets = 0U;
+    uint16_t max_tx_time = 0U;
+    uint16_t max_rx_octets = 0U;
+    uint16_t max_rx_time = 0U;
+    const tBleStatus max_status = hci_le_read_maximum_data_length(&max_tx_octets,
+                                                                   &max_tx_time,
+                                                                   &max_rx_octets,
+                                                                   &max_rx_time);
+    if (max_status == BLE_STATUS_SUCCESS) {
+      g_node_dle_controller_max_tx_octets = max_tx_octets;
+    }
   }
 
   if (g_node_dle_data_length_pending != 0U) {
     g_node_dle_data_length_pending = 0U;
-    g_node_dle_confirmed = 1U;
+    g_node_dle_commissioner.on_complete(g_node_dle_event_tx_octets,
+                                        g_node_dle_event_rx_octets);
   }
 
-  if (g_node_dle_connect_pending == 0U || g_node_dle_requested != 0U) {
+  g_node_dle_commissioner.process(now_ms);
+  if (!g_node_dle_commissioner.request_due(now_ms)) {
     return;
   }
 
-  /* Never issue this HCI command from a connection callback. Confirmation is
-   * reported only after HCI_LE_DATA_LENGTH_CHANGE_SUBEVT_CODE arrives. */
-  g_node_dle_connect_pending = 0U;
-  uint16_t max_tx_octets = 0U;
-  uint16_t max_tx_time = 0U;
-  uint16_t max_rx_octets = 0U;
-  uint16_t max_rx_time = 0U;
-  const tBleStatus max_status = hci_le_read_maximum_data_length(&max_tx_octets,
-                                                                 &max_tx_time,
-                                                                 &max_rx_octets,
-                                                                 &max_rx_time);
-  if (max_status == BLE_STATUS_SUCCESS) {
-    g_node_dle_controller_max_tx_octets = max_tx_octets;
-  }
+  /* Never issue this HCI command from a connection callback. Only temporary
+   * controller contention is retried; completion is confirmed solely by the
+   * data-length-change event and otherwise times out into degraded/failed. */
   const uint16_t requested_tx_octets =
-      (max_status == BLE_STATUS_SUCCESS && max_tx_octets < 251U) ? max_tx_octets : 251U;
+      (g_node_dle_controller_max_tx_octets != 0U && g_node_dle_controller_max_tx_octets < 251U) ?
+      g_node_dle_controller_max_tx_octets : 251U;
   const tBleStatus request_status = hci_le_set_data_length(g_node_dle_connection_handle,
                                                             requested_tx_octets,
                                                             0x0848U);
   g_node_dle_request_status = request_status;
-  g_node_dle_requested = (request_status == BLE_STATUS_SUCCESS) ? 1U : 0U;
+  exo::NodeDleCommissioner::RequestResult result = exo::NodeDleCommissioner::RequestResult::Failed;
+  if (request_status == BLE_STATUS_SUCCESS) {
+    result = exo::NodeDleCommissioner::RequestResult::Success;
+    g_node_dle_requested = 1U;
+  } else if (request_status == BLE_STATUS_BUSY ||
+             request_status == BLE_STATUS_INSUFFICIENT_RESOURCES ||
+             request_status == BLE_STATUS_PENDING ||
+             request_status == BLE_STATUS_TIMEOUT) {
+    result = exo::NodeDleCommissioner::RequestResult::Transient;
+  }
+  g_node_dle_commissioner.on_request_result(result, now_ms);
 }
 
 extern "C" exo_node_ble_dle_status_t exo_node_ble_dle_status(void)
@@ -1266,8 +1301,10 @@ extern "C" exo_node_ble_dle_status_t exo_node_ble_dle_status(void)
   status.negotiated_tx_octets = g_node_dle_event_tx_octets;
   status.negotiated_rx_octets = g_node_dle_event_rx_octets;
   status.requested = g_node_dle_requested;
-  status.confirmed = g_node_dle_confirmed;
+  status.confirmed = (g_node_dle_commissioner.state() == exo::NodeDleCommissioner::State::Confirmed) ? 1U : 0U;
   status.request_status = g_node_dle_request_status;
+  status.commission_state = static_cast<uint8_t>(g_node_dle_commissioner.state());
+  status.commission_attempts = g_node_dle_commissioner.attempts();
   return status;
 }
 
