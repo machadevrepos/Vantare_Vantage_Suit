@@ -535,6 +535,11 @@ state_ = TrainingCsvState::Idle;
 TrainingCsvState state() const { return state_; }
 uint32_t active_session_id() const { return active_session_id_; }
 uint8_t active_node_id() const { return active_node_id_; }
+/* Live node-upload progress for the desktop console transfer-rate readout:
+ * bytes staged to SD so far and the active node's total payload. Both zero
+ * outside an active node transfer. */
+uint32_t active_staged_bytes() const { return stager_.staged_size(); }
+uint32_t active_staged_total() const { return stager_.total_size(); }
 uint8_t expected_source_mask() const { return expected_source_mask_; }
 uint8_t completed_source_mask() const { return completed_source_mask_; }
 bool binary_only() const { return binary_only_; }

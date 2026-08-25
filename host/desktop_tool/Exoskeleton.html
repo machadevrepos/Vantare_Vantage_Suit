@@ -747,6 +747,10 @@ input[type="checkbox"] {
         <span id="sessionState" class="mono">Idle</span>
       </div>
       <div class="row">
+        <label>Transfer Rate</label>
+        <span id="transferRate" class="mono" title="Live node&rarr;Master upload rate during collection (from staged bytes in the 0xB6 status report)">idle</span>
+      </div>
+      <div class="row">
         <label>Session Nodes</label>
         <div id="sessionNodes">Discover Nodes to select participants</div>
       </div>
@@ -1006,12 +1010,40 @@ input[type="checkbox"] {
     REPORT_SET_NODE_ID_RESULT: 0xC0,
     REPORT_GET_NODE_ID_RESULT: 0xC1
   };
+  // Hub discovery/link diagnostics report, sent as a 0xE2 envelope on CMD_ACK.
+  // Mirrors EXO_HUB_DISC_REPORT_ID in exo_hub_central_client.cpp. It shares the
+  // wire value 0xB5 with the RECORD_TRANSFER_TUNING command byte: commands
+  // travel browser->hub and are answered with MSG_ACK, while reports travel
+  // hub->browser as 0xE2 envelopes, so the two never collide on this channel.
+  const DISC_REPORT_ID = 0xB5;
 
-  // Wire values mirror the coordinator enum; production firmware is binary-only.
+  // Every command byte the Master may echo back in a blepipe MSG_ACK/NACK on
+  // the control lane (exo_hub_ble_write -> master_handle_blepipe_command),
+  // with the log level its ACK warrants: high-frequency slider/test ACKs stay
+  // at debug so an info-level session log stays readable end to end.
+  const CMD_ACK_LABELS = new Map([
+    [CMD.START_STREAM, { label: "Stream Start", level: "info" }],
+    [CMD.STOP_STREAM, { label: "Stream Stop", level: "info" }],
+    [CMD.SET_INTERVAL, { label: "Set Stream Interval", level: "info" }],
+    [CMD.SET_ERM, { label: "Set ERM", level: "debug" }],
+    [CMD.SET_BUZZER, { label: "Set Buzzer", level: "debug" }],
+    [CMD.SET_RGB, { label: "Set RGB", level: "debug" }],
+    [CMD.TEST_TOUCH, { label: "Touch Feedback", level: "debug" }],
+    [CMD.SET_NODE_ID, { label: "Set Node ID", level: "debug" }],
+    [CMD.GET_NODE_ID, { label: "Get Node ID", level: "debug" }],
+    [CMD.REDISCOVER_NODES, { label: "Rediscover Nodes", level: "info" }],
+    [CMD.RESET_RECORD_STATE, { label: "Reset Record State", level: "info" }],
+    [CMD.GET_DISCOVERED_NODES, { label: "Get Discovered Nodes", level: "debug" }],
+    [CMD.RECORD_TRANSFER_TUNING, { label: "Transfer Tuning", level: "debug" }]
+  ]);
+
+  // Names mirror exo::TrainingCsvState in
+  // firmware/common/inc/exo/protocol/master_training_csv_coordinator.h so log
+  // lines can be cross-referenced against Master SWO traces verbatim.
   const MASTER_SD_COLLECTION_STATES = [
-    "Idle", "WaitingForMasterFinalize", "LegacyConvertMasterBno", "LegacyConvertMasterIcm",
-    "WaitingForNode", "ReceivingNode", "ValidatingNode", "LegacyConvertNodeBno",
-    "LegacyConvertNodeIcm", "Complete", "CoordinatorError", "StageError",
+    "Idle", "WaitingForMaster", "ConvertMasterBno", "ConvertMasterIcm",
+    "WaitingForNode", "ReceiveNode", "ValidateNode", "ConvertNodeBno",
+    "ConvertNodeIcm", "Complete", "CsvError", "StageError",
     "BinaryFinalizeNode"
   ];
   const BINARY_FIRST_SD_MODE = true;
@@ -1051,13 +1083,21 @@ input[type="checkbox"] {
     SHUTDOWN_ARMED: 2,
     TURNING_OFF: 3
   };
-  // Mirrors RecorderState in Firmware/LIBRARY/CUSTOM/RECORDING_TYPES.h
+  // Mirrors RecorderState in firmware/common/inc/exo/types/recording_types.h
   const RECORDER_STATES = [
     "idle", "armed", "recording", "finalizing",
     "ready-for-upload", "uploading", "awaiting-ack", "erase-after-ack"
   ];
   function recorderStateLabel(stateValue) {
     return RECORDER_STATES[stateValue] ?? `state${stateValue}`;
+  }
+  // "MASTER+NODE1+NODE2" style label for a source bitmask (bit0=Master,
+  // bits1..4=NODE1..4); matches the coordinator's expected/completed masks.
+  function sourceMaskLabel(mask) {
+    const names = [];
+    if (mask & 0x01) names.push("MASTER");
+    for (let n = 1; n <= 4; n += 1) if (mask & (1 << n)) names.push(`NODE${n}`);
+    return names.length ? names.join("+") : "none";
   }
   const RECORD_START_PHASE = {
     0x01: "wait_app_ready",
@@ -1244,6 +1284,7 @@ input[type="checkbox"] {
     intervalInput: el("intervalInput"),
     sessionIdInput: el("sessionIdInput"), durationInput: el("durationInput"), leadTimeInput: el("leadTimeInput"), startRecordBtn: el("startRecordBtn"),
     sessionState: el("sessionState"), sessionNodes: el("sessionNodes"),
+    transferRate: el("transferRate"),
     transferProfileSelect: el("transferProfileSelect"), applyTransferTuningBtn: el("applyTransferTuningBtn"),
     transferCreditInput: el("transferCreditInput"), transferAckChunksInput: el("transferAckChunksInput"),
     transferAckMsInput: el("transferAckMsInput"), transferHeartbeatMsInput: el("transferHeartbeatMsInput"),
@@ -1308,6 +1349,21 @@ input[type="checkbox"] {
     pendingTrainingTerminalState: null,
     // Last Master SD collector status report (wire-compatible with coordinator v1).
     trainingCsv: { state: 0, expected: 0, completed: 0 },
+    // One-shot latch for the "all expected sources collected" log line; the
+    // firmware reports 0xB6 only on state/completed-mask changes.
+    collectionAllSourcesLogged: false,
+    // Session debug-log bookkeeping: when recording began and whether the
+    // live-preview rejection tally has been emitted for this run.
+    sessionStartedAtMs: 0,
+    liveRejectSummaryLogged: false,
+    // Live node->Master transfer-rate tracking, fed by the staged-byte fields in
+    // the 0xB6 status report. nodeId tracks which source the samples belong to so
+    // a rate is never computed across a node boundary; startMs/startBytes anchor
+    // the per-node average, last* give the instantaneous rate between reports.
+    transferRate: {
+      nodeId: 0, startMs: 0, startBytes: 0,
+      lastMs: 0, lastBytes: 0, instKbps: 0, avgKbps: 0, totalBytes: 0
+    },
     pointsWindow: 600,
     counters: { packets: 0, invalid: 0, unknown: 0 },
     traces: new Map(),
@@ -1533,6 +1589,20 @@ input[type="checkbox"] {
   const logDedupe = new Map();
   function logOnChange(key, msg, level = "info") {
     if (logDedupe.get(key) === msg) return;
+    logDedupe.set(key, msg);
+    log(msg, level);
+  }
+
+  // The Master acks every command write it receives (one MSG_ACK per write in
+  // exo_hub_ble_write -> master_handle_blepipe_command), so retries of a single
+  // user action legitimately produce identical ACK notifications. Log the first
+  // occurrence at the caller's level; identical repeats stay visible at debug
+  // level so the info log shows one line per logical event without hiding data.
+  function logCmdAck(key, msg, level = "info") {
+    if (logDedupe.get(key) === msg) {
+      logDebug(`${msg} [repeat]`);
+      return;
+    }
     logDedupe.set(key, msg);
     log(msg, level);
   }
@@ -1963,6 +2033,10 @@ input[type="checkbox"] {
   }
 
   function handleDisconnected() {
+    // Capture before the resets below wipe it: this feeds the closing log line.
+    const closedSessionState = state.sessionState;
+    const closedCollection =
+      `${sourceMaskLabel(state.trainingCsv.completed)}/${sourceMaskLabel(state.trainingCsv.expected)} complete`;
     disarmSessionWatchdog("disconnected");
     setConnectedUi(false);
     if (state.imuChar) {
@@ -1994,6 +2068,10 @@ input[type="checkbox"] {
     state.activeRecordOwnerKey = null;
     state.pendingTrainingTerminalState = null;
     state.trainingCsv = { state: 0, expected: 0, completed: 0 };
+    state.collectionAllSourcesLogged = false;
+    state.sessionStartedAtMs = 0;
+    state.liveRejectSummaryLogged = false;
+    resetTransferRate();
     state.pendingAckBySession.clear();
     abortBleWrites(new Error("BLE disconnected"));
     state.connectReadyAtMs = 0;
@@ -2007,7 +2085,7 @@ input[type="checkbox"] {
     clearExpectedRecordSources();
     setSessionState("Idle");
     renderDiscoveredNodes();
-    log("Disconnected.");
+    log(`Disconnected. Session state at disconnect: ${closedSessionState}; collection was ${closedCollection}.`);
   }
 
   function handleLeafDisconnected() {
@@ -2488,6 +2566,10 @@ input[type="checkbox"] {
     state.activeRecordOwnerKey = null;
     state.pendingTrainingTerminalState = null;
     state.trainingCsv = { state: 0, expected: 0, completed: 0 };
+    state.collectionAllSourcesLogged = false;
+    state.sessionStartedAtMs = 0;
+    state.liveRejectSummaryLogged = false;
+    resetTransferRate();
     state.pendingAckBySession.clear();
     if (state.recordAckTimer) {
       clearInterval(state.recordAckTimer);
@@ -2829,9 +2911,22 @@ input[type="checkbox"] {
     return Promise.reject(new Error("Characteristic is not writable"));
   }
 
+  // Little-endian uint32 read from the report payload, or null when the report
+  // is too short to carry it (older firmware that predates the field).
+  function readReportU32(data, offset) {
+    if (data.length < offset + 4) return null;
+    return (data[offset] | (data[offset + 1] << 8) |
+      (data[offset + 2] << 16) | (data[offset + 3] << 24)) >>> 0;
+  }
+
   function decodeTrainingCsvStatus(data, reportLen) {
     const hasFailureSite = reportLen >= 9;
     const hasMasks = reportLen >= 11;
+    // Bytes 11-14 (staged so far) and 15-18 (active node total) were appended to
+    // the 0xB6 report so the console can show live node-upload progress + rate;
+    // they sit at data offsets 14 and 18 after the 3-byte report envelope.
+    const hasStaged = reportLen >= 15;
+    const hasStagedTotal = reportLen >= 19;
     return {
       state: data[3],
       expected: data[4],
@@ -2843,13 +2938,70 @@ input[type="checkbox"] {
       csvOp: hasFailureSite ? data[10] : data[9],
       csvFr: hasFailureSite ? data[11] : data[10],
       failedSourceMask: hasMasks ? data[12] : 0,
-      cleanupPendingMask: hasMasks ? data[13] : 0
+      cleanupPendingMask: hasMasks ? data[13] : 0,
+      stagedBytes: hasStaged ? readReportU32(data, 14) : null,
+      stagedTotal: hasStagedTotal ? readReportU32(data, 18) : null
     };
   }
 
   function syncReceivingTransferState() {
     state.receivingTransfer = state.recordTransfers.size > 0;
     return state.receivingTransfer;
+  }
+
+  // Best-guess active upload source during ReceiveNode: the lowest node bit that
+  // is expected but not yet completed (collection is sequential). Master is bit0.
+  function activeTransferNodeId(status) {
+    const pending = status.expected & ~status.completed & 0x1E;
+    for (let n = 1; n <= 4; n += 1) if (pending & (1 << n)) return n;
+    return 0;
+  }
+
+  // Reset the live transfer-rate tracker (call at session start / disconnect).
+  function resetTransferRate() {
+    state.transferRate = {
+      nodeId: 0, startMs: 0, startBytes: 0,
+      lastMs: 0, lastBytes: 0, instKbps: 0, avgKbps: 0, totalBytes: 0
+    };
+    if (ui.transferRate) ui.transferRate.textContent = "idle";
+  }
+
+  // Fold one 0xB6 staged-byte sample into the rate tracker; update the UI readout
+  // and return a suffix (" staged=.. rate=.. avg=..") for the collection log line.
+  // Returns "" when the report predates the staged-byte fields (older firmware).
+  function updateTransferRate(status) {
+    if (status.stagedBytes === null || status.stagedBytes === undefined) return "";
+    const t = state.transferRate;
+    const now = performance.now();
+    const node = activeTransferNodeId(status) || t.nodeId;
+    const total = status.stagedTotal || 0;
+    // Re-anchor on a node change, a counter reset (new stager), a total change,
+    // or the first sample — never compute a rate across a node boundary.
+    const newAnchor = t.startMs === 0 || node !== t.nodeId ||
+      status.stagedBytes < t.lastBytes || (total !== 0 && total !== t.totalBytes);
+    if (newAnchor) {
+      t.nodeId = node;
+      t.startMs = now; t.startBytes = status.stagedBytes;
+      t.lastMs = now; t.lastBytes = status.stagedBytes;
+      t.totalBytes = total; t.instKbps = 0; t.avgKbps = 0;
+    } else {
+      const dtInst = (now - t.lastMs) / 1000;
+      const dbInst = status.stagedBytes - t.lastBytes;
+      if (dtInst >= 0.05 && dbInst >= 0) t.instKbps = (dbInst / 1024) / dtInst;
+      const dtAvg = (now - t.startMs) / 1000;
+      const dbAvg = status.stagedBytes - t.startBytes;
+      if (dtAvg >= 0.05 && dbAvg >= 0) t.avgKbps = (dbAvg / 1024) / dtAvg;
+      t.lastMs = now; t.lastBytes = status.stagedBytes; t.totalBytes = total;
+    }
+    const kb = (status.stagedBytes / 1024).toFixed(1);
+    const totKb = t.totalBytes > 0 ? (t.totalBytes / 1024).toFixed(1) : "?";
+    const pct = t.totalBytes > 0
+      ? Math.min(100, Math.floor((status.stagedBytes * 100) / t.totalBytes)) : 0;
+    if (ui.transferRate) {
+      ui.transferRate.textContent =
+        `${node ? `NODE${node} ` : ""}${t.instKbps.toFixed(1)} KB/s (avg ${t.avgKbps.toFixed(1)}) — ${kb}/${totKb} KB ${t.totalBytes > 0 ? `${pct}%` : ""}`.trim();
+    }
+    return ` staged=${kb}/${totKb}KB(${pct}%) rate=${t.instKbps.toFixed(1)}KB/s avg=${t.avgKbps.toFixed(1)}KB/s`;
   }
 
   function abortActiveRecordTransfers(reason) {
@@ -2865,6 +3017,24 @@ input[type="checkbox"] {
     syncReceivingTransferState();
     resetTransferUi(`Transfer aborted: ${reason}`);
     refreshStartRecordAvailability();
+  }
+
+  // One-line end-of-run record for debug logs: coordinator masks plus wall time.
+  // Emitted only once a terminal state was actually applied (or the watchdog
+  // fired), never mid-collection.
+  function logSessionOutcome(outcome) {
+    const training = state.trainingCsv || { state: 0, expected: 0, completed: 0 };
+    const elapsedS = state.sessionStartedAtMs > 0
+      ? Math.round((performance.now() - state.sessionStartedAtMs) / 1000)
+      : null;
+    let line = `SESSION ${state.activeRecordSessionId || "-"} OUTCOME (${outcome}):` +
+      ` collection_state=${MASTER_SD_COLLECTION_STATES[training.state] ?? "Unknown"}` +
+      ` expected=${sourceMaskLabel(training.expected)}` +
+      ` completed=${sourceMaskLabel(training.completed)}`;
+    if (training.failed) line += ` failed=${sourceMaskLabel(training.failed)}`;
+    if (training.cleanupPending) line += ` cleanup_pending=${sourceMaskLabel(training.cleanupPending)}`;
+    if (elapsedS !== null) line += ` wall_s=${elapsedS}`;
+    log(line);
   }
 
   function applyTrainingCsvTerminalState(trainingState, expected = null, completed = null, failed = null) {
@@ -3432,16 +3602,31 @@ input[type="checkbox"] {
         if (echoedCmd === 0x0F) {
           setSessionState(accepted ? "Streaming" : "Error");
           state.awaitingRecordDone = false;
-          log(`Session Start ACK ${accepted ? "accepted" : "rejected"}.`);
+          if (accepted) {
+            state.sessionStartedAtMs = performance.now();
+            state.liveRejectSummaryLogged = false;
+            state.collectionAllSourcesLogged = false;
+            resetTransferRate();
+          }
+          logCmdAck("ack-start", `Session Start ACK ${accepted ? "accepted" : "rejected"}.`);
           return;
         }
         if (echoedCmd === 0x0E) {
           setSessionState(accepted ? "Collecting" : "Error");
-          log(`Session Stop ACK ${accepted ? "accepted" : "rejected"}.`);
+          logCmdAck("ack-stop", `Session Stop ACK ${accepted ? "accepted" : "rejected"}.`);
+          if (accepted && !state.liveRejectSummaryLogged) {
+            state.liveRejectSummaryLogged = true;
+            const invalid = state.counters.invalid;
+            if (invalid > 0) {
+              log(`LIVE preview closed: ${invalid} preview frame(s) rejected during streaming (breakdown in Runtime counters; recording on SD is unaffected).`);
+            } else {
+              log("LIVE preview closed: all preview frames parsed cleanly.");
+            }
+          }
           return;
         }
         if (echoedCmd === 0x10) {
-          log(`Retry Source ACK ${accepted ? "accepted" : "rejected"}.`);
+          logCmdAck("ack-retry", `Retry Source ACK ${accepted ? "accepted" : "rejected"}.`);
           if (!accepted) setSessionState("Error");
           return;
         }
@@ -3458,7 +3643,16 @@ input[type="checkbox"] {
           }
           refreshStartRecordAvailability();
           log(`Start Record ACK ${accepted ? "accepted" : "rejected"}.`);
+          return;
         }
+        const ackEntry = CMD_ACK_LABELS.get(echoedCmd);
+        if (ackEntry) {
+          logCmdAck(`ack-0x${echoedCmd.toString(16).padStart(2, "0")}`,
+            `${ackEntry.label} ACK ${accepted ? "accepted" : "rejected"}.`,
+            ackEntry.level);
+          return;
+        }
+        logDebug(`CMD_ACK unhandled: msg=0x${pipe.msgType.toString(16).padStart(2, "0")} payload=${hexBytes(payload)}`);
         return;
       }
       if (pipe.msgType === BLEPIPE.MSG_COMMAND_RESP && payload.length >= 4) {
@@ -3488,21 +3682,27 @@ input[type="checkbox"] {
         ids.sort((a, b) => a - b);
         state.discoveredNodes = ids;
         renderDiscoveredNodes();
-      } else if (reportId === CMD.RECORD_TRANSFER_TUNING && reportLen >= 8) {
+      } else if (reportId === DISC_REPORT_ID && reportLen >= 8) {
         logDiscoveryReport(data, reportLen);
       } else if (reportId === CMD.MASTER_SD_STATUS && reportLen >= 8) {
-        const srcMask = (m) => {
-          const names = [];
-          if (m & 0x01) names.push("MASTER");
-          for (let n = 1; n <= 4; n += 1) if (m & (1 << n)) names.push(`NODE${n}`);
-          return names.length ? names.join("+") : "none";
-        };
         const status = decodeTrainingCsvStatus(data, reportLen);
         const {
           state: st, expected, completed, failureSite, failureNode,
           stageOp, stageFr, csvOp, csvFr, failedSourceMask, cleanupPendingMask
         } = status;
         state.trainingCsv = { state: st, expected, completed, failed: failedSourceMask, cleanupPending: cleanupPendingMask };
+        const srcMask = sourceMaskLabel;
+        // The coordinator reports 0xB6 only when its state or completed mask
+        // changes, so the moment the completed mask covers the expected mask is
+        // the authoritative "everything is collected" signal. Log it once even
+        // if the terminal Complete state report is delayed or never arrives.
+        if (st === 9 || st >= 10) {
+          state.collectionAllSourcesLogged = false;
+        } else if (expected !== 0 && (completed & expected) === expected &&
+            !state.collectionAllSourcesLogged) {
+          state.collectionAllSourcesLogged = true;
+          log(`Master SD Collection: all expected sources collected (mask 0x${expected.toString(16).padStart(2, "0")}); awaiting final coordinator state.`);
+        }
         const sdState = MASTER_SD_COLLECTION_STATES[st] ?? `State${st}`;
         let line = `Master SD Collection: state=${sdState}` +
           ` expected=${srcMask(expected)} completed=${srcMask(completed)}`;
@@ -3523,8 +3723,20 @@ input[type="checkbox"] {
         if (failureNode) line += ` node=NODE${failureNode}`;
         if (stageOp || stageFr) line += ` stage_op=${stageOp} stage_fr=${stageFr}(${FRESULT_NAMES[stageFr] ?? "?"})`;
         if (csvOp || csvFr) line += ` csv_op=${csvOp} csv_fr=${csvFr}(${FRESULT_NAMES[csvFr] ?? "?"})`;
+        // Live node->Master upload rate from the report's staged-byte fields.
+        // Meaningful only while collecting (states 4..12); a fresh session start
+        // re-anchors the tracker.
+        const rateSuffix = (st >= 4 && st <= 12) ? updateTransferRate(status) : "";
+        if (rateSuffix) line += rateSuffix;
         log(line);
-        applyTrainingCsvTerminalState(st, expected, completed, failedSourceMask);
+        const terminalApplied = applyTrainingCsvTerminalState(st, expected, completed, failedSourceMask);
+        if (terminalApplied) {
+          if (st === 9) {
+            logSessionOutcome(expected !== 0 && (completed & expected) !== expected ? "incomplete" : "complete");
+          } else if (st >= 10) {
+            logSessionOutcome("error");
+          }
+        }
       } else if (reportId === CMD.REPORT_SET_NODE_ID_RESULT && reportLen >= 3) {
         const currentId = data[3];
         const newId = data[4];
@@ -3535,6 +3747,8 @@ input[type="checkbox"] {
         const resolvedId = data[4];
         const status = data[5];
         log(`GET_NODE_ID result: target=${targetId} current=${resolvedId} status=${status ? "ok" : "missing"}`);
+      } else {
+        logDebug(`CMD_REPORT unhandled: id=0x${reportId.toString(16).padStart(2, "0")} len=${reportLen} raw=${hexBytes(data.slice(0, 3 + reportLen))}`);
       }
       return;
     }
@@ -3908,7 +4122,10 @@ input[type="checkbox"] {
       ids.sort((a, b) => a - b);
       state.discoveredNodes = ids;
       renderDiscoveredNodes();
-      log(`TOPOLOGY update: ${ids.length > 0 ? ids.map((id) => `NODE${id}`).join(", ") : "none"}`);
+      // The hub sends topology as the command response and again on every
+      // discovered-mask change (exo_hub_leaf_topology_touch), so identical
+      // consecutive lists are normal firmware behavior.
+      logOnChange("topology", `TOPOLOGY update: ${ids.length > 0 ? ids.map((id) => `NODE${id}`).join(", ") : "none"}`);
       return true;
     }
     if (pipe.msgType === BLEPIPE.MSG_STATUS) {
@@ -3982,8 +4199,18 @@ input[type="checkbox"] {
     const recorderState = dv.getUint8(3);
     const sessionId = dv.getUint32(4, true) >>> 0;
     const maximumDurationMs = payload.length >= 12 ? dv.getUint32(8, true) >>> 0 : 0;
+    // A node only erases its local recording after the Master has validated and
+    // durably stored that file (see README_BINARY_RECORDING.md), so the
+    // transition from a collection state (4..7) back to idle/ready marks that
+    // source as finalized even if no further 0xB6 status report arrives.
+    const previousInfo = state.nodeRecorderReady.get(nodeId);
+    if (previousInfo && !previousInfo.ready &&
+        previousInfo.recorderState >= 4 && previousInfo.recorderState <= 7 &&
+        ready && recorderState === 0 && sessionId === 0) {
+      log(`RECORD node finalized: source=${sourceLabel(nodeId)} file validated by Master; node copy erased and idle.`);
+    }
     logOnChange(`node-ready-${nodeId}`,
-      `RECORD node ready: source=${sourceLabel(nodeId)} ready=${ready ? 1 : 0} state=${recorderState} session=${sessionId} capacity_ms=${maximumDurationMs}`);
+      `RECORD node ready: source=${sourceLabel(nodeId)} ready=${ready ? 1 : 0} state=${recorderState} (${recorderStateLabel(recorderState)}) session=${sessionId} capacity_ms=${maximumDurationMs}`);
     // Track node recorder readiness for Start Stream gating
     state.nodeRecorderReady.set(nodeId, {
       ready,
@@ -4010,7 +4237,10 @@ input[type="checkbox"] {
     const sessionId = dv.getUint32(6, true) >>> 0;
     const extendMs = clamp(dv.getUint32(10, true) >>> 0, 1000, 60000);
     const phaseName = RECORD_START_PHASE[phase] || `0x${phase.toString(16).padStart(2, "0")}`;
-    logDebug(`RECORD start heartbeat: source=${sourceLabel(sourceId)} session=${sessionId} phase=${phaseName} extend_ms=${extendMs}`);
+    // Phase names mirror BLEPIPE_RECORD_START_PHASE_* in blepipe_proto.h; each
+    // transition logs once per session so the start handshake is traceable.
+    logOnChange(`start-heartbeat-${sessionId}`,
+      `RECORD start heartbeat: source=${sourceLabel(sourceId)} session=${sessionId} phase=${phaseName} extend_ms=${extendMs}`);
     if (sessionId === state.activeRecordSessionId) {
       setRecordingUi(inProgress && (phase === 0x06 || phase === 0x22));
     }
@@ -4748,6 +4978,7 @@ input[type="checkbox"] {
         const completed = [...state.completedRecordTransfers.keys()];
         log(`Session ${info.sessionId} incomplete: ${info.completedCount}/${info.expectedCount} sources complete. Pending: ${info.pendingNodes.join(", ")}. Data remains on node flash. Start a new session to recover.`);
         setSessionState("Incomplete");
+        logSessionOutcome("watchdog_timeout");
         return;
       }
       if (remaining % 5 === 0 && state.sessionWatchdogInfo) {

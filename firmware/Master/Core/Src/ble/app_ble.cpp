@@ -352,14 +352,26 @@ void APP_BLE_Init(void)
   g_leaf_client_connecting = 0U;
   g_phone_connected = 0U;
 
-  /* Do NOT override the LE event mask here. An earlier attempt set it to
-   * {0xFF,0xFF,0x00,...} to enable the DLE/PHY-update completion events for
-   * console telemetry, but replacing the mask zeroed the upper bytes and
-   * disabled the extended-advertising events (e.g. LE Advertising Set
-   * Terminated, bit 18) the WB peripheral advertising depends on, so the Master
-   * stopped appearing in the browser chooser. The WB default mask is left
-   * untouched; DLE/PHY are still requested from the deferred main-loop tuning
-   * path and the throughput change is the primary confirmation. */
+  /* Do NOT call hci_le_set_event_mask here. Overriding the LE event mask — even
+   * with all-0xFF — makes the WB Master stop advertising (it vanishes from the
+   * browser chooser). Confirmed twice on hardware: {0xFF,0xFF,0x00,...} and the
+   * full {0xFF}x8 superset both break it, so the WB stack does not tolerate an
+   * app-level LE-mask override alongside its peripheral advertising. The DLE/PHY
+   * completion events stay on the WB default mask; the DLE/2M negotiation still
+   * runs (the requests below + the deferred tuning loop), and the transfer-rate
+   * readout on the console is the primary confirmation instead of tx_oct/tx_phy. */
+
+  /* Data Length Extension default for every future link (mirrors the Node's
+   * APP_BLE_Init). The Master already requests per-connection DLE in the tuning
+   * loop, but setting the suggested default here raises the Master's own TX
+   * octets to 251 from the first packet and closes the last DLE asymmetry
+   * between the two images. */
+  {
+    [[maybe_unused]] const tBleStatus dle_default_status =
+        hci_le_write_suggested_default_data_length(251U, 0x0848U);
+    APP_DBG_MSG("[BLE][HUB][LINK] suggested DLE default 251/2120 status=0x%02X\n",
+                (unsigned)dle_default_status);
+  }
 
   /* USER CODE END APP_BLE_Init_4 */
 

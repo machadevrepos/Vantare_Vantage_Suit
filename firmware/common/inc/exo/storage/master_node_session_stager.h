@@ -394,6 +394,10 @@ public:
     bool validated() const { return validated_; }
     bool node_flash_may_be_erased() const { return discarded_; }
     uint32_t staged_size() const { return staged_size_; }
+    /* Total payload the active node will deliver (from its RecordDone). Zero
+     * until begin() latches a session; pairs with staged_size() to give the
+     * desktop console a live "received / total" transfer progress + rate. */
+    uint32_t total_size() const { return done_.total_size; }
     uint32_t validation_remaining() const { return validation_remaining_; }
     node_session_staging::NodeSessionValidationStatus validation_status() const
     {

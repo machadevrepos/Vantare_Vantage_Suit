@@ -1730,7 +1730,12 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
    * data_length_change / phy_update_complete event. exo_hub_central_client_process()
    * runs the two procedures staggered from main context once the link is idle. */
   slot->link_tune_step = 1U;
-  slot->link_tune_after_ms = HAL_GetTick();
+  /* Hold the DLE/PHY requests ~600 ms after connect so the LL feature exchange
+   * (which tells each side the peer supports Data Length Extension / 2M PHY) has
+   * completed. Issued too early, hci_le_set_data_length / hci_le_set_phy return
+   * "accepted" but the controller cannot yet negotiate the extended length, so
+   * the link silently stays on the 27-octet / 1M defaults. */
+  slot->link_tune_after_ms = HAL_GetTick() + 600U;
   slot->link_dle_req_status = 0xFFU;
   slot->link_phy_req_status = 0xFFU;
   exo_begin_mtu_exchange(slot);

@@ -111,6 +111,11 @@ static exo::MasterBinarySessionIndex master_binary_session_index;
 static exo::TrainingCsvState master_training_csv_reported_state = exo::TrainingCsvState::Idle;
 static uint8_t master_training_csv_reported_completed_mask = 0U;
 static bool master_training_csv_reported_partial = false;
+/* Throttle for the periodic node-upload progress report emitted during
+ * ReceiveNode: the coordinator only changes state/mask at node boundaries, so
+ * without this the desktop console would see no byte progress (hence no
+ * transfer rate) for the whole multi-second/minute upload of a single node. */
+static uint32_t master_training_csv_status_last_emit_ms = 0U;
 #if EXO_MASTER_IMU_BACKGROUND_CSV_ENABLE
 static bool master_imu_csv_error_reported = false;
 #endif
@@ -3323,10 +3328,22 @@ int main(void)
 			}
 		}
 		/* SWO is not always attached and can lose the interesting window, so every training
-		 * state change is also reported to the desktop tool over the existing report channel. */
-		if (training_state != master_training_csv_reported_state ||
-				training_completed_mask != master_training_csv_reported_completed_mask) {
-			uint8_t training_report[11];
+		 * state change is also reported to the desktop tool over the existing report channel.
+		 * During ReceiveNode the state/mask hold steady for the whole upload, so the report is
+		 * ALSO emitted on a ~500 ms throttle there to feed the desktop transfer-rate readout.
+		 * (This report rides the Master->browser peripheral link, not the Node->Master central
+		 * link carrying chunks, so the extra ~2 Hz of notifications does not slow the upload.) */
+		const uint32_t training_status_now_ms = HAL_GetTick();
+		const bool training_status_changed =
+				training_state != master_training_csv_reported_state ||
+				training_completed_mask != master_training_csv_reported_completed_mask;
+		const bool training_status_progress_tick =
+				training_state == exo::TrainingCsvState::ReceiveNode &&
+				static_cast<int32_t>(training_status_now_ms - master_training_csv_status_last_emit_ms) >= 500;
+		if (training_status_changed || training_status_progress_tick) {
+			/* Bytes 0-10: coordinator state/masks/failure (unchanged wire layout).
+			 * Bytes 11-14: staged bytes so far (uint32 LE); 15-18: active node total. */
+			uint8_t training_report[19];
 			training_report[0] = static_cast<uint8_t>(training_state);
 			training_report[1] = master_training_csv_coordinator.expected_source_mask();
 			training_report[2] = training_completed_mask;
@@ -3338,8 +3355,19 @@ int main(void)
 			training_report[8] = static_cast<uint8_t>(master_training_csv_coordinator.failure_csv_result());
 			training_report[9] = master_training_csv_coordinator.failed_source_mask();
 			training_report[10] = master_training_csv_coordinator.cleanup_pending_mask();
+			const uint32_t staged_bytes = master_training_csv_coordinator.active_staged_bytes();
+			const uint32_t staged_total = master_training_csv_coordinator.active_staged_total();
+			training_report[11] = static_cast<uint8_t>(staged_bytes & 0xFFU);
+			training_report[12] = static_cast<uint8_t>((staged_bytes >> 8) & 0xFFU);
+			training_report[13] = static_cast<uint8_t>((staged_bytes >> 16) & 0xFFU);
+			training_report[14] = static_cast<uint8_t>((staged_bytes >> 24) & 0xFFU);
+			training_report[15] = static_cast<uint8_t>(staged_total & 0xFFU);
+			training_report[16] = static_cast<uint8_t>((staged_total >> 8) & 0xFFU);
+			training_report[17] = static_cast<uint8_t>((staged_total >> 16) & 0xFFU);
+			training_report[18] = static_cast<uint8_t>((staged_total >> 24) & 0xFFU);
 			(void) Custom_APP_SendCmdReport(kTrainingCsvStatusReportId,
 					training_report, static_cast<uint8_t>(sizeof(training_report)));
+			master_training_csv_status_last_emit_ms = training_status_now_ms;
 		}
 		{
 			const bool training_partial = master_training_csv_coordinator.partial_finalized();
