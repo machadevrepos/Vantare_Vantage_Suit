@@ -21,6 +21,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "common_blesvc.h"
 #include <exo/ble/custom_stm.h>
+#include <exo/ble/custom_app.h>
 
 /* USER CODE BEGIN Includes */
 
@@ -98,6 +99,15 @@ static tBleStatus Generic_STM_App_Update_Char_Ext(uint16_t ConnectionHandle, uin
 
 /* Functions Definition ------------------------------------------------------*/
 /* USER CODE BEGIN PFD */
+
+/* CPU2 invokes this callback when a notification send previously returned
+ * BLE_STATUS_INSUFFICIENT_RESOURCES. Keep it callback-safe: publish only. */
+extern "C" void aci_gatt_tx_pool_available_event(uint16_t Connection_Handle,
+                                                  uint16_t Available_Buffers)
+{
+  (void)Connection_Handle;
+  Custom_APP_TxPoolAvailable(Available_Buffers);
+}
 
 /* USER CODE END PFD */
 

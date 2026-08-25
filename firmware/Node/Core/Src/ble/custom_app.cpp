@@ -81,6 +81,9 @@ static uint8_t g_pipe_last_control_rx_len;
 static uint8_t g_pipe_data_notify_enabled;
 static uint8_t g_pipe_control_notify_enabled;
 static uint8_t g_pipe_status_notify_enabled;
+static volatile uint32_t g_pipe_notification_complete_count;
+static volatile uint32_t g_pipe_tx_pool_event_count;
+static volatile uint16_t g_pipe_tx_pool_buffers;
 
 /* USER CODE END PV */
 
@@ -208,6 +211,7 @@ void Custom_STM_App_Notification(Custom_STM_App_Notification_evt_t *pNotificatio
 
     case CUSTOM_STM_NOTIFICATION_COMPLETE_EVT:
       /* USER CODE BEGIN CUSTOM_STM_NOTIFICATION_COMPLETE_EVT */
+      Custom_APP_NotificationComplete();
 
       /* USER CODE END CUSTOM_STM_NOTIFICATION_COMPLETE_EVT */
       break;
@@ -330,6 +334,32 @@ tBleStatus Custom_APP_SendPipeFrame(Custom_STM_Char_Opcode_t char_opcode, const 
 extern "C" uint8_t Custom_APP_PipeDataNotifyEnabled(void)
 {
   return g_pipe_data_notify_enabled;
+}
+
+extern "C" void Custom_APP_NotificationComplete(void)
+{
+  ++g_pipe_notification_complete_count;
+}
+
+extern "C" void Custom_APP_TxPoolAvailable(uint16_t available_buffers)
+{
+  g_pipe_tx_pool_buffers = available_buffers;
+  ++g_pipe_tx_pool_event_count;
+}
+
+extern "C" uint32_t Custom_APP_NotificationCompleteCount(void)
+{
+  return g_pipe_notification_complete_count;
+}
+
+extern "C" uint32_t Custom_APP_TxPoolEventCount(void)
+{
+  return g_pipe_tx_pool_event_count;
+}
+
+extern "C" uint16_t Custom_APP_LastTxPoolBuffers(void)
+{
+  return g_pipe_tx_pool_buffers;
 }
 
 /* USER CODE END FD */

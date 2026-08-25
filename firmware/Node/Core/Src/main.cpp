@@ -53,6 +53,7 @@
 #include <exo/protocol/blepipe_proto.h>
 #include <exo/ble/app_ble.h>
 #include <exo/ble/custom_app.h>
+#include <exo/ble/node_upload_pump.h>
 #include "stm32wbxx_ll_cortex.h"
 #include "stm32wbxx_ll_exti.h"
 #include "stm32wbxx_ll_pwr.h"
@@ -307,19 +308,11 @@ static constexpr uint16_t kNodeRecordChunkPayloadBytes = exo::kRecordReliableDef
 static_assert(sizeof(exo::RecordReliableFrameHeader) + kNodeRecordChunkPayloadBytes
 		<= BLEPIPE_MAX_APP_PAYLOAD,
 		"reliable chunk frame exceeds blepipe app payload (MTU-3 minus envelope)");
-static constexpr uint32_t kNodeRecordChunkGapMs = 8U;
-/* Burst >1 removes the old ~22 KB/s hard ceiling (one 180 B chunk per gap) so
- * the 10-minute-session offload target (>=10x the ~1.8 KB/s baseline) has
- * headroom. The credit window still bounds data in flight, and a busy BLE
- * stack simply fails a burst send, which the sender retries next tick. */
-static constexpr uint8_t kNodeRecordBurstLimit = 8U;
+/* Foreground calls are bounded only to leave time for sensors/control. BLE
+ * completion and TX-pool events, not a millisecond delay, pace the next work. */
+static constexpr uint8_t kNodeRecordForegroundBurstLimit = 4U;
 static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
 static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
-/* An upload that has run out of credit is only restarted by an inbound control
- * frame. If that frame is lost the transfer deadlocks until the receiver's
- * session watchdog fires, so re-arm a single chunk after this long to give the
- * receiver something fresh to ACK. */
-static constexpr uint32_t kNodeRecordCreditStarveMs = 500U;
 static bool g_node_record_done_sent = false;
 static bool g_node_upload_active = false;
 static uint32_t g_node_upload_session_id = 0U;
@@ -330,13 +323,16 @@ static uint8_t g_node_upload_credit = 0U;
 /* Chunks still owed to an accepted NackRange. While non-zero the send cursor is
  * owned by gap recovery and must not be dragged forward by an ACK_WINDOW. */
 static uint8_t g_node_upload_retx_remaining = 0U;
-static uint32_t g_node_upload_credit_idle_ms = 0U;
-static uint32_t g_node_upload_last_chunk_ms = 0U;
 static uint32_t g_node_upload_last_fail_log_ms = 0U;
 static uint32_t g_node_record_done_last_send_ms = 0U;
 static uint16_t g_node_record_done_retry_count = 0U;
 static volatile bool g_node_actuator_override_enabled = false;
 static volatile uint8_t g_node_rgb_mask = 0U;
+static exo::NodeUploadPump g_node_upload_pump;
+static uint32_t g_node_upload_seen_notification_complete_count = 0U;
+static uint32_t g_node_upload_seen_tx_pool_event_count = 0U;
+static uint32_t g_node_upload_flash_read_ms = 0U;
+static uint32_t g_node_upload_diag_last_ms = 0U;
 
 extern "C" uint8_t Custom_APP_PipeDataNotifyEnabled(void);
 extern "C" uint8_t exo_node_ble_status_notify_enabled(void);
@@ -418,6 +414,9 @@ static bool node_blepipe_send(Custom_STM_Char_Opcode_t char_opcode,
 static void node_blepipe_process_live_samples()
 {
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
+	if (g_node_upload_pump.live_preview_suppressed()) {
+		return;
+	}
 	if (Custom_APP_PipeDataNotifyEnabled() == 0U) {
 		return;
 	}
@@ -572,11 +571,10 @@ static void node_blepipe_reset_upload_state()
 	g_node_upload_next_chunk = 0U;
 	g_node_upload_credit = 0U;
 	g_node_upload_retx_remaining = 0U;
-	g_node_upload_credit_idle_ms = 0U;
-	g_node_upload_last_chunk_ms = 0U;
 	g_node_upload_last_fail_log_ms = 0U;
 	g_node_record_done_last_send_ms = 0U;
 	g_node_record_done_retry_count = 0U;
+	g_node_upload_pump.stop();
 }
 
 /* An inbound control frame must never move the send cursor beyond the file:
@@ -663,6 +661,32 @@ static bool node_blepipe_apply_legacy_chunk_ack(const uint8_t *payload, uint8_t 
 	return true;
 }
 
+static void node_upload_pump_sync(uint32_t now_ms)
+{
+	const uint32_t notification_complete_count = Custom_APP_NotificationCompleteCount();
+	if (notification_complete_count != g_node_upload_seen_notification_complete_count) {
+		g_node_upload_seen_notification_complete_count = notification_complete_count;
+		g_node_upload_pump.on_notification_complete();
+	}
+	const uint32_t tx_pool_event_count = Custom_APP_TxPoolEventCount();
+	if (tx_pool_event_count != g_node_upload_seen_tx_pool_event_count) {
+		g_node_upload_seen_tx_pool_event_count = tx_pool_event_count;
+		g_node_upload_pump.on_tx_pool_available(Custom_APP_LastTxPoolBuffers());
+	}
+	if (!g_node_upload_active) {
+		if (g_node_upload_pump.active()) {
+			g_node_upload_pump.stop();
+		}
+		return;
+	}
+	if (!g_node_upload_pump.active()) {
+		g_node_upload_pump.start(now_ms, g_node_upload_credit);
+	} else if (g_node_upload_pump.credit() != g_node_upload_credit) {
+		/* Reliable ACK/NACK control is also an explicit foreground wake. */
+		g_node_upload_pump.set_credit(g_node_upload_credit);
+	}
+}
+
 static void node_blepipe_process_recording_upload()
 {
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
@@ -673,9 +697,7 @@ static void node_blepipe_process_recording_upload()
 		size_t encoded_len = 0U;
 		tBleStatus tx_status = BLE_STATUS_INVALID_PARAMS;
 		const bool sent = node_blepipe_send_record_payload_with_status(reinterpret_cast<const uint8_t *>(&done),
-				static_cast<uint16_t>(sizeof(done)),
-				&encoded_len,
-				&tx_status);
+				static_cast<uint16_t>(sizeof(done)), &encoded_len, &tx_status);
 		g_node_record_done_last_send_ms = HAL_GetTick();
 		++g_node_record_done_retry_count;
 		if (sent) {
@@ -684,55 +706,27 @@ static void node_blepipe_process_recording_upload()
 			g_node_upload_crc32 = done.payload_crc32;
 		}
 		EXO_LOG("[BLE][NODE][REC] RecordDone send attempt=%u sent=%u status=0x%02X enc_len=%u data_notify=%u node=%u session=%lu size=%lu\r\n",
-				static_cast<unsigned>(g_node_record_done_retry_count),
-				static_cast<unsigned>(sent ? 1U : 0U),
-				static_cast<unsigned>(tx_status),
-				static_cast<unsigned>(encoded_len),
-				static_cast<unsigned>(Custom_APP_PipeDataNotifyEnabled()),
-				static_cast<unsigned>(done.node_id),
-				static_cast<unsigned long>(done.session_id),
-				static_cast<unsigned long>(done.total_size));
+				static_cast<unsigned>(g_node_record_done_retry_count), static_cast<unsigned>(sent ? 1U : 0U),
+				static_cast<unsigned>(tx_status), static_cast<unsigned>(encoded_len),
+				static_cast<unsigned>(Custom_APP_PipeDataNotifyEnabled()), static_cast<unsigned>(done.node_id),
+				static_cast<unsigned long>(done.session_id), static_cast<unsigned long>(done.total_size));
 	}
 
-	if (!g_node_upload_active) {
-		return;
-	}
-
-	if (g_node_upload_credit == 0U) {
-		/* Credit is only replenished by an inbound ACK_WINDOW/NACK_RANGE. If that
-		 * frame never lands the upload would stay silent forever, so re-arm one
-		 * chunk periodically. This self-limits to one chunk per starve interval
-		 * because the credit drops straight back to zero after it is spent. */
-		const uint32_t now = HAL_GetTick();
-		if (g_node_upload_credit_idle_ms == 0U) {
-			g_node_upload_credit_idle_ms = now;
-			return;
-		}
-		if ((now - g_node_upload_credit_idle_ms) < kNodeRecordCreditStarveMs) {
-			return;
-		}
-		g_node_upload_credit_idle_ms = now;
-		g_node_upload_credit = 1U;
-		EXO_LOG("[BLE][NODE][REC] credit starved, re-arming session=%lu chunk=%lu retx=%u\r\n",
-				static_cast<unsigned long>(g_node_upload_session_id),
-				static_cast<unsigned long>(g_node_upload_next_chunk),
-				static_cast<unsigned>(g_node_upload_retx_remaining));
-	}
-
-	if ((HAL_GetTick() - g_node_upload_last_chunk_ms) < kNodeRecordChunkGapMs) {
+	const uint32_t now = HAL_GetTick();
+	node_upload_pump_sync(now);
+	if (!g_node_upload_active || !g_node_upload_pump.ready(now)) {
 		return;
 	}
 
 	uint8_t burst_sent = 0U;
-	while (g_node_upload_active &&
-	       g_node_upload_credit > 0U &&
-	       burst_sent < kNodeRecordBurstLimit) {
+	while (g_node_upload_active && g_node_upload_credit > 0U &&
+	       burst_sent < kNodeRecordForegroundBurstLimit && g_node_upload_pump.ready(HAL_GetTick())) {
 		const uint32_t offset = g_node_upload_next_chunk * static_cast<uint32_t>(kNodeRecordChunkPayloadBytes);
 		if (offset >= g_node_upload_total_size) {
 			g_node_upload_active = false;
 			g_node_upload_credit = 0U;
 			g_node_upload_retx_remaining = 0U;
-			g_node_upload_credit_idle_ms = 0U;
+			g_node_upload_pump.stop();
 			return;
 		}
 
@@ -741,56 +735,111 @@ static void node_blepipe_process_recording_upload()
 		const uint16_t chunk_size = static_cast<uint16_t>(remaining > kNodeRecordChunkPayloadBytes ?
 				kNodeRecordChunkPayloadBytes : remaining);
 		exo::SessionUploadReader reader = node_recording_app.make_upload_reader();
+		const uint32_t read_started_ms = HAL_GetTick();
 		if (!reader.read(offset, chunk, chunk_size)) {
+			g_node_upload_flash_read_ms += HAL_GetTick() - read_started_ms;
 			EXO_LOG("[BLE][NODE][REC] chunk read failed session=%lu off=%lu size=%u\r\n",
 					static_cast<unsigned long>(g_node_upload_session_id),
-					static_cast<unsigned long>(offset),
-					static_cast<unsigned>(chunk_size));
-			g_node_upload_credit = 0U;
+					static_cast<unsigned long>(offset), static_cast<unsigned>(chunk_size));
 			return;
 		}
+		g_node_upload_flash_read_ms += HAL_GetTick() - read_started_ms;
 
 		size_t encoded_len = 0U;
 		tBleStatus tx_status = BLE_STATUS_INVALID_PARAMS;
 		if (!node_blepipe_send_reliable_frame(exo::RecordReliableType::Chunk,
-				static_cast<uint16_t>(node_blepipe_current_id()),
-				g_node_upload_session_id,
-				g_node_upload_next_chunk,
-				offset,
-				chunk,
-				chunk_size,
+				static_cast<uint16_t>(node_blepipe_current_id()), g_node_upload_session_id,
+				g_node_upload_next_chunk, offset, chunk, chunk_size,
 				((offset + chunk_size) >= g_node_upload_total_size) ? exo::kRecordFlagFinalChunk : 0U,
-				&encoded_len,
-				&tx_status)) {
-			const uint32_t now = HAL_GetTick();
-			g_node_upload_last_chunk_ms = now;
+				&encoded_len, &tx_status)) {
+			const exo::NodeUploadPump::SendResult result =
+					(tx_status == BLE_STATUS_BUSY) ? exo::NodeUploadPump::SendResult::Busy :
+					(tx_status == BLE_STATUS_INSUFFICIENT_RESOURCES) ? exo::NodeUploadPump::SendResult::InsufficientResources :
+					exo::NodeUploadPump::SendResult::OtherFailure;
+			g_node_upload_pump.on_send_result(result, HAL_GetTick());
+			const uint32_t failed_at_ms = HAL_GetTick();
 			if (g_node_upload_last_fail_log_ms == 0U ||
-			    (now - g_node_upload_last_fail_log_ms) >= kNodeRecordTxFailLogMs) {
-				g_node_upload_last_fail_log_ms = now;
-				EXO_LOG("[BLE][NODE][REC] chunk tx busy session=%lu chunk=%lu off=%lu size=%u credit=%u enc_len=%u status=0x%02X\r\n",
+			    (failed_at_ms - g_node_upload_last_fail_log_ms) >= kNodeRecordTxFailLogMs) {
+				g_node_upload_last_fail_log_ms = failed_at_ms;
+				EXO_LOG("[BLE][NODE][REC] chunk tx blocked session=%lu chunk=%lu off=%lu size=%u credit=%u enc_len=%u status=0x%02X\r\n",
 						static_cast<unsigned long>(g_node_upload_session_id),
-						static_cast<unsigned long>(g_node_upload_next_chunk),
-						static_cast<unsigned long>(offset),
-						static_cast<unsigned>(chunk_size),
-						static_cast<unsigned>(g_node_upload_credit),
-						static_cast<unsigned>(encoded_len),
-						static_cast<unsigned>(tx_status));
+						static_cast<unsigned long>(g_node_upload_next_chunk), static_cast<unsigned long>(offset),
+						static_cast<unsigned>(chunk_size), static_cast<unsigned>(g_node_upload_credit),
+						static_cast<unsigned>(encoded_len), static_cast<unsigned>(tx_status));
 			}
 			return;
 		}
-		g_node_upload_next_chunk++;
-		g_node_upload_credit--;
+		g_node_upload_pump.on_send_result(exo::NodeUploadPump::SendResult::Success, HAL_GetTick());
+		g_node_upload_pump.on_send_accepted(static_cast<uint16_t>(encoded_len));
+		++g_node_upload_next_chunk;
+		--g_node_upload_credit;
 		if (g_node_upload_retx_remaining > 0U) {
 			--g_node_upload_retx_remaining;
 		}
-		if (g_node_upload_credit == 0U) {
-			g_node_upload_credit_idle_ms = HAL_GetTick();
-		}
-		g_node_upload_last_chunk_ms = HAL_GetTick();
 		g_node_upload_last_fail_log_ms = 0U;
 		++burst_sent;
 	}
 #endif
+}
+
+struct __attribute__((packed)) NodeUploadLinkStats {
+	uint8_t version;
+	uint8_t dle_outcome; /* 0=unknown, 1=requested, 2=confirmed */
+	uint8_t dle_request_status;
+	uint8_t upload_active;
+	uint16_t controller_max_tx_octets;
+	uint16_t negotiated_tx_octets;
+	uint16_t negotiated_rx_octets;
+	uint16_t tx_pool_buffers;
+	uint32_t accepted_bytes;
+	uint32_t accepted_count;
+	uint32_t busy_count;
+	uint32_t resource_count;
+	uint32_t notification_complete_count;
+	uint32_t tx_pool_event_count;
+	uint32_t watchdog_wake_count;
+	uint32_t flash_read_ms;
+};
+
+static void node_blepipe_report_upload_diagnostics()
+{
+	const uint32_t now_ms = HAL_GetTick();
+	if ((now_ms - g_node_upload_diag_last_ms) < 1000U) {
+		return;
+	}
+	g_node_upload_diag_last_ms = now_ms;
+	const exo_node_ble_dle_status_t dle = exo_node_ble_dle_status();
+	const exo::NodeUploadPump::Metrics &pump = g_node_upload_pump.metrics();
+	const uint8_t dle_outcome = dle.confirmed != 0U ? 2U : (dle.requested != 0U ? 1U : 0U);
+	NodeUploadLinkStats status{};
+	status.version = 1U;
+	status.dle_outcome = dle_outcome;
+	status.dle_request_status = dle.request_status;
+	status.upload_active = g_node_upload_pump.active() ? 1U : 0U;
+	status.controller_max_tx_octets = dle.controller_max_tx_octets;
+	status.negotiated_tx_octets = dle.negotiated_tx_octets;
+	status.negotiated_rx_octets = dle.negotiated_rx_octets;
+	status.tx_pool_buffers = pump.tx_pool_buffers;
+	status.accepted_bytes = pump.accepted_bytes;
+	status.accepted_count = pump.accepted_count;
+	status.busy_count = pump.busy_count;
+	status.resource_count = pump.resource_count;
+	status.notification_complete_count = pump.notification_complete_count;
+	status.tx_pool_event_count = pump.tx_pool_event_count;
+	status.watchdog_wake_count = pump.watchdog_wake_count;
+	status.flash_read_ms = g_node_upload_flash_read_ms;
+	const bool telemetry_sent = exo_node_ble_status_notify_enabled() != 0U &&
+		node_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LINK_STATS, BLEPIPE_ID_HUB,
+			reinterpret_cast<const uint8_t *>(&status), static_cast<uint16_t>(sizeof(status)));
+	EXO_LOG("[BLE][NODE][UPLOAD] dle=%u req=0x%02X max=%u tx=%u rx=%u acceptedB=%lu accepted=%lu busy=%lu res=%lu complete=%lu pool=%lu/%u watchdog=%lu flashMs=%lu telemetry=%u\r\n",
+			static_cast<unsigned>(dle_outcome), static_cast<unsigned>(dle.request_status),
+			static_cast<unsigned>(dle.controller_max_tx_octets), static_cast<unsigned>(dle.negotiated_tx_octets),
+			static_cast<unsigned>(dle.negotiated_rx_octets), static_cast<unsigned long>(pump.accepted_bytes),
+			static_cast<unsigned long>(pump.accepted_count), static_cast<unsigned long>(pump.busy_count),
+			static_cast<unsigned long>(pump.resource_count), static_cast<unsigned long>(pump.notification_complete_count),
+			static_cast<unsigned long>(pump.tx_pool_event_count), static_cast<unsigned>(pump.tx_pool_buffers),
+			static_cast<unsigned long>(pump.watchdog_wake_count), static_cast<unsigned long>(g_node_upload_flash_read_ms),
+			static_cast<unsigned>(telemetry_sent ? 1U : 0U));
 }
 
 static void node_blepipe_send_topology(const blepipe_hdr_t &request_hdr)
@@ -1241,11 +1290,9 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 						g_node_upload_crc32 = node_recording_app.make_record_done().payload_crc32;
 						if (!same_active_session) {
 							g_node_upload_next_chunk = 0U;
-							g_node_upload_last_chunk_ms = 0U;
 							g_node_upload_last_fail_log_ms = 0U;
 						}
 						g_node_upload_retx_remaining = 0U;
-						g_node_upload_credit_idle_ms = 0U;
 						g_node_upload_credit = ack.credit == 0U ? exo::kRecordReliableDefaultCredit : ack.credit;
 						g_node_record_done_sent = true;
 						EXO_LOG("[BLE][NODE][REC] ManifestAck source=%u session=%lu credit=%u next=%lu active=%u start upload\r\n",
@@ -1285,7 +1332,6 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 							g_node_upload_next_chunk = ack.next_chunk_index;
 						}
 						g_node_upload_credit = ack.credit == 0U ? exo::kRecordReliableDefaultCredit : ack.credit;
-						g_node_upload_credit_idle_ms = 0U;
 						g_node_record_done_sent = true;
 						node_blepipe_send_ack(hdr, 1U, payload[0]);
 						return true;
@@ -1323,8 +1369,6 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 						/* Own the send cursor until every requested chunk has gone out, so a
 						 * stale ACK_WINDOW cannot cancel the retransmit. */
 						g_node_upload_retx_remaining = g_node_upload_credit;
-						g_node_upload_credit_idle_ms = 0U;
-						g_node_upload_last_chunk_ms = 0U;
 						g_node_upload_last_fail_log_ms = 0U;
 						g_node_record_done_sent = true;
 						EXO_LOG("[BLE][NODE][REC] NackRange source=%u session=%lu first=%lu count=%u credit=%u\r\n",
@@ -1349,7 +1393,6 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 					if (g_node_upload_credit == 0U) {
 						g_node_upload_credit = exo::kRecordReliableDefaultCredit;
 					}
-					g_node_upload_credit_idle_ms = 0U;
 					node_blepipe_send_ack(hdr, 1U, payload[0]);
 					return true;
 				}
@@ -1390,7 +1433,6 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 					g_node_upload_next_chunk = rel.chunk_index;
 					g_node_upload_credit = 1U;
 					g_node_upload_retx_remaining = 1U;
-					g_node_upload_credit_idle_ms = 0U;
 					node_blepipe_send_ack(hdr, 1U, payload[0]);
 					return true;
 				}
@@ -1772,6 +1814,7 @@ int main(void)
 		static uint32_t touch_release_ms = 0U;
 		static uint32_t touch_feedback_until_ms = 0U;
 		static bool ignore_touch_until_release = (HAL_GPIO_ReadPin(TOUCH_MCU_GPIO_Port, TOUCH_MCU_Pin) == GPIO_PIN_SET);
+		exo_node_ble_link_process();
 
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 		/* BLE/control owns the foreground immediately after StopRecord. Process
@@ -1779,6 +1822,7 @@ int main(void)
 		 * BNO can never starve the reliable transport. */
 		node_blepipe_process_recording_upload();
 		node_blepipe_process_live_samples();
+		node_blepipe_report_upload_diagnostics();
 		(void)node_blepipe_send_record_ready_status(false);
 		node_recording_app.process();
 #endif
