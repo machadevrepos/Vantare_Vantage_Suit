@@ -398,6 +398,56 @@ class ExoskeletonTelemetryContractTests(unittest.TestCase):
         self.assertIn("interval confirmed units=6 (7.50 ms)", result["confirmed"])
         self.assertNotIn("confirmed", result["display"])
 
+    def test_b6_v3_rate_attribution_uses_counter_node_id_and_persists(self):
+        result = _run_contract(
+            """(() => {
+              const api = globalThis.ExoskeletonTelemetry;
+              const makeStatus = (nodeId, stagedBytes) => {
+                const payload = new Uint8Array(69);
+                const view = new DataView(payload.buffer);
+                payload[0] = 5;
+                payload[1] = 0x1e;
+                payload[2] = 0;
+                view.setUint32(11, stagedBytes, true);
+                view.setUint32(15, 100000, true);
+                payload[19] = 3;
+                payload[59] = 12;
+                payload[60] = nodeId;
+                return api.decodeTrainingStatusPayload(payload);
+              };
+              const first = makeStatus(4, 1000);
+              const second = makeStatus(4, 2000);
+              const node4First = api.resolveTransferRateNodeId(first, 0);
+              return {
+                node4First,
+                node4Second: api.resolveTransferRateNodeId(second, node4First),
+                invalidV3: api.resolveTransferRateNodeId(makeStatus(0, 3000), node4First),
+                legacyGuess: api.resolveTransferRateNodeId({
+                  flowV3Available: false, expected: 0x1e, completed: 0
+                }, 0),
+                legacyPersist: api.resolveTransferRateNodeId({
+                  flowV3Available: false, expected: 0x10, completed: 0x10
+                }, node4First)
+              };
+            })()"""
+        )
+
+        self.assertEqual(result["node4First"], 4)
+        self.assertEqual(result["node4Second"], 4)
+        self.assertEqual(result["invalidV3"], 0)
+        self.assertEqual(result["legacyGuess"], 1)
+        self.assertEqual(result["legacyPersist"], 4)
+
+    def test_rate_tracker_wires_exact_attribution_without_v3_guess_fallback(self):
+        html = HTML_PATH.read_text(encoding="utf-8-sig")
+
+        self.assertIn(
+            "return ExoskeletonTelemetry.resolveTransferRateNodeId(status, state.transferRate.nodeId);",
+            html,
+        )
+        self.assertIn("const node = activeTransferNodeId(status);", html)
+        self.assertNotIn("activeTransferNodeId(status) || t.nodeId", html)
+
     def test_legacy_status_and_raw_debug_mode_remain_wire_compatible(self):
         result = _run_contract(
             """(() => {

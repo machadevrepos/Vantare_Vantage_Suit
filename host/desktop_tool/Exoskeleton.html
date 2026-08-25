@@ -1280,6 +1280,29 @@ input[type="checkbox"] {
         chunkCounters;
     }
 
+    function resolveTransferRateNodeId(status, priorNodeId = 0) {
+      const flowVersion = Number(status?.flowVersion);
+      const v3Telemetry = status?.flowV3Available === true ||
+        (Number.isFinite(flowVersion) && flowVersion >= 3);
+      if (v3Telemetry) {
+        const exactNodeId = Number(status?.counterNodeId);
+        return Number.isInteger(exactNodeId) && exactNodeId >= 1 && exactNodeId <= 4
+          ? exactNodeId : 0;
+      }
+
+      // Legacy reports do not carry a source ID. Preserve their historical
+      // sequential fallback, then retain the prior attribution when no pending
+      // bit remains. Never take this path for a v3 report with an invalid ID.
+      const expected = Number(status?.expected) || 0;
+      const completed = Number(status?.completed) || 0;
+      const pending = expected & ~completed & 0x1E;
+      for (let nodeId = 1; nodeId <= 4; nodeId += 1) {
+        if (pending & (1 << nodeId)) return nodeId;
+      }
+      const prior = Number(priorNodeId);
+      return Number.isInteger(prior) && prior >= 1 && prior <= 4 ? prior : 0;
+    }
+
     function rawRelayDebugEnabled(flags) {
       return ((Number(flags) || 0) & RAW_RELAY_DEBUG_FLAG) !== 0;
     }
@@ -1327,6 +1350,7 @@ input[type="checkbox"] {
       fastIntervalMs,
       decodeTrainingStatusPayload,
       formatEffectiveTransfer,
+      resolveTransferRateNodeId,
       rawRelayDebugEnabled,
       artifactRelayMode,
       dispatchArtifactRelay,
@@ -3349,12 +3373,10 @@ input[type="checkbox"] {
     return state.receivingTransfer;
   }
 
-  // Best-guess active upload source during ReceiveNode: the lowest node bit that
-  // is expected but not yet completed (collection is sequential). Master is bit0.
+  // B6 v3 carries the exact counter source. Only legacy telemetry may fall back
+  // to the sequential lowest-unresolved-node inference.
   function activeTransferNodeId(status) {
-    const pending = status.expected & ~status.completed & 0x1E;
-    for (let n = 1; n <= 4; n += 1) if (pending & (1 << n)) return n;
-    return 0;
+    return ExoskeletonTelemetry.resolveTransferRateNodeId(status, state.transferRate.nodeId);
   }
 
   // Reset the live transfer-rate tracker (call at session start / disconnect).
@@ -3373,7 +3395,7 @@ input[type="checkbox"] {
     if (status.stagedBytes === null || status.stagedBytes === undefined) return "";
     const t = state.transferRate;
     const now = performance.now();
-    const node = activeTransferNodeId(status) || t.nodeId;
+    const node = activeTransferNodeId(status);
     const total = status.stagedTotal || 0;
     // Re-anchor on a node change, a counter reset (new stager), a total change,
     // or the first sample — never compute a rate across a node boundary.
