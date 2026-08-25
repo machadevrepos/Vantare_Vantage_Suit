@@ -141,6 +141,10 @@ void set_reliable_transport(MasterNodeReliableControl::SendFn send_fn, void *con
 reliable_send_ = send_fn;
 reliable_context_ = context;
 }
+void set_sd_flush_time_source(MasterNodeSessionStager::FlushTimeFn time_fn, void *context)
+{
+stager_.set_flush_time_source(time_fn, context);
+}
 bool begin_session(uint32_t session_id, uint8_t expected_source_mask)
 {
 const bool recoverable_error = partial_finalized_ &&
@@ -345,10 +349,12 @@ chunks_since_ack_ = 0U; /* the re-ACK already refreshed credit */
 return;
 case NodeTransferDecision::NackGap:
 (void)reliable_control_.nack_range(inspection.request_chunk, 1U);
+if (queue_ack_window(transfer_window_.next_chunk())) chunks_since_ack_ = 0U;
 return;
 case NodeTransferDecision::NackCorrupt:
 (void)reliable_control_.nack_range(inspection.request_chunk, 1U,
 kRecordFlagCrcMismatch);
+if (queue_ack_window(transfer_window_.next_chunk())) chunks_since_ack_ = 0U;
 return;
 case NodeTransferDecision::Accept:
 case NodeTransferDecision::Complete:
@@ -594,6 +600,7 @@ uint32_t next_expected_node_chunk() const { return transfer_window_.next_chunk()
 uint32_t next_expected_node_offset() const { return transfer_window_.next_offset(); }
 bool reliable_control_pending() const { return reliable_control_.pending(); }
 uint32_t reliable_control_attempt_count() const { return reliable_control_.attempt_count(); }
+uint32_t pending_ack_next_chunk() const { return reliable_control_.ack_next_chunk(); }
 uint8_t receiver_credit() const { return receiver_credit_; }
 uint8_t ack_chunk_threshold() const { return ack_chunk_threshold_; }
 uint32_t ack_timeout_ms() const { return ack_timeout_ms_; }
@@ -606,16 +613,11 @@ uint32_t ack_success_count() const { return ack_success_count_; }
 uint32_t ack_failure_count() const { return ack_failure_count_; }
 bool last_ack_status() const { return last_ack_status_; }
 uint32_t suppressed_relay_count() const { return suppressed_relay_count_; }
-uint32_t sd_flush_count() const { return sd_flush_count_; }
-uint32_t sd_flush_max_duration_ms() const { return sd_flush_max_duration_ms_; }
+uint32_t sd_flush_count() const { return stager_.sd_flush_count(); }
+uint32_t sd_flush_max_duration_ms() const { return stager_.sd_flush_max_duration_ms(); }
 void note_suppressed_relay()
 {
 if (suppressed_relay_count_ < UINT32_MAX) ++suppressed_relay_count_;
-}
-void note_sd_flush_duration_ms(uint32_t duration_ms)
-{
-if (sd_flush_count_ < UINT32_MAX) ++sd_flush_count_;
-if (duration_ms > sd_flush_max_duration_ms_) sd_flush_max_duration_ms_ = duration_ms;
 }
 bool owns_node_link(uint16_t source_id) const
 {
@@ -653,24 +655,46 @@ send_reliable_frame(node_id, frame, length);
 }
 bool send_reliable_frame(uint8_t node_id, const uint8_t *frame, uint16_t length)
 {
+uint8_t adjusted_frame[64U]{};
+const uint8_t *transmit_frame = frame;
+RecordReliableFrameHeader header{};
+bool is_ack_window = false;
+if (frame != nullptr && length >= sizeof(header)) {
+memcpy(&header, frame, sizeof(header));
+is_ack_window = header.command == RecordCommand::ReliableFrame &&
+header.frame_type == static_cast<uint8_t>(RecordReliableType::AckWindow);
+}
+if (is_ack_window) {
+const uint8_t credit = available_ack_credit();
+if (credit == 0U) return false;
+if (length > sizeof(adjusted_frame) ||
+header.payload_len < sizeof(RecordReliableAckWindowPayload) ||
+static_cast<size_t>(sizeof(header)) + header.payload_len != length) {
+return false;
+}
+memcpy(adjusted_frame, frame, length);
+RecordReliableAckWindowPayload body{};
+memcpy(&body, adjusted_frame + sizeof(header), sizeof(body));
+body.credit = credit;
+memcpy(adjusted_frame + sizeof(header), &body, sizeof(body));
+header.payload_crc16 = MasterNodeReliableControl::crc16_ccitt(
+adjusted_frame + sizeof(header), header.payload_len);
+memcpy(adjusted_frame, &header, sizeof(header));
+transmit_frame = adjusted_frame;
+}
 bool sent = false;
 if (reliable_send_ != nullptr) {
-sent = reliable_send_(reliable_context_, node_id, frame, length);
-} else if (exo_hub_ble_write != nullptr && frame != nullptr && length <= 0xFFU) {
-sent = exo_hub_ble_write(frame, static_cast<uint8_t>(length)) != 0U;
+sent = reliable_send_(reliable_context_, node_id, transmit_frame, length);
+} else if (exo_hub_ble_write != nullptr && transmit_frame != nullptr && length <= 0xFFU) {
+sent = exo_hub_ble_write(transmit_frame, static_cast<uint8_t>(length)) != 0U;
 }
-if (frame != nullptr && length >= sizeof(RecordReliableFrameHeader)) {
-RecordReliableFrameHeader header{};
-memcpy(&header, frame, sizeof(header));
-if (header.command == RecordCommand::ReliableFrame &&
-header.frame_type == static_cast<uint8_t>(RecordReliableType::AckWindow)) {
+if (is_ack_window) {
 if (ack_attempt_count_ < UINT32_MAX) ++ack_attempt_count_;
 last_ack_status_ = sent;
 if (sent) {
 if (ack_success_count_ < UINT32_MAX) ++ack_success_count_;
 } else if (ack_failure_count_ < UINT32_MAX) {
 ++ack_failure_count_;
-}
 }
 }
 return sent;
@@ -683,7 +707,10 @@ return free_slots < receiver_credit_ ? free_slots : receiver_credit_;
 bool queue_ack_window(uint32_t next_chunk)
 {
 const uint8_t credit = available_ack_credit();
-return credit != 0U && reliable_control_.ack_window(next_chunk, credit);
+/* ACK state must still advance when the queue is full so a final, duplicate or
+ * gap refresh supersedes an older threshold ACK. The transport thunk defers a
+ * zero-capacity grant and rebuilds the credit from current free slots. */
+return reliable_control_.ack_window(next_chunk, credit == 0U ? 1U : credit);
 }
 bool queue_idle_partial_ack(uint32_t now_ms)
 {
@@ -706,8 +733,7 @@ ack_success_count_ = 0U;
 ack_failure_count_ = 0U;
 last_ack_status_ = false;
 suppressed_relay_count_ = 0U;
-sd_flush_count_ = 0U;
-sd_flush_max_duration_ms_ = 0U;
+stager_.reset_flush_metrics();
 last_receive_ms_ = 0U;
 last_receive_valid_ = false;
 }
@@ -948,8 +974,6 @@ uint32_t ack_success_count_ = 0U;
 uint32_t ack_failure_count_ = 0U;
 bool last_ack_status_ = false;
 uint32_t suppressed_relay_count_ = 0U;
-uint32_t sd_flush_count_ = 0U;
-uint32_t sd_flush_max_duration_ms_ = 0U;
 const training_csv_coordinator::MasterRecordingOps *master_ops_;
 SessionHeader master_header_{};
 uint32_t active_session_id_ = 0U;

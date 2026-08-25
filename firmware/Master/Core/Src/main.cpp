@@ -2394,6 +2394,12 @@ namespace {
 				length) != 0U;
 	}
 
+	static uint32_t master_sd_flush_now_ms(void *context)
+	{
+		(void) context;
+		return HAL_GetTick();
+	}
+
 	static uint8_t forward_remote_record_control(uint16_t source_id,
 			const uint8_t *payload,
 			uint8_t length)
@@ -3050,6 +3056,7 @@ int main(void)
 	leaf_ble_manager.begin();
 	exo_hub_central_client_init();
 	master_training_csv_coordinator.set_reliable_transport(master_node_reliable_send, nullptr);
+	master_training_csv_coordinator.set_sd_flush_time_source(master_sd_flush_now_ms, nullptr);
 	{
 		uint8_t discovered[8] = { 0U };
 		const uint8_t count = leaf_ble_manager.copy_discovered_node_ids(discovered, static_cast<uint8_t>(sizeof(discovered)));
@@ -3182,15 +3189,7 @@ int main(void)
 		record_sync_process();
 		record_stop_sync_process();
 		drain_leaf_stream_passthrough();
-		{
-			const uint8_t queued_before = master_training_csv_coordinator.pending_chunk_count();
-			const uint32_t stage_started_ms = HAL_GetTick();
-			master_training_csv_coordinator.service(g_local_session_recorder, stage_started_ms);
-			if (queued_before != 0U) {
-				master_training_csv_coordinator.note_sd_flush_duration_ms(
-						static_cast<uint32_t>(HAL_GetTick() - stage_started_ms));
-			}
-		}
+		master_training_csv_coordinator.service(g_local_session_recorder, HAL_GetTick());
 		master_training_csv_release_completed_verify_ok();
 		/* Transfer progress telemetry: proves whether chunks actually move
 		 * during ReceiveNode (5 s cadence, bytes staged + delta). */
