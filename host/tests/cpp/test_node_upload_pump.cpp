@@ -6,6 +6,8 @@ static_assert(exo::NodeUploadPump::notification_blocks(247U) == 9U,
               "a 247-byte ATT notification needs nine 32-byte BLE blocks");
 static_assert(exo::NodeUploadPump::upload_extra_blocks(247U, 4U) == 36U,
               "four complete 247-byte ATT notification buffers need 36 blocks");
+static_assert(exo::NodeUploadPump::record_done_eligible(false, true, false, false),
+              "a retained Uploading session must re-announce RecordDone after reconnect");
 
 int main()
 {
@@ -58,6 +60,9 @@ int main()
   pump.stop();
   assert(!pump.live_preview_suppressed());
   assert(!pump.ready(1000U));
+  assert(exo::NodeUploadPump::record_done_eligible(false, true, false, false));
+  assert(!exo::NodeUploadPump::record_done_eligible(false, true, true, false));
+  assert(!exo::NodeUploadPump::record_done_eligible(false, true, false, true));
 
   // DLE commissioning retries only classified transient command failures.
   exo::NodeDleCommissioner dle;

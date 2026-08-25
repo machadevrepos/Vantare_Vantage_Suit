@@ -705,7 +705,10 @@ static void node_upload_pump_sync(uint32_t now_ms)
 static void node_blepipe_process_recording_upload()
 {
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
-	if (node_recording_app.session_ready() && !g_node_record_done_sent && !g_node_upload_active &&
+	const bool retained_uploading_session =
+		node_recording_app.state() == exo::RecorderState::Uploading;
+	if (exo::NodeUploadPump::record_done_eligible(node_recording_app.session_ready(),
+			retained_uploading_session, g_node_record_done_sent, g_node_upload_active) &&
 	    (g_node_record_done_last_send_ms == 0U ||
 	     (HAL_GetTick() - g_node_record_done_last_send_ms) >= kNodeRecordDoneRetryMs)) {
 		const exo::RecordDoneMessage done = node_recording_app.make_record_done();

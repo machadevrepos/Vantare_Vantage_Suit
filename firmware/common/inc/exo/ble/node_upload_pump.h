@@ -45,6 +45,14 @@ public:
     return static_cast<uint16_t>(notification_blocks(att_mtu) * notification_buffers);
   }
 
+  static constexpr bool record_done_eligible(bool session_ready,
+                                             bool uploading,
+                                             bool record_done_sent,
+                                             bool upload_active)
+  {
+    return (session_ready || uploading) && !record_done_sent && !upload_active;
+  }
+
   void start(uint32_t now_ms, uint8_t credit)
   {
     active_ = true;
