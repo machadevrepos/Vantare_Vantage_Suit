@@ -1503,7 +1503,29 @@ void exo_hub_central_client_process(void)
   const uint32_t now = HAL_GetTick();
   {
     const exo::LinkTuneState::Request active = g_link_tune.active_request();
-    if (g_link_tune.on_timeout(now))
+    uint8_t resolved_by_readback = 0U;
+    if (active.procedure == exo::LinkTuneState::Procedure::Phy &&
+        g_link_tune.active_timeout_due(now))
+    {
+      uint8_t tx_phy = 0U;
+      uint8_t rx_phy = 0U;
+      const tBleStatus read_status = hci_le_read_phy(active.handle, &tx_phy, &rx_phy);
+      if (read_status == BLE_STATUS_SUCCESS)
+      {
+        resolved_by_readback = (uint8_t)g_link_tune.on_phy_complete(
+            active.handle, active.generation, exo::LinkTuneState::kStatusSuccess,
+            tx_phy, rx_phy, now);
+        EXO_LOG("[BLE][HUB][LINK] PHY completion missing; readback h=%04X st=0x%02X tx=%u rx=%u accepted=%u\r\n",
+                (unsigned)active.handle, (unsigned)read_status,
+                (unsigned)tx_phy, (unsigned)rx_phy,
+                (unsigned)resolved_by_readback);
+        if (resolved_by_readback != 0U)
+        {
+          exo_report_link_tune(active.link);
+        }
+      }
+    }
+    if (resolved_by_readback == 0U && g_link_tune.on_timeout(now))
     {
       EXO_LOG("[BLE][HUB][LINK] completion timeout slot=%u\r\n", (unsigned)active.link);
       exo_report_link_tune(active.link);

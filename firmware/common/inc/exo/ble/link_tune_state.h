@@ -56,9 +56,17 @@ class LinkTuneState {
   static constexpr uint8_t kStatusSuccess = 0x00U;
   static constexpr uint8_t kStatusCommandDisallowed = 0x0CU;
   static constexpr uint8_t kStatusControllerBusy = 0x3AU;
+  static constexpr uint8_t kStatusNewIntervalFailed = 0x84U;
   static constexpr uint8_t kStatusInvalidParameters = 0x12U;
   static constexpr uint8_t kStatusNotRequested = 0xFFU;
   static constexpr uint8_t kStatusTimeout = 0xFEU;
+  /* STM32WB's multi-link scheduler rejects an exact interval with 0x84 when
+   * no compatible anchor-period subdivision exists. Preserve the requested
+   * minimum, then widen only enough to let the controller choose a compatible
+   * fast interval before falling back to the established 30 ms lower bound. */
+  static constexpr uint16_t kFastIntervalFallbackSpan = 6U;
+  static constexpr uint16_t kFastIntervalFallbackMax = kSlowIntervalMin;
+  static constexpr uint8_t kFastIntervalFallbackLevels = 2U;
 
   struct Request {
     uint8_t link = 0xFFU;
@@ -115,6 +123,8 @@ class LinkTuneState {
     entry.retry_at_ms = now_ms + kCommissioningStartDelayMs;
     entry.interval = Interval::Slow;
     entry.fast_interval = kFastIntervalMin;
+    entry.interval_fallback_level = 0U;
+    entry.had_unconfirmed_procedure = false;
     entry.fast_preparation_pending = false;
     entry.slow_restore_pending = false;
     return true;
@@ -195,8 +205,16 @@ class LinkTuneState {
     entry.telemetry.status = status;
     active_ = Request{};
     active_accepted_ = false;
-    if (is_transient(status)) {
+    const bool interval_schedule_rejected =
+        completed_request.procedure == Procedure::Interval &&
+        completed_request.interval == Interval::Fast &&
+        status == kStatusNewIntervalFailed;
+    if (is_transient(status) || interval_schedule_rejected) {
       ++entry.telemetry.retries;
+      if (interval_schedule_rejected &&
+          entry.interval_fallback_level < kFastIntervalFallbackLevels) {
+        ++entry.interval_fallback_level;
+      }
       if (entry.telemetry.retries >= kMaxTransientAttempts) {
         entry.telemetry.state = State::Degraded;
         entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
@@ -263,7 +281,8 @@ class LinkTuneState {
       entry.interval = Interval::Fast;
       entry.telemetry.state = State::NeedInterval;
     } else {
-      entry.telemetry.state = State::Ready;
+      entry.telemetry.state = entry.had_unconfirmed_procedure ?
+          State::Degraded : State::Ready;
     }
     entry.fast_preparation_pending = false;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
@@ -298,7 +317,8 @@ class LinkTuneState {
       entry.telemetry.state = State::NeedInterval;
       entry.retry_at_ms = now_ms;
     } else {
-      entry.telemetry.state = State::Ready;
+      entry.telemetry.state = entry.had_unconfirmed_procedure ?
+          State::Degraded : State::Ready;
       if (completed_interval == Interval::Slow) {
         entry.slow_restore_pending = false;
       }
@@ -317,7 +337,23 @@ class LinkTuneState {
     entry.telemetry.state = State::Degraded;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
     complete_active();
-    if (timed_out_procedure == Procedure::Interval &&
+    if (timed_out_procedure == Procedure::Dle) {
+      /* A peer may already have negotiated DLE, in which case STM32WB can
+       * accept our command without emitting another local change event. Keep
+       * DLE truthfully unconfirmed. A later active-transfer preparation will
+       * still attempt PHY before changing the connection interval. */
+      entry.had_unconfirmed_procedure = true;
+    } else if (timed_out_procedure == Procedure::Phy &&
+               entry.fast_preparation_pending) {
+      /* The adapter gets one final read-PHY opportunity before calling this
+       * timeout. If readback is unavailable, continue to interval preparation
+       * while retaining Degraded as the final truthful link state. */
+      entry.had_unconfirmed_procedure = true;
+      entry.interval = Interval::Fast;
+      entry.fast_preparation_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (timed_out_procedure == Procedure::Interval &&
         timed_out_interval == Interval::Slow &&
         entry.fast_preparation_pending) {
       entry.interval = Interval::Fast;
@@ -395,6 +431,7 @@ class LinkTuneState {
       return false;
     }
     entry.fast_interval = RecordTransferTuningWire::sanitize_fast_interval(fast_interval);
+    entry.interval_fallback_level = 0U;
     if (active_.valid() && active_.link == link) {
       if (active_.procedure == Procedure::Interval) {
         if (active_.interval == Interval::Slow) {
@@ -423,6 +460,15 @@ class LinkTuneState {
     }
     if (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded) {
       return false;
+    }
+    if (entry.telemetry.state == State::Degraded &&
+        entry.telemetry.confirmed_tx_phy == 0U &&
+        entry.telemetry.confirmed_rx_phy == 0U) {
+      entry.fast_preparation_pending = true;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedPhy;
+      entry.retry_at_ms = 0U;
+      return true;
     }
     entry.interval = Interval::Fast;
     entry.fast_preparation_pending = false;
@@ -458,6 +504,10 @@ class LinkTuneState {
   }
 
   constexpr Request active_request() const { return active_; }
+  constexpr bool active_timeout_due(uint32_t now_ms) const {
+    return active_.valid() && active_accepted_ &&
+           now_ms >= links_[active_.link].deadline_ms;
+  }
 
  private:
   struct Entry {
@@ -468,6 +518,8 @@ class LinkTuneState {
     uint32_t deadline_ms = 0U;
     Interval interval = Interval::Fast;
     uint16_t fast_interval = kFastIntervalMin;
+    uint8_t interval_fallback_level = 0U;
+    bool had_unconfirmed_procedure = false;
     bool fast_preparation_pending = false;
     bool slow_restore_pending = false;
     bool connected = false;
@@ -495,8 +547,20 @@ class LinkTuneState {
     return interval == Interval::Fast ? fast_interval : kSlowIntervalMin;
   }
 
-  static constexpr uint16_t interval_max(Interval interval, uint16_t fast_interval) {
-    return interval == Interval::Fast ? fast_interval : kSlowIntervalMax;
+  static constexpr uint16_t interval_max(Interval interval, uint16_t fast_interval,
+                                         uint8_t fallback_level) {
+    if (interval != Interval::Fast) {
+      return kSlowIntervalMax;
+    }
+    if (fallback_level == 0U) {
+      return fast_interval;
+    }
+    if (fallback_level == 1U) {
+      const uint16_t widened = static_cast<uint16_t>(fast_interval +
+                                                     kFastIntervalFallbackSpan);
+      return widened < kFastIntervalFallbackMax ? widened : kFastIntervalFallbackMax;
+    }
+    return kFastIntervalFallbackMax;
   }
 
   constexpr Request make_request(uint8_t link, Entry &entry) {
@@ -516,7 +580,8 @@ class LinkTuneState {
       request.procedure = Procedure::Interval;
       request.interval = entry.interval;
       request.interval_min = interval_min(entry.interval, entry.fast_interval);
-      request.interval_max = interval_max(entry.interval, entry.fast_interval);
+      request.interval_max = interval_max(entry.interval, entry.fast_interval,
+                                          entry.interval_fallback_level);
       entry.telemetry.requested_interval_min = request.interval_min;
       entry.telemetry.requested_interval_max = request.interval_max;
     }

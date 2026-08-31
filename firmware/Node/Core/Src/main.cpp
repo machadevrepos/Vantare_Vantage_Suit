@@ -310,7 +310,7 @@ static_assert(sizeof(exo::RecordReliableFrameHeader) + kNodeRecordChunkPayloadBy
 		"reliable chunk frame exceeds blepipe app payload (MTU-3 minus envelope)");
 /* Foreground calls are bounded only to leave time for sensors/control. BLE
  * completion and TX-pool events, not a millisecond delay, pace the next work. */
-static constexpr uint8_t kNodeRecordForegroundBurstLimit = 4U;
+static constexpr uint8_t kNodeRecordForegroundBurstLimit = 16U;
 static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
 static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
 static bool g_node_record_done_sent = false;
