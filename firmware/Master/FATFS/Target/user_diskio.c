@@ -93,14 +93,20 @@ static void SD_Deselect(void)
 static void SD_ReadBytes(uint8_t *data, uint16_t len)
 {
   if (data == NULL) {
-    while (len-- > 0U) {
+    /* Clock-out-only tail (CRC bytes): full-duplex into a scratch byte. */
+    uint8_t scratch[2];
+    const uint16_t use = (len <= sizeof(scratch)) ? len : sizeof(scratch);
+    if (use != 0U) {
+      (void)SPI1_SD_Transfer(NULL, scratch, use, SD_DATA_TIMEOUT_MS);
+    }
+    for (len = (uint16_t)(len - use); len > 0U; --len) {
       (void)SPI1_SD_TransferByte(0xFFU);
     }
     return;
   }
-  for (uint16_t i = 0U; i < len; ++i) {
-    data[i] = SPI1_SD_TransferByte(0xFFU);
-  }
+  /* One full-duplex pass for the whole payload; a per-byte HAL call loop
+   * dominated every sector transfer before. */
+  (void)SPI1_SD_Transfer(NULL, data, len, SD_DATA_TIMEOUT_MS);
 }
 
 static uint8_t SD_WaitToken(uint8_t token, uint32_t timeout_ms)
@@ -172,9 +178,9 @@ static uint8_t SD_WriteDataBlock(const uint8_t *data, uint8_t token)
   }
 
   SPI1_SD_TransferByte(token);
-  for (uint16_t i = 0U; i < SD_BLOCK_SIZE; ++i) {
-    SPI1_SD_TransferByte(data[i]);
-  }
+  /* Payload in a single bulk transmit; the per-byte loop made every block
+   * write hundreds of times slower than the wire time. */
+  (void)SPI1_SD_Transfer(data, NULL, SD_BLOCK_SIZE, SD_DATA_TIMEOUT_MS);
   SPI1_SD_TransferByte(0xFFU);
   SPI1_SD_TransferByte(0xFFU);
 

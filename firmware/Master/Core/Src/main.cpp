@@ -230,6 +230,10 @@ namespace {
 	constexpr uint32_t kLocalRecordChunkGapMs = 1U;
 	constexpr uint8_t kLocalRecordBurstLimit = 4U;
 	constexpr uint8_t kLocalRecordFinalizeIcmDrainPasses = 16U;
+	/* Capture-time drain passes per iteration: each pass covers one buffered
+	 * burst, so the bound only matters after a multi-hundred-ms stall. */
+	constexpr uint8_t kLocalRecordBnoDrainPasses = 8U;
+	constexpr uint8_t kLocalRecordIcmDrainPasses = 8U;
 	constexpr uint8_t kRecordTransferTuningCmd = exo::RecordTransferTuningWire::kCommand;
 	constexpr uint8_t kTrainingCsvStatusReportId = 0xB6U;
 	constexpr uint8_t kRecordTransferFlagFastInterval = 0x01U;
@@ -530,7 +534,8 @@ namespace {
 	struct RecordTransferRuntimeConfig {
 			uint8_t credit = exo::kRecordReliableDefaultCredit;
 			uint8_t ack_every_chunks = exo::MasterTrainingCsvCoordinator::kDefaultAckChunkThreshold;
-			uint16_t ack_every_ms = 350U;
+			uint16_t ack_every_ms = static_cast<uint16_t>(
+					exo::MasterTrainingCsvCoordinator::kDefaultAckTimeoutMs);
 			uint16_t control_heartbeat_ms = 400U;
 			uint8_t nack_burst_chunks = 4U;
 			uint8_t master_burst_limit = kLocalRecordBurstLimit;
@@ -538,7 +543,7 @@ namespace {
 			/* Effective sanitized request for the next active-upload LL update.
 			 * Confirmation remains exclusively in the connection-update event. */
 			uint8_t configured_fast_interval = exo::RecordTransferTuningWire::kDefaultFastInterval;
-			/* bit0 = fast (15 ms) connection interval for the active-upload link.
+			/* bit0 = high-throughput connection profile for the active-upload link.
 			 * On by default and force-set in the tuning apply so a preset that
 			 * ships 0 cannot silently disable the throughput timing.
 			 * bit1 = explicit debug-download mode: relay raw Node artifact frames
@@ -713,9 +718,21 @@ namespace {
 			return false;
 		}
 		master_training_csv_coordinator.set_receiver_credit(payload[2]);
-		master_training_csv_coordinator.set_ack_chunk_threshold(payload[3]);
-		master_training_csv_coordinator.set_ack_timeout_ms(static_cast<uint32_t>(payload[4]) |
-				(static_cast<uint32_t>(payload[5]) << 8));
+		/* Bulk collection needs at least sixteen chunks between ACKs. The
+		 * coordinator still clamps this below the effective receiver credit. */
+		const uint8_t requested_ack_chunks = payload[3] == 0U
+				? exo::MasterTrainingCsvCoordinator::kDefaultAckChunkThreshold
+				: payload[3];
+		master_training_csv_coordinator.set_ack_chunk_threshold(
+				requested_ack_chunks < exo::MasterTrainingCsvCoordinator::kDefaultAckChunkThreshold
+						? exo::MasterTrainingCsvCoordinator::kDefaultAckChunkThreshold
+						: requested_ack_chunks);
+		const uint32_t requested_ack_timeout = static_cast<uint32_t>(payload[4]) |
+				(static_cast<uint32_t>(payload[5]) << 8);
+		master_training_csv_coordinator.set_ack_timeout_ms(
+				requested_ack_timeout < exo::MasterTrainingCsvCoordinator::kDefaultAckTimeoutMs
+						? exo::MasterTrainingCsvCoordinator::kDefaultAckTimeoutMs
+						: requested_ack_timeout);
 		g_record_transfer_runtime.credit = master_training_csv_coordinator.receiver_credit();
 		g_record_transfer_runtime.ack_every_chunks = master_training_csv_coordinator.ack_chunk_threshold();
 		g_record_transfer_runtime.ack_every_ms = static_cast<uint16_t>(master_training_csv_coordinator.ack_timeout_ms());
@@ -2749,53 +2766,74 @@ namespace {
 		}
 		if (hub_sensor_test_app.record_bno_queue_active()) {
 			exo::Bno85Sample bno_queued_samples[16]{};
-			const uint8_t bno_queued_count = hub_sensor_test_app.drain_record_bno_samples(
-					bno_queued_samples, static_cast<uint8_t>(sizeof(bno_queued_samples) / sizeof(bno_queued_samples[0])));
-			for (uint8_t i = 0U; i < bno_queued_count; ++i) {
+			/* Drain until empty (bounded) so a slow previous iteration cannot
+			 * leave a backlog that eventually overflows the capture queue. */
+			for (uint8_t pass = 0U; pass < kLocalRecordBnoDrainPasses; ++pass) {
+				const uint8_t bno_queued_count = hub_sensor_test_app.drain_record_bno_samples(
+						bno_queued_samples, static_cast<uint8_t>(sizeof(bno_queued_samples) / sizeof(bno_queued_samples[0])));
+				if (bno_queued_count == 0U) {
+					break;
+				}
+				for (uint8_t i = 0U; i < bno_queued_count; ++i) {
 #if EXO_ACQ_DIAG_SUPPRESS_SD
-				/* Experiment B: acquisition keeps running, storage does not. */
-				(void)bno_queued_samples[i];
-				const bool bno_queued_stored = true;
+					/* Experiment B: acquisition keeps running, storage does not. */
+					(void)bno_queued_samples[i];
+					const bool bno_queued_stored = true;
 #else
-				const bool bno_queued_stored = g_local_session_recorder.append_bno85(bno_queued_samples[i]);
+					const bool bno_queued_stored = g_local_session_recorder.append_bno85(bno_queued_samples[i]);
 #endif
-				if (!bno_queued_stored) {
-					++g_local_bno_append_fail;
-				}
+					if (!bno_queued_stored) {
+						++g_local_bno_append_fail;
+					}
 #if EXO_ACQ_DIAG_ENABLE
-				if (bno_queued_stored) {
-					++g_acq_diag.sd_bno_append_ok;
-				} else {
-					++g_acq_diag.sd_bno_append_fail;
-				}
+					if (bno_queued_stored) {
+						++g_acq_diag.sd_bno_append_ok;
+					} else {
+						++g_acq_diag.sd_bno_append_fail;
+					}
 #endif
+				}
+				if (bno_queued_count < (uint8_t)(sizeof(bno_queued_samples) / sizeof(bno_queued_samples[0]))) {
+					break;
+				}
 			}
 		}
 		if (hub_sensor_test_app.record_icm_fifo_active()) {
 			/* Static: 32 frames cover a ~160 ms superloop stall at 200 Hz
 			 * without touching the main stack. */
 			static exo::Icm45686Sample fifo_samples[32];
-			const uint8_t fifo_count = hub_sensor_test_app.drain_record_icm_samples(
-					fifo_samples, static_cast<uint8_t>(sizeof(fifo_samples) / sizeof(fifo_samples[0])));
-			for (uint8_t i = 0U; i < fifo_count; ++i) {
+			/* Drain until empty (bounded): each pass covers a ~160 ms stall,
+			 * so 8 passes tolerate a superloop hiccup of over a second
+			 * without losing FIFO frames to sensor-side overflow. */
+			for (uint8_t pass = 0U; pass < kLocalRecordIcmDrainPasses; ++pass) {
+				const uint8_t fifo_count = hub_sensor_test_app.drain_record_icm_samples(
+						fifo_samples, static_cast<uint8_t>(sizeof(fifo_samples) / sizeof(fifo_samples[0])));
+				if (fifo_count == 0U) {
+					break;
+				}
+				for (uint8_t i = 0U; i < fifo_count; ++i) {
 #if EXO_ACQ_DIAG_SUPPRESS_SD
-				const bool fifo_stored = true;
+					const bool fifo_stored = true;
 #else
-				const bool fifo_stored = g_local_session_recorder.append_icm45686(fifo_samples[i]);
+					const bool fifo_stored = g_local_session_recorder.append_icm45686(fifo_samples[i]);
 #endif
-				if (fifo_stored) {
-					(void)master_training_csv_coordinator.note_master_icm_time(
-							g_local_start_msg.session_id, fifo_samples[i].offset_us);
-				} else {
-					++g_local_icm_append_fail;
-				}
+					if (fifo_stored) {
+						(void)master_training_csv_coordinator.note_master_icm_time(
+								g_local_start_msg.session_id, fifo_samples[i].offset_us);
+					} else {
+						++g_local_icm_append_fail;
+					}
 #if EXO_ACQ_DIAG_ENABLE
-				if (fifo_stored) {
-					++g_acq_diag.sd_icm_append_ok;
-				} else {
-					++g_acq_diag.sd_icm_append_fail;
-				}
+					if (fifo_stored) {
+						++g_acq_diag.sd_icm_append_ok;
+					} else {
+						++g_acq_diag.sd_icm_append_fail;
+					}
 #endif
+				}
+				if (fifo_count < (uint8_t)(sizeof(fifo_samples) / sizeof(fifo_samples[0]))) {
+					break;
+				}
 			}
 		}
 		const uint32_t elapsed_ms = HAL_GetTick() - g_local_capture_start_ms;

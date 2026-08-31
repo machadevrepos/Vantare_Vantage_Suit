@@ -37,6 +37,7 @@ class LinkTuneState {
   enum class Interval : uint8_t {
     Fast,
     Slow,
+    Parked,
   };
 
   static constexpr uint8_t kLinkCount = 4U;
@@ -49,24 +50,44 @@ class LinkTuneState {
   static constexpr uint16_t kFastIntervalMax = kFastIntervalMin;
   static constexpr uint16_t kSlowIntervalMin = 0x0018U;
   static constexpr uint16_t kSlowIntervalMax = 0x0028U;
+  static constexpr uint16_t kBulkInterval =
+      RecordTransferTuningWire::kBulkFastInterval;
+  static constexpr uint16_t kParkedInterval = 0x0090U; /* 180 ms */
+  static constexpr uint16_t kBulkMinCeLength = 0x0000U;
+  static constexpr uint16_t kBulkMaxCeLength = 0x0030U; /* 30 ms */
+  static_assert(kBulkMaxCeLength <= (2U * kBulkInterval),
+                "bulk connection event cannot exceed its interval");
+  static_assert((kParkedInterval % kBulkInterval) == 0U,
+                "parked interval must remain an exact bulk-interval multiple");
   static constexpr uint32_t kRetryDelayMs = 50U;
   static constexpr uint32_t kCommissioningStartDelayMs = 600U;
   static constexpr uint32_t kProcedureTimeoutMs = 1500U;
-  static constexpr uint8_t kMaxTransientAttempts = 3U;
+  static constexpr uint8_t kMaxTransientAttempts = 4U;
   static constexpr uint8_t kStatusSuccess = 0x00U;
   static constexpr uint8_t kStatusCommandDisallowed = 0x0CU;
   static constexpr uint8_t kStatusControllerBusy = 0x3AU;
   static constexpr uint8_t kStatusNewIntervalFailed = 0x84U;
+  static constexpr uint8_t kStatusIntervalTooLarge = 0x85U;
+  static constexpr uint8_t kStatusLengthFailed = 0x86U;
   static constexpr uint8_t kStatusInvalidParameters = 0x12U;
   static constexpr uint8_t kStatusNotRequested = 0xFFU;
   static constexpr uint8_t kStatusTimeout = 0xFEU;
-  /* STM32WB's multi-link scheduler rejects an exact interval with 0x84 when
-   * no compatible anchor-period subdivision exists. Preserve the requested
-   * minimum, then widen only enough to let the controller choose a compatible
-   * fast interval before falling back to the established 30 ms lower bound. */
+  /* STM32WB grants a connection interval only when it is an integer multiple
+   * or submultiple of the current virtual anchor period. 0x84/0x85 mean "no
+   * such multiple/submultiple in the requested range" (0x86: not enough radio
+   * time), so every one of them is a scheduler rejection the ladder must
+   * retry, never a terminal link failure. Observed on this fleet: with a
+   * 40 ms anchor (initial links), 15 ms exact is ungrantable (0x84) and a
+   * 30-50 ms request can be ungrantable (0x85) depending on the other slots,
+   * while the wide 7.5-30 ms range always confirmed at 20 ms (= 40/2). The
+   * ladder therefore walks: exact -> widened -> 10-15 ms submultiple window
+   * (10 ms = 40/4, the only sub-20 ms interval a 40 ms anchor can grant) ->
+   * the proven wide 7.5-30 ms range as the guaranteed-grantable floor. */
   static constexpr uint16_t kFastIntervalFallbackSpan = 6U;
   static constexpr uint16_t kFastIntervalFallbackMax = kSlowIntervalMin;
-  static constexpr uint8_t kFastIntervalFallbackLevels = 2U;
+  static constexpr uint8_t kFastIntervalFallbackLevels = 3U;
+  static constexpr uint16_t kSubMultipleIntervalMin = 0x0008U; /* 10 ms */
+  static constexpr uint16_t kSubMultipleIntervalMax = 0x000CU; /* 15 ms */
 
   struct Request {
     uint8_t link = 0xFFU;
@@ -80,6 +101,8 @@ class LinkTuneState {
     uint8_t rx_phy = 0U;
     uint16_t interval_min = 0U;
     uint16_t interval_max = 0U;
+    uint16_t min_ce_length = 0U;
+    uint16_t max_ce_length = 0U;
 
     constexpr bool valid() const { return procedure != Procedure::None; }
   };
@@ -97,6 +120,8 @@ class LinkTuneState {
     uint8_t confirmed_rx_phy = 0U;
     uint16_t requested_interval_min = kFastIntervalMin;
     uint16_t requested_interval_max = kFastIntervalMax;
+    uint16_t requested_min_ce_length = 0U;
+    uint16_t requested_max_ce_length = 0U;
     uint16_t confirmed_interval = 0U;
     uint32_t preparation_duration_ms = 0U;
     uint8_t retries = 0U;
@@ -127,6 +152,7 @@ class LinkTuneState {
     entry.had_unconfirmed_procedure = false;
     entry.fast_preparation_pending = false;
     entry.slow_restore_pending = false;
+    entry.park_preparation_pending = false;
     return true;
   }
 
@@ -146,6 +172,7 @@ class LinkTuneState {
     entry.telemetry.state = State::Failed;
     entry.fast_preparation_pending = false;
     entry.slow_restore_pending = false;
+    entry.park_preparation_pending = false;
     return true;
   }
 
@@ -207,11 +234,12 @@ class LinkTuneState {
     active_accepted_ = false;
     const bool interval_schedule_rejected =
         completed_request.procedure == Procedure::Interval &&
-        completed_request.interval == Interval::Fast &&
-        status == kStatusNewIntervalFailed;
+        (status == kStatusNewIntervalFailed || status == kStatusIntervalTooLarge ||
+         status == kStatusLengthFailed);
     if (is_transient(status) || interval_schedule_rejected) {
       ++entry.telemetry.retries;
       if (interval_schedule_rejected &&
+          completed_request.interval == Interval::Fast &&
           entry.interval_fallback_level < kFastIntervalFallbackLevels) {
         ++entry.interval_fallback_level;
       }
@@ -225,16 +253,56 @@ class LinkTuneState {
     } else {
       entry.telemetry.state = State::Failed;
     }
-    if (completed_request.procedure == Procedure::Interval &&
-        completed_request.interval == Interval::Slow &&
+    const bool terminal_procedure = entry.telemetry.state == State::Degraded ||
+                                    entry.telemetry.state == State::Failed;
+    if (completed_request.procedure == Procedure::Dle && terminal_procedure &&
         entry.fast_preparation_pending) {
+      entry.had_unconfirmed_procedure = true;
+      entry.telemetry.state = State::NeedPhy;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Dle && terminal_procedure &&
+               entry.park_preparation_pending) {
+      entry.had_unconfirmed_procedure = true;
+      entry.interval = Interval::Parked;
+      entry.park_preparation_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Phy && terminal_procedure &&
+               entry.fast_preparation_pending) {
+      entry.had_unconfirmed_procedure = true;
+      entry.interval = Interval::Fast;
+      entry.fast_preparation_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Phy && terminal_procedure &&
+               entry.park_preparation_pending) {
+      entry.had_unconfirmed_procedure = true;
+      entry.interval = Interval::Parked;
+      entry.park_preparation_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Interval &&
+        completed_request.interval != Interval::Parked &&
+        entry.park_preparation_pending) {
+      entry.interval = Interval::Parked;
+      entry.park_preparation_pending = false;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (completed_request.procedure == Procedure::Interval &&
+        entry.fast_preparation_pending &&
+        (completed_request.interval != Interval::Fast ||
+         completed_request.interval_min != entry.fast_interval)) {
       entry.interval = Interval::Fast;
       entry.fast_preparation_pending = false;
       entry.slow_restore_pending = false;
       entry.telemetry.state = State::NeedInterval;
       entry.retry_at_ms = now_ms;
     } else if (completed_request.procedure == Procedure::Interval &&
-        completed_request.interval == Interval::Fast && entry.slow_restore_pending) {
+        (completed_request.interval == Interval::Fast ||
+         completed_request.interval == Interval::Parked) &&
+        entry.slow_restore_pending) {
       /* The transfer ended while the fast procedure was in flight. Its error
        * resolves that request; the next request must be the latched restore,
        * not a retry of an interval the source no longer needs. */
@@ -246,6 +314,11 @@ class LinkTuneState {
                (entry.telemetry.state == State::Degraded ||
                 entry.telemetry.state == State::Failed)) {
       entry.slow_restore_pending = false;
+    } else if (completed_request.procedure == Procedure::Interval &&
+               completed_request.interval == Interval::Parked &&
+               (entry.telemetry.state == State::Degraded ||
+                entry.telemetry.state == State::Failed)) {
+      entry.park_preparation_pending = false;
     }
     return true;
   }
@@ -280,11 +353,15 @@ class LinkTuneState {
     if (entry.fast_preparation_pending) {
       entry.interval = Interval::Fast;
       entry.telemetry.state = State::NeedInterval;
+    } else if (entry.park_preparation_pending) {
+      entry.interval = Interval::Parked;
+      entry.telemetry.state = State::NeedInterval;
     } else {
       entry.telemetry.state = entry.had_unconfirmed_procedure ?
           State::Degraded : State::Ready;
     }
     entry.fast_preparation_pending = false;
+    entry.park_preparation_pending = false;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
     complete_active();
     (void)now_ms;
@@ -301,16 +378,27 @@ class LinkTuneState {
     }
     Entry &entry = links_[active_.link];
     const Interval completed_interval = active_.interval;
+    const uint16_t completed_interval_min = active_.interval_min;
     entry.telemetry.confirmed_interval = interval;
     entry.telemetry.status = kStatusSuccess;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
     complete_active();
-    if (completed_interval == Interval::Fast && entry.slow_restore_pending) {
+    if (completed_interval != Interval::Parked && entry.park_preparation_pending) {
+      entry.interval = Interval::Parked;
+      entry.park_preparation_pending = false;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if ((completed_interval == Interval::Fast ||
+                completed_interval == Interval::Parked) &&
+               entry.slow_restore_pending) {
       entry.interval = Interval::Slow;
       entry.telemetry.state = State::NeedInterval;
       entry.retry_at_ms = now_ms;
-    } else if (completed_interval == Interval::Slow &&
-               entry.fast_preparation_pending) {
+    } else if (entry.fast_preparation_pending &&
+               (completed_interval != Interval::Fast ||
+                completed_interval_min != entry.fast_interval)) {
       entry.interval = Interval::Fast;
       entry.fast_preparation_pending = false;
       entry.slow_restore_pending = false;
@@ -321,6 +409,8 @@ class LinkTuneState {
           State::Degraded : State::Ready;
       if (completed_interval == Interval::Slow) {
         entry.slow_restore_pending = false;
+      } else if (completed_interval == Interval::Parked) {
+        entry.park_preparation_pending = false;
       }
     }
     return true;
@@ -333,6 +423,7 @@ class LinkTuneState {
     Entry &entry = links_[active_.link];
     const Procedure timed_out_procedure = active_.procedure;
     const Interval timed_out_interval = active_.interval;
+    const uint16_t timed_out_interval_min = active_.interval_min;
     entry.telemetry.status = kStatusTimeout;
     entry.telemetry.state = State::Degraded;
     entry.telemetry.preparation_duration_ms = now_ms - entry.connected_at_ms;
@@ -343,6 +434,15 @@ class LinkTuneState {
        * DLE truthfully unconfirmed. A later active-transfer preparation will
        * still attempt PHY before changing the connection interval. */
       entry.had_unconfirmed_procedure = true;
+      if (entry.fast_preparation_pending) {
+        entry.telemetry.state = State::NeedPhy;
+        entry.retry_at_ms = now_ms;
+      } else if (entry.park_preparation_pending) {
+        entry.interval = Interval::Parked;
+        entry.park_preparation_pending = false;
+        entry.telemetry.state = State::NeedInterval;
+        entry.retry_at_ms = now_ms;
+      }
     } else if (timed_out_procedure == Procedure::Phy &&
                entry.fast_preparation_pending) {
       /* The adapter gets one final read-PHY opportunity before calling this
@@ -353,22 +453,42 @@ class LinkTuneState {
       entry.fast_preparation_pending = false;
       entry.telemetry.state = State::NeedInterval;
       entry.retry_at_ms = now_ms;
+    } else if (timed_out_procedure == Procedure::Phy &&
+               entry.park_preparation_pending) {
+      entry.had_unconfirmed_procedure = true;
+      entry.interval = Interval::Parked;
+      entry.park_preparation_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
     } else if (timed_out_procedure == Procedure::Interval &&
-        timed_out_interval == Interval::Slow &&
-        entry.fast_preparation_pending) {
+        entry.fast_preparation_pending &&
+        (timed_out_interval != Interval::Fast ||
+         timed_out_interval_min != entry.fast_interval)) {
       entry.interval = Interval::Fast;
       entry.fast_preparation_pending = false;
       entry.slow_restore_pending = false;
       entry.telemetry.state = State::NeedInterval;
       entry.retry_at_ms = now_ms;
     } else if (timed_out_procedure == Procedure::Interval &&
-        timed_out_interval == Interval::Fast && entry.slow_restore_pending) {
+        timed_out_interval != Interval::Parked && entry.park_preparation_pending) {
+      entry.interval = Interval::Parked;
+      entry.park_preparation_pending = false;
+      entry.fast_preparation_pending = false;
+      entry.slow_restore_pending = false;
+      entry.telemetry.state = State::NeedInterval;
+      entry.retry_at_ms = now_ms;
+    } else if (timed_out_procedure == Procedure::Interval &&
+        (timed_out_interval == Interval::Fast ||
+         timed_out_interval == Interval::Parked) && entry.slow_restore_pending) {
       entry.interval = Interval::Slow;
       entry.telemetry.state = State::NeedInterval;
       entry.retry_at_ms = now_ms;
     } else if (timed_out_procedure == Procedure::Interval &&
                timed_out_interval == Interval::Slow) {
       entry.slow_restore_pending = false;
+    } else if (timed_out_procedure == Procedure::Interval &&
+               timed_out_interval == Interval::Parked) {
+      entry.park_preparation_pending = false;
     }
     return true;
   }
@@ -381,6 +501,7 @@ class LinkTuneState {
     if (!entry.connected || entry.telemetry.generation != generation) {
       return false;
     }
+    entry.telemetry.retries = 0U;
     if (active_.valid() && active_.link == link) {
       if (active_.procedure != Procedure::Interval ||
           entry.telemetry.state != State::WaitInterval) {
@@ -388,6 +509,7 @@ class LinkTuneState {
       }
       entry.interval = Interval::Slow;
       entry.slow_restore_pending = true;
+      entry.park_preparation_pending = false;
       return true;
     }
     if (entry.telemetry.state == State::NeedDle || entry.telemetry.state == State::WaitDle ||
@@ -396,12 +518,14 @@ class LinkTuneState {
        * intent because the source completed before that work became useful. */
       entry.fast_preparation_pending = false;
       entry.interval = Interval::Slow;
+      entry.park_preparation_pending = false;
       return true;
     }
     if (entry.telemetry.state == State::NeedInterval) {
       entry.interval = Interval::Slow;
       entry.slow_restore_pending = true;
       entry.fast_preparation_pending = false;
+      entry.park_preparation_pending = false;
       entry.retry_at_ms = 0U;
       return true;
     }
@@ -412,6 +536,7 @@ class LinkTuneState {
     entry.interval = Interval::Slow;
     entry.slow_restore_pending = true;
     entry.fast_preparation_pending = false;
+    entry.park_preparation_pending = false;
     entry.telemetry.state = State::NeedInterval;
     entry.retry_at_ms = 0U;
     return true;
@@ -432,9 +557,12 @@ class LinkTuneState {
     }
     entry.fast_interval = RecordTransferTuningWire::sanitize_fast_interval(fast_interval);
     entry.interval_fallback_level = 0U;
+    entry.telemetry.retries = 0U;
+    entry.park_preparation_pending = false;
     if (active_.valid() && active_.link == link) {
       if (active_.procedure == Procedure::Interval) {
-        if (active_.interval == Interval::Slow) {
+        if (active_.interval != Interval::Fast ||
+            active_.interval_min != entry.fast_interval) {
           entry.fast_preparation_pending = true;
           entry.slow_restore_pending = false;
         }
@@ -458,7 +586,13 @@ class LinkTuneState {
       entry.retry_at_ms = 0U;
       return true;
     }
-    if (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded) {
+    /* Failed is accepted here on purpose: it marks a completed preparation
+     * attempt whose interval did not change, not a dead link. Refusing it
+     * would leave a connected link stuck at its initial interval for the
+     * whole upload (observed: NODE3/NODE4 0x85 on the baseline slow request
+     * hard-failed the link and the transfer then ran at half speed). */
+    if (entry.telemetry.state != State::Ready && entry.telemetry.state != State::Degraded &&
+        entry.telemetry.state != State::Failed) {
       return false;
     }
     if (entry.telemetry.state == State::Degraded &&
@@ -473,6 +607,43 @@ class LinkTuneState {
     entry.interval = Interval::Fast;
     entry.fast_preparation_pending = false;
     entry.slow_restore_pending = false;
+    entry.telemetry.state = State::NeedInterval;
+    entry.retry_at_ms = 0U;
+    return true;
+  }
+
+  /* Park an inactive leaf while a different source owns the sequential bulk
+   * upload. The request can be latched behind commissioning or an interval
+   * procedure already owned by the global LL arbiter. */
+  constexpr bool begin_park_preparation(uint8_t link, uint32_t generation) {
+    if (link >= kLinkCount) {
+      return false;
+    }
+    Entry &entry = links_[link];
+    if (!entry.connected || entry.telemetry.generation != generation) {
+      return false;
+    }
+    entry.telemetry.retries = 0U;
+    entry.fast_preparation_pending = false;
+    entry.slow_restore_pending = false;
+    if (active_.valid() && active_.link == link) {
+      if (active_.procedure == Procedure::Interval) {
+        entry.park_preparation_pending = active_.interval != Interval::Parked;
+        return true;
+      }
+      if (active_.procedure != Procedure::Dle && active_.procedure != Procedure::Phy) {
+        return false;
+      }
+      entry.park_preparation_pending = true;
+      return true;
+    }
+    if (entry.telemetry.state == State::NeedDle || entry.telemetry.state == State::WaitDle ||
+        entry.telemetry.state == State::NeedPhy || entry.telemetry.state == State::WaitPhy) {
+      entry.park_preparation_pending = true;
+      return true;
+    }
+    entry.interval = Interval::Parked;
+    entry.park_preparation_pending = false;
     entry.telemetry.state = State::NeedInterval;
     entry.retry_at_ms = 0U;
     return true;
@@ -509,6 +680,19 @@ class LinkTuneState {
            now_ms >= links_[active_.link].deadline_ms;
   }
 
+  constexpr bool interval_profile_resolved(uint8_t link, uint32_t generation,
+                                           Interval interval) const {
+    if (link >= kLinkCount) {
+      return false;
+    }
+    const Entry &entry = links_[link];
+    return entry.connected && entry.telemetry.generation == generation &&
+           entry.interval == interval && !entry.park_preparation_pending &&
+           (entry.telemetry.state == State::Ready ||
+            entry.telemetry.state == State::Degraded ||
+            entry.telemetry.state == State::Failed);
+  }
+
  private:
   struct Entry {
     Telemetry telemetry{};
@@ -522,6 +706,7 @@ class LinkTuneState {
     bool had_unconfirmed_procedure = false;
     bool fast_preparation_pending = false;
     bool slow_restore_pending = false;
+    bool park_preparation_pending = false;
     bool connected = false;
   };
 
@@ -543,24 +728,50 @@ class LinkTuneState {
     return status == kStatusCommandDisallowed || status == kStatusControllerBusy;
   }
 
-  static constexpr uint16_t interval_min(Interval interval, uint16_t fast_interval) {
-    return interval == Interval::Fast ? fast_interval : kSlowIntervalMin;
+  static constexpr uint16_t interval_min(Interval interval, uint16_t fast_interval,
+                                         uint8_t fallback_level) {
+    if (interval == Interval::Fast && fallback_level >= kFastIntervalFallbackLevels) {
+      /* Final bulk fallback is the previously proven 7.5-30 ms scheduler
+       * range, which confirmed at 20 ms on the current hardware. */
+      return kFastIntervalMin;
+    }
+    if (interval == Interval::Fast && fallback_level == 2U) {
+      /* Submultiple window: with a 40 ms anchor this is the only range below
+       * 20 ms the scheduler can grant (10 ms = 40/4); for other anchors it
+       * still contains a submultiple for every plausible period. */
+      return kSubMultipleIntervalMin;
+    }
+    return interval == Interval::Fast ? fast_interval :
+           interval == Interval::Parked ? kParkedInterval : kSlowIntervalMin;
   }
 
   static constexpr uint16_t interval_max(Interval interval, uint16_t fast_interval,
                                          uint8_t fallback_level) {
+    if (interval == Interval::Parked) {
+      return kParkedInterval;
+    }
     if (interval != Interval::Fast) {
       return kSlowIntervalMax;
+    }
+    if (fallback_level >= kFastIntervalFallbackLevels) {
+      return kFastIntervalFallbackMax;
+    }
+    if (fallback_level == 2U) {
+      return kSubMultipleIntervalMax;
     }
     if (fallback_level == 0U) {
       return fast_interval;
     }
-    if (fallback_level == 1U) {
-      const uint16_t widened = static_cast<uint16_t>(fast_interval +
-                                                     kFastIntervalFallbackSpan);
-      return widened < kFastIntervalFallbackMax ? widened : kFastIntervalFallbackMax;
-    }
-    return kFastIntervalFallbackMax;
+    const uint16_t widened = static_cast<uint16_t>(fast_interval +
+                                                   kFastIntervalFallbackSpan);
+    return widened < kFastIntervalFallbackMax ? widened : kFastIntervalFallbackMax;
+  }
+
+  static constexpr uint16_t max_ce_length(Interval interval,
+                                          uint16_t fast_interval,
+                                          uint8_t fallback_level) {
+    return interval == Interval::Fast && fast_interval == kBulkInterval &&
+           fallback_level == 0U ? kBulkMaxCeLength : 0U;
   }
 
   constexpr Request make_request(uint8_t link, Entry &entry) {
@@ -579,11 +790,19 @@ class LinkTuneState {
     } else {
       request.procedure = Procedure::Interval;
       request.interval = entry.interval;
-      request.interval_min = interval_min(entry.interval, entry.fast_interval);
+      request.interval_min = interval_min(entry.interval, entry.fast_interval,
+                                          entry.interval_fallback_level);
       request.interval_max = interval_max(entry.interval, entry.fast_interval,
                                           entry.interval_fallback_level);
+      request.min_ce_length = entry.interval == Interval::Fast &&
+                              entry.fast_interval == kBulkInterval ?
+                              kBulkMinCeLength : 0U;
+      request.max_ce_length = max_ce_length(entry.interval, entry.fast_interval,
+                                            entry.interval_fallback_level);
       entry.telemetry.requested_interval_min = request.interval_min;
       entry.telemetry.requested_interval_max = request.interval_max;
+      entry.telemetry.requested_min_ce_length = request.min_ce_length;
+      entry.telemetry.requested_max_ce_length = request.max_ce_length;
     }
     return request;
   }

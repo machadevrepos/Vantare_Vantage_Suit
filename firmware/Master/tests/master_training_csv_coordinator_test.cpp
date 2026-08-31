@@ -309,8 +309,8 @@ int main()
     /* Runtime flow-control requests are sanitized as one effective contract:
      * credit always fits the queue and the partial-ACK threshold stays below it. */
     if (coordinator.receiver_credit() != 24U ||
-            coordinator.ack_chunk_threshold() != 8U ||
-            coordinator.ack_timeout_ms() != 350U) {
+            coordinator.ack_chunk_threshold() != 16U ||
+            coordinator.ack_timeout_ms() != 750U) {
         return 23;
     }
     coordinator.set_receiver_credit(1U);
@@ -330,8 +330,8 @@ int main()
     coordinator.set_ack_chunk_threshold(0U);
     coordinator.set_ack_timeout_ms(0U);
     if (coordinator.receiver_credit() != 24U ||
-            coordinator.ack_chunk_threshold() != 8U ||
-            coordinator.ack_timeout_ms() != 350U) {
+            coordinator.ack_chunk_threshold() != 16U ||
+            coordinator.ack_timeout_ms() != 750U) {
         return 26;
     }
 

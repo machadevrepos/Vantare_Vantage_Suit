@@ -14,6 +14,13 @@
 #define EXO_HUB_SENSOR_BACKGROUND_LOG_ENABLE 0
 #endif
 
+/* Wall-clock budget for the extra BNO service points. At ~0.3 ms per SHTP
+ * transfer this drains ~20 reports per call, several times the worst-case
+ * backlog a stalled superloop can accumulate, while bounding the burst. */
+#ifndef EXO_BNO85_SERVICE_WALL_BUDGET_US
+#define EXO_BNO85_SERVICE_WALL_BUDGET_US 8000U
+#endif
+
 namespace exo {
 
 struct HubSensorSnapshot {
@@ -127,13 +134,16 @@ public:
     }
 
     /* Bounded BNO drain for extra superloop service points placed between
-     * long-blocking regions (BLE dispatch, SD collect). Applies the same
-     * capture/idle packet-budget policy as process(); INT-gated, so it is
-     * cheap when no report is pending. */
+     * long-blocking regions (BLE dispatch, SD collect). Wall-clock bounded
+     * instead of a fixed packet budget: the master superloop can stretch to
+     * hundreds of milliseconds under SD/BLE load, and a packet budget that
+     * small cannot keep up with ~250 reports/s, which throttles the recorded
+     * BNO stream to a fraction of the target rate. INT-gated, so it is cheap
+     * when no report is pending. */
     void service_bno() {
 #if !EXO_ACQ_DIAG_ICM_ONLY
         if (!bno_ready_) return;
-        bno85_.service();
+        bno85_.service_until_clear(EXO_BNO85_SERVICE_WALL_BUDGET_US);
 #endif
     }
 

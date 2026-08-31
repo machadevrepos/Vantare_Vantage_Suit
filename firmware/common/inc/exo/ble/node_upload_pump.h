@@ -30,6 +30,9 @@ public:
     uint32_t watchdog_wake_count = 0U;
     uint32_t terminal_error_count = 0U;
     uint16_t tx_pool_buffers = 0U;
+    uint16_t max_tx_pool_buffers = 0U;
+    uint16_t consecutive_accepted_count = 0U;
+    uint16_t max_consecutive_accepted_count = 0U;
   };
 
   static constexpr uint32_t kWatchdogMs = 750U;
@@ -61,6 +64,7 @@ public:
     credit_ = credit;
     last_blocked_ms_ = now_ms;
     send_ready_ = (credit_ != 0U);
+    metrics_.consecutive_accepted_count = 0U;
   }
 
   void stop()
@@ -69,6 +73,7 @@ public:
     blocked_ = false;
     credit_ = 0U;
     send_ready_ = false;
+    metrics_.consecutive_accepted_count = 0U;
   }
 
   void set_credit(uint8_t credit)
@@ -90,6 +95,9 @@ public:
   {
     metrics_.tx_pool_event_count += events;
     metrics_.tx_pool_buffers = available_buffers;
+    if (available_buffers > metrics_.max_tx_pool_buffers) {
+      metrics_.max_tx_pool_buffers = available_buffers;
+    }
     wake_from_controller_event();
   }
 
@@ -98,6 +106,12 @@ public:
     switch (result) {
       case SendResult::Success:
         ++metrics_.accepted_count;
+        if (metrics_.consecutive_accepted_count != 0xFFFFU) {
+          ++metrics_.consecutive_accepted_count;
+        }
+        if (metrics_.consecutive_accepted_count > metrics_.max_consecutive_accepted_count) {
+          metrics_.max_consecutive_accepted_count = metrics_.consecutive_accepted_count;
+        }
         if (credit_ != 0U) {
           --credit_;
         }
@@ -106,10 +120,12 @@ public:
         break;
       case SendResult::Busy:
         ++metrics_.busy_count;
+        metrics_.consecutive_accepted_count = 0U;
         block(now_ms);
         break;
       case SendResult::InsufficientResources:
         ++metrics_.resource_count;
+        metrics_.consecutive_accepted_count = 0U;
         block(now_ms);
         break;
       case SendResult::OtherFailure:
@@ -118,6 +134,7 @@ public:
          * control decide when a resumable session is restarted. */
         (void)now_ms;
         ++metrics_.terminal_error_count;
+        metrics_.consecutive_accepted_count = 0U;
         terminal_error_ = true;
         active_ = false;
         blocked_ = false;

@@ -475,8 +475,17 @@ public:
 private:
     static constexpr uint32_t kMaxBnoSamples = 360000U;  /* 15 min at 400 Hz */
     static constexpr uint32_t kMaxIcmSamples = 720000U;  /* 60 min at 200 Hz */
-    static constexpr uint32_t kBnoBufferSamples = 8U;
-    static constexpr uint32_t kIcmBufferSamples = 32U;
+    /* Buffers sized so a flush is a whole number of 512 B sectors: every
+     * flush then writes full sectors directly. A partial-sector flush would
+     * force FatFS through a read-modify-write for every flush, which on the
+     * SPI bit-banged card path cost tens of ms per superloop iteration and
+     * throttled the capture loop below the sensor rates. */
+    static constexpr uint32_t kBnoBufferSamples = 64U;   /* 3584 B = 7 sectors */
+    static constexpr uint32_t kIcmBufferSamples = 128U;  /* 2560 B = 5 sectors */
+    static_assert((kBnoBufferSamples * sizeof(Bno85Sample)) % 512U == 0U,
+            "BNO flush size must be sector-aligned to avoid read-modify-write");
+    static_assert((kIcmBufferSamples * sizeof(Icm45686Sample)) % 512U == 0U,
+            "ICM flush size must be sector-aligned to avoid read-modify-write");
     static constexpr uint32_t kCopyBufferBytes = 256U;
 
     static constexpr uint32_t bno_region_start() {

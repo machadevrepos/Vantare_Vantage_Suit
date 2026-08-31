@@ -159,6 +159,30 @@ public:
         }
     }
 
+    /* Wall-clock bounded drain: keeps reading transfers while the sensor
+     * holds data, so a long superloop period cannot throttle the report
+     * stream below the sensor's production rate (one sh2_service() call
+     * reads at most one SHTP transfer). The budget caps the busy burst so
+     * SD and BLE still get foreground time; a leftover backlog is finished
+     * by the next service point. */
+    void service_until_clear(uint32_t max_wall_us) {
+        if (max_wall_us == 0U) return;
+        if (interrupt_port_ == nullptr || interrupt_pin_ == 0U) {
+            sh2_service();
+            return;
+        }
+        const uint32_t start_us = micros32();
+        for (;;) {
+            if (HAL_GPIO_ReadPin(interrupt_port_, interrupt_pin_) != GPIO_PIN_RESET) {
+                return;
+            }
+            sh2_service();
+            if ((micros32() - start_us) >= max_wall_us) {
+                return;
+            }
+        }
+    }
+
     bool take_latest(uint32_t offset_us, Bno85Sample &sample) {
         if (!has_rotation_ || !has_new_data_) {
             return false;

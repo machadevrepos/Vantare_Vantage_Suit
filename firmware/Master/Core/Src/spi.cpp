@@ -18,12 +18,15 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include <string.h>
+
 #include "spi.h"
 
 /* USER CODE BEGIN 0 */
 #define SD_CS_GPIO_PORT GPIOA
 #define SD_CS_PIN GPIO_PIN_4
 #define SD_SPI_TIMEOUT_MS 100U
+#define SD_SPI_BULK_CHUNK_BYTES 512U
 
 static uint32_t s_spi1_sd_prescaler = SPI_BAUDRATEPRESCALER_2;
 
@@ -179,11 +182,23 @@ HAL_StatusTypeDef SPI1_SD_Transfer(const uint8_t *tx, uint8_t *rx, uint16_t len,
     return HAL_SPI_Transmit(&hspi1, (uint8_t *)tx, len, timeout_ms);
   }
   if (rx != NULL) {
-    uint8_t dummy = 0xFFU;
-    for (uint16_t i = 0U; i < len; ++i) {
-      if (HAL_SPI_TransmitReceive(&hspi1, &dummy, &rx[i], 1U, timeout_ms) != HAL_OK) {
+    /* Clock 0xFF while filling rx in one full-duplex pass; a per-byte HAL
+     * call loop costs orders of magnitude more than the transfer itself. */
+    static uint8_t ff_tx[SD_SPI_BULK_CHUNK_BYTES];
+    static bool ff_tx_ready = false;
+    if (!ff_tx_ready) {
+      memset(ff_tx, 0xFFU, sizeof(ff_tx));
+      ff_tx_ready = true;
+    }
+    uint16_t offset = 0U;
+    while (offset < len) {
+      const uint16_t remaining = (uint16_t)(len - offset);
+      const uint16_t chunk = (uint16_t)(remaining > (uint16_t)SD_SPI_BULK_CHUNK_BYTES ?
+              (uint16_t)SD_SPI_BULK_CHUNK_BYTES : remaining);
+      if (HAL_SPI_TransmitReceive(&hspi1, &ff_tx[0], &rx[offset], chunk, timeout_ms) != HAL_OK) {
         return HAL_ERROR;
       }
+      offset = (uint16_t)(offset + chunk);
     }
     return HAL_OK;
   }

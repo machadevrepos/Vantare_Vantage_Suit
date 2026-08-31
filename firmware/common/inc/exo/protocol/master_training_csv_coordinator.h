@@ -66,8 +66,11 @@ static constexpr uint32_t kSessionStallMs = 30000U;
  * link cannot discard an entire capture. */
 static constexpr uint32_t kNodeStallMs = 30000U;
 static constexpr uint8_t kNodeReceiverCredit = 24U;
-static constexpr uint8_t kDefaultAckChunkThreshold = 8U;
-static constexpr uint32_t kDefaultAckTimeoutMs = 350U;
+/* ACK sixteen chunks at a time so a 24-credit upload window retains recovery
+ * headroom without spending one reverse-direction control packet per eight
+ * data notifications. */
+static constexpr uint8_t kDefaultAckChunkThreshold = 16U;
+static constexpr uint32_t kDefaultAckTimeoutMs = 750U;
 static constexpr uint32_t kMinAckTimeoutMs = 100U;
 static constexpr uint32_t kMaxAckTimeoutMs = 5000U;
 /* Re-advertise the receive window when the active node stops sending, so a lost
@@ -79,14 +82,14 @@ static constexpr uint32_t kNodeAckRearmMs = 300U;
  * the maximum advertised receiver credit. */
 static constexpr uint8_t kPendingChunkDepth = 24U;
 /* ACK batching: fewer credit-refresh transmissions on the data link means the
- * forward (node->master) chunk stream is interrupted 8x less often. Must stay
+ * forward (node->master) chunk stream is interrupted less often. Must stay
  * below the granted credit (kNodeReceiverCredit = 24) so the node always has
  * chunks in flight between refreshes; duplicates/gaps/Complete still re-ACK
  * immediately, so a lost batch ACK self-heals within one keepalive window.
  * NOTE: batch >1 (with the fast-timing lever) was reverted during the
  * 2026-08-22 zero-progress bisect. That wedge's real cause was a chunk-size
  * overflow (fixed in 9e67a7d); re-enabled here on top of DLE + 2M PHY, but
- * A/B this and the 15 ms interval together on hardware before relying on them. */
+ * A/B this with the 30 ms bulk-event profile on hardware before relying on it. */
 struct PendingChunk {
 uint8_t node_id;
 uint32_t session_id;

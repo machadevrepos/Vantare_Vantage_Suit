@@ -477,7 +477,7 @@ static void exo_report_link_tune(uint8_t slot_index)
   const exo_leaf_slot_t *const slot = &g_leaf_slots[slot_index];
   EXO_LOG("[BLE][HUB][LINK] node=%u slot=%u h=%04X gen=%lu state=%u "
           "dle=req%u/ok%u,%u phy=req%u,%u/ok%u,%u ci=req%u-%u/ok%u "
-          "prep=%lums retry=%u st=0x%02X\r\n",
+          "ce=req%u-%u prep=%lums retry=%u st=0x%02X\r\n",
           (unsigned)exo_leaf_slot_node_id(slot),
           (unsigned)slot_index,
           (unsigned)t.handle,
@@ -493,6 +493,8 @@ static void exo_report_link_tune(uint8_t slot_index)
           (unsigned)t.requested_interval_min,
           (unsigned)t.requested_interval_max,
           (unsigned)t.confirmed_interval,
+          (unsigned)t.requested_min_ce_length,
+          (unsigned)t.requested_max_ce_length,
           (unsigned long)t.preparation_duration_ms,
           (unsigned)t.retries,
           (unsigned)t.status);
@@ -532,19 +534,23 @@ static void exo_issue_next_link_tune(uint32_t now)
                                       request.interval_min, request.interval_max,
                                       EXO_HUB_CONN_LATENCY,
                                       EXO_HUB_SUPERVISION_TIMEOUT,
-                                      EXO_HUB_MIN_CE_LENGTH,
-                                      EXO_HUB_MAX_CE_LENGTH);
+                                      request.min_ce_length,
+                                      request.max_ce_length);
     exo_send_disc_report(EXO_DISC_EVT_LINK_INTERVAL_REQ, exo_leaf_slot_node_id(slot),
                          request.link, (uint8_t)request.interval,
                          (uint16_t)(request.interval_min | ((uint16_t)status << 8U)));
   }
   (void)g_link_tune.on_request_status(request, (uint8_t)status, now);
-  EXO_LOG("[BLE][HUB][LINK] issue node=%u slot=%u h=%04X gen=%lu proc=%u st=0x%02X\r\n",
+  EXO_LOG("[BLE][HUB][LINK] issue node=%u slot=%u h=%04X gen=%lu proc=%u iv=%u-%u ce=%u-%u st=0x%02X\r\n",
           (unsigned)exo_leaf_slot_node_id(slot),
           (unsigned)request.link,
           (unsigned)request.handle,
           (unsigned long)request.generation,
           (unsigned)request.procedure,
+          (unsigned)request.interval_min,
+          (unsigned)request.interval_max,
+          (unsigned)request.min_ce_length,
+          (unsigned)request.max_ce_length,
           (unsigned)status);
   exo_report_link_tune(request.link);
 }
@@ -1364,6 +1370,19 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
   }
   if (lane_kind == BLEPIPE_LANE_STATUS_TX)
   {
+    if (hdr.msg_type == BLEPIPE_MSG_LINK_STATS && payload_len >= 57U && payload[0] == 1U)
+    {
+      const uint16_t max_pool = (uint16_t)payload[49] | ((uint16_t)payload[50] << 8U);
+      const uint16_t streak = (uint16_t)payload[51] | ((uint16_t)payload[52] << 8U);
+      const uint16_t max_streak = (uint16_t)payload[53] | ((uint16_t)payload[54] << 8U);
+      EXO_LOG("[BLE][HUB][UPLOAD] node=%u max_pool=%u streak=%u max_streak=%u cfg_buffers=%u burst=%u\r\n",
+              (unsigned)exo_leaf_slot_node_id(slot),
+              (unsigned)max_pool,
+              (unsigned)streak,
+              (unsigned)max_streak,
+              (unsigned)payload[55],
+              (unsigned)payload[56]);
+    }
     exo_handle_leaf_status(slot, &hdr, payload, payload_len);
     (void)Custom_APP_SendRecoveryFrame(data, decoded_frame_len);
     return;
@@ -1435,15 +1454,17 @@ static uint8_t exo_arm_active_transfer_slot(uint8_t slot_index)
 }
 
 /* Queue upload timing through the same completion-driven arbiter as DLE/PHY.
- * A transfer may proceed after a fast-preparation timeout (Degraded), but its
- * slow restore is only queued after that source completes. */
+ * Only the selected source participates: making inactive-link scheduling a
+ * prerequisite for initial credit can deadlock an otherwise healthy upload
+ * when STM32WB rejects a concurrent interval update. */
 void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
                                                 uint8_t fast_interval)
 {
   uint8_t i;
   if (fast != 0U)
   {
-    (void)g_transfer_link_rearm.begin_source(node_id, fast_interval);
+    (void)g_transfer_link_rearm.begin_source(
+        node_id, exo::RecordTransferTuningWire::kBulkFastInterval);
   }
   else
   {
@@ -1458,9 +1479,10 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
       const uint8_t queued = (uint8_t)(fast != 0U
           ? exo_arm_active_transfer_slot(i)
           : g_link_tune.begin_slow_restore(i, t.generation));
-      EXO_LOG("[BLE][HUB][XFER] timing queue node=%u slot=%u fast=%u ci_cfg=%u queued=%u gen=%lu\r\n",
+      EXO_LOG("[BLE][HUB][XFER] timing queue node=%u slot=%u fast=%u ci_cfg=%u ci_bulk=%u queued=%u gen=%lu\r\n",
               (unsigned)node_id, (unsigned)i, (unsigned)(fast != 0U),
               (unsigned)exo::RecordTransferTuningWire::sanitize_fast_interval(fast_interval),
+              (unsigned)exo::RecordTransferTuningWire::kBulkFastInterval,
               (unsigned)queued, (unsigned long)t.generation);
       exo_report_link_tune(i);
       return;
@@ -1850,7 +1872,7 @@ void exo_hub_central_client_on_connection_complete(uint8_t initiated_as_client,
   if (g_transfer_link_rearm.active_node_id() == exo_leaf_slot_node_id(slot))
   {
     const uint8_t queued = exo_arm_active_transfer_slot(slot_index);
-    EXO_LOG("[BLE][HUB][XFER] reconnect rearm node=%u slot=%u queued=%u gen=%lu\r\n",
+    EXO_LOG("[BLE][HUB][XFER] reconnect source=%u slot=%u queued=%u gen=%lu\r\n",
             (unsigned)exo_leaf_slot_node_id(slot), (unsigned)slot_index,
             (unsigned)queued,
             (unsigned long)g_link_tune.telemetry(slot_index).generation);

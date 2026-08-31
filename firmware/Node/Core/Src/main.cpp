@@ -310,7 +310,12 @@ static_assert(sizeof(exo::RecordReliableFrameHeader) + kNodeRecordChunkPayloadBy
 		"reliable chunk frame exceeds blepipe app payload (MTU-3 minus envelope)");
 /* Foreground calls are bounded only to leave time for sensors/control. BLE
  * completion and TX-pool events, not a millisecond delay, pace the next work. */
-static constexpr uint8_t kNodeRecordForegroundBurstLimit = 16U;
+static constexpr uint8_t kNodeRecordForegroundBurstLimit = 24U;
+static_assert(kNodeRecordForegroundBurstLimit >= 16U,
+		"30 ms bulk profile needs at least sixteen record notifications per event");
+static_assert((static_cast<uint32_t>(kNodeRecordChunkPayloadBytes) * 16U * 1000U) >=
+		(100000U * 30U),
+		"bulk profile no longer reaches the 100 kB/s theoretical application target");
 static constexpr uint32_t kNodeRecordDoneRetryMs = 500U;
 static constexpr uint32_t kNodeRecordTxFailLogMs = 500U;
 static bool g_node_record_done_sent = false;
@@ -830,6 +835,13 @@ struct __attribute__((packed)) NodeUploadLinkStats {
 	uint32_t watchdog_wake_count;
 	uint32_t terminal_error_count;
 	uint32_t flash_read_ms;
+	/* Version-1 readers accept a longer payload and ignore this throughput
+	 * extension; new firmware logs it even with an older desktop tool. */
+	uint16_t max_tx_pool_buffers;
+	uint16_t consecutive_accepted_count;
+	uint16_t max_consecutive_accepted_count;
+	uint8_t configured_notification_buffers;
+	uint8_t foreground_burst_limit;
 };
 
 static void node_blepipe_report_upload_diagnostics()
@@ -861,10 +873,15 @@ static void node_blepipe_report_upload_diagnostics()
 	status.watchdog_wake_count = pump.watchdog_wake_count;
 	status.terminal_error_count = pump.terminal_error_count;
 	status.flash_read_ms = g_node_upload_flash_read_ms;
+	status.max_tx_pool_buffers = pump.max_tx_pool_buffers;
+	status.consecutive_accepted_count = pump.consecutive_accepted_count;
+	status.max_consecutive_accepted_count = pump.max_consecutive_accepted_count;
+	status.configured_notification_buffers = CFG_NODE_UPLOAD_NOTIFICATION_BUFFERS;
+	status.foreground_burst_limit = kNodeRecordForegroundBurstLimit;
 	const bool telemetry_sent = exo_node_ble_status_notify_enabled() != 0U &&
 		node_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LINK_STATS, BLEPIPE_ID_HUB,
 			reinterpret_cast<const uint8_t *>(&status), static_cast<uint16_t>(sizeof(status)));
-	EXO_LOG("[BLE][NODE][UPLOAD] dle=%u attempts=%u req=0x%02X max=%u tx=%u rx=%u acceptedB=%lu accepted=%lu busy=%lu res=%lu complete=%lu pool=%lu/%u watchdog=%lu terminal=%lu flashMs=%lu telemetry=%u\r\n",
+	EXO_LOG("[BLE][NODE][UPLOAD] dle=%u attempts=%u req=0x%02X max=%u tx=%u rx=%u acceptedB=%lu accepted=%lu busy=%lu res=%lu complete=%lu pool=%lu/%u maxpool=%u streak=%u maxstreak=%u cfgbuf=%u burst=%u watchdog=%lu terminal=%lu flashMs=%lu telemetry=%u\r\n",
 			static_cast<unsigned>(dle_outcome), static_cast<unsigned>(dle.commission_attempts),
 			static_cast<unsigned>(dle.request_status),
 			static_cast<unsigned>(dle.controller_max_tx_octets), static_cast<unsigned>(dle.negotiated_tx_octets),
@@ -872,6 +889,11 @@ static void node_blepipe_report_upload_diagnostics()
 			static_cast<unsigned long>(pump.accepted_count), static_cast<unsigned long>(pump.busy_count),
 			static_cast<unsigned long>(pump.resource_count), static_cast<unsigned long>(pump.notification_complete_count),
 			static_cast<unsigned long>(pump.tx_pool_event_count), static_cast<unsigned>(pump.tx_pool_buffers),
+			static_cast<unsigned>(pump.max_tx_pool_buffers),
+			static_cast<unsigned>(pump.consecutive_accepted_count),
+			static_cast<unsigned>(pump.max_consecutive_accepted_count),
+			static_cast<unsigned>(CFG_NODE_UPLOAD_NOTIFICATION_BUFFERS),
+			static_cast<unsigned>(kNodeRecordForegroundBurstLimit),
 			static_cast<unsigned long>(pump.watchdog_wake_count), static_cast<unsigned long>(pump.terminal_error_count),
 			static_cast<unsigned long>(g_node_upload_flash_read_ms),
 			static_cast<unsigned>(telemetry_sent ? 1U : 0U));

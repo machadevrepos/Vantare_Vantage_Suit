@@ -19,6 +19,9 @@ struct RecordTransferTuningWire {
   static constexpr uint16_t kV2Length = 13U;
   static constexpr uint8_t kFastIntervalOffset = 12U;
   static constexpr uint8_t kDefaultFastInterval = 12U;
+  /* Firmware-owned bulk collection interval (30 ms). The browser's legacy
+   * 15/11.25/7.5 ms benchmark values remain wire compatible. */
+  static constexpr uint8_t kBulkFastInterval = 24U;
 
   struct DecodeResult {
     bool valid = false;
@@ -27,7 +30,8 @@ struct RecordTransferTuningWire {
   };
 
   static constexpr bool is_supported_fast_interval(uint8_t interval) {
-    return interval == 12U || interval == 9U || interval == 6U;
+    return interval == kBulkFastInterval || interval == 12U ||
+           interval == 9U || interval == 6U;
   }
 
   static constexpr uint8_t sanitize_fast_interval(uint8_t interval) {
