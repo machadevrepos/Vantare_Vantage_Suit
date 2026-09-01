@@ -54,6 +54,7 @@
 #include <exo/ble/app_ble.h>
 #include <exo/ble/custom_app.h>
 #include <exo/ble/node_upload_pump.h>
+#include "shci.h"
 #include "stm32wbxx_ll_cortex.h"
 #include "stm32wbxx_ll_exti.h"
 #include "stm32wbxx_ll_pwr.h"
@@ -309,8 +310,12 @@ static_assert(sizeof(exo::RecordReliableFrameHeader) + kNodeRecordChunkPayloadBy
 		<= BLEPIPE_MAX_APP_PAYLOAD,
 		"reliable chunk frame exceeds blepipe app payload (MTU-3 minus envelope)");
 /* Foreground calls are bounded only to leave time for sensors/control. BLE
- * completion and TX-pool events, not a millisecond delay, pace the next work. */
-static constexpr uint8_t kNodeRecordForegroundBurstLimit = 24U;
+ * completion and TX-pool events, not a millisecond delay, pace the next work.
+ * The burst re-fills the controller TX queue to the depth it accepts (ST
+ * BLE_Basic_DataThroughput pattern): send until INSUFFICIENT_RESOURCES, then
+ * resume on the next TX-pool-available event. The cap only bounds worst-case
+ * superloop time when the controller accepts a deep queue. */
+static constexpr uint8_t kNodeRecordForegroundBurstLimit = 64U;
 static_assert(kNodeRecordForegroundBurstLimit >= 16U,
 		"30 ms bulk profile needs at least sixteen record notifications per event");
 static_assert((static_cast<uint32_t>(kNodeRecordChunkPayloadBytes) * 16U * 1000U) >=
@@ -842,6 +847,17 @@ struct __attribute__((packed)) NodeUploadLinkStats {
 	uint16_t max_consecutive_accepted_count;
 	uint8_t configured_notification_buffers;
 	uint8_t foreground_burst_limit;
+	/* Continuation of the same version-1 payload (the desktop decoder keys on
+	 * the version byte, so the frame version never moves): CPU2 wireless
+	 * stack identity, auditable from the Master console without SWO. */
+	uint8_t fw_major;
+	uint8_t fw_minor;
+	uint8_t fw_sub;
+	uint8_t fw_build;
+	uint8_t fus_major;
+	uint8_t fus_minor;
+	uint8_t fus_sub;
+	uint8_t fw_reserved;
 };
 
 static void node_blepipe_report_upload_diagnostics()
@@ -855,7 +871,6 @@ static void node_blepipe_report_upload_diagnostics()
 	const exo::NodeUploadPump::Metrics &pump = g_node_upload_pump.metrics();
 	const uint8_t dle_outcome = dle.commission_state;
 	NodeUploadLinkStats status{};
-	status.version = 1U;
 	status.dle_outcome = dle_outcome;
 	status.dle_request_status = dle.request_status;
 	status.upload_active = g_node_upload_pump.active() ? 1U : 0U;
@@ -878,6 +893,21 @@ static void node_blepipe_report_upload_diagnostics()
 	status.max_consecutive_accepted_count = pump.max_consecutive_accepted_count;
 	status.configured_notification_buffers = CFG_NODE_UPLOAD_NOTIFICATION_BUFFERS;
 	status.foreground_burst_limit = kNodeRecordForegroundBurstLimit;
+	static WirelessFwInfo_t s_wireless_info {};
+	static bool s_wireless_info_valid = false;
+	if (!s_wireless_info_valid) {
+		SHCI_GetWirelessFwInfo(&s_wireless_info);
+		s_wireless_info_valid = true;
+	}
+	status.version = 1U;
+	status.fw_major = s_wireless_info.VersionMajor;
+	status.fw_minor = s_wireless_info.VersionMinor;
+	status.fw_sub = s_wireless_info.VersionSub;
+	status.fw_build = s_wireless_info.VersionReleaseType;
+	status.fus_major = s_wireless_info.FusVersionMajor;
+	status.fus_minor = s_wireless_info.FusVersionMinor;
+	status.fus_sub = s_wireless_info.FusVersionSub;
+	status.fw_reserved = 0U;
 	const bool telemetry_sent = exo_node_ble_status_notify_enabled() != 0U &&
 		node_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LINK_STATS, BLEPIPE_ID_HUB,
 			reinterpret_cast<const uint8_t *>(&status), static_cast<uint16_t>(sizeof(status)));

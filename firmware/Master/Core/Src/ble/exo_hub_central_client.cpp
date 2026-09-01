@@ -530,12 +530,26 @@ static void exo_issue_next_link_tune(uint32_t now)
   }
   else
   {
-    status = hci_le_connection_update(request.handle,
-                                      request.interval_min, request.interval_max,
-                                      EXO_HUB_CONN_LATENCY,
-                                      EXO_HUB_SUPERVISION_TIMEOUT,
-                                      request.min_ce_length,
-                                      request.max_ce_length);
+    /* CPU2 wireless stacks v1.14+ removed the standard HCI LE Connection
+     * Update opcode (OCF 0x0013 answers 0x01 Unknown Command) and route the
+     * identical request through the vendor command below. Try the vendor
+     * command first, then fall back to the legacy opcode so the same
+     * firmware still tunes links on pre-v1.14 stacks. */
+    status = aci_gap_start_connection_update(request.handle,
+                                             request.interval_min, request.interval_max,
+                                             EXO_HUB_CONN_LATENCY,
+                                             EXO_HUB_SUPERVISION_TIMEOUT,
+                                             request.min_ce_length,
+                                             request.max_ce_length);
+    if (status == 0x01U)
+    {
+      status = hci_le_connection_update(request.handle,
+                                        request.interval_min, request.interval_max,
+                                        EXO_HUB_CONN_LATENCY,
+                                        EXO_HUB_SUPERVISION_TIMEOUT,
+                                        request.min_ce_length,
+                                        request.max_ce_length);
+    }
     exo_send_disc_report(EXO_DISC_EVT_LINK_INTERVAL_REQ, exo_leaf_slot_node_id(slot),
                          request.link, (uint8_t)request.interval,
                          (uint16_t)(request.interval_min | ((uint16_t)status << 8U)));
@@ -1370,7 +1384,29 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
   }
   if (lane_kind == BLEPIPE_LANE_STATUS_TX)
   {
-    if (hdr.msg_type == BLEPIPE_MSG_LINK_STATS && payload_len >= 57U && payload[0] == 1U)
+    if (hdr.msg_type == BLEPIPE_MSG_LINK_STATS && payload_len >= 65U && payload[0] == 1U)
+    {
+      /* Full-length version-1 payload: everything the 57-byte frame carried,
+       * plus the node's CPU2 wireless stack identity (bytes 57..63). */
+      const uint16_t max_pool = (uint16_t)payload[49] | ((uint16_t)payload[50] << 8U);
+      const uint16_t streak = (uint16_t)payload[51] | ((uint16_t)payload[52] << 8U);
+      const uint16_t max_streak = (uint16_t)payload[53] | ((uint16_t)payload[54] << 8U);
+      EXO_LOG("[BLE][HUB][UPLOAD] node=%u max_pool=%u streak=%u max_streak=%u cfg_buffers=%u burst=%u cpu2_fw=%u.%u.%u b%u fus=%u.%u.%u\r\n",
+              (unsigned)exo_leaf_slot_node_id(slot),
+              (unsigned)max_pool,
+              (unsigned)streak,
+              (unsigned)max_streak,
+              (unsigned)payload[55],
+              (unsigned)payload[56],
+              (unsigned)payload[57],
+              (unsigned)payload[58],
+              (unsigned)payload[59],
+              (unsigned)payload[60],
+              (unsigned)payload[61],
+              (unsigned)payload[62],
+              (unsigned)payload[63]);
+    }
+    else if (hdr.msg_type == BLEPIPE_MSG_LINK_STATS && payload_len >= 57U && payload[0] == 1U)
     {
       const uint16_t max_pool = (uint16_t)payload[49] | ((uint16_t)payload[50] << 8U);
       const uint16_t streak = (uint16_t)payload[51] | ((uint16_t)payload[52] << 8U);

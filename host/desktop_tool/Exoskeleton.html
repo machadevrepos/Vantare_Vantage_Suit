@@ -1109,7 +1109,15 @@ input[type="checkbox"] {
         txPoolEventCount: readU32(payload, 33),
         watchdogWakeCount: readU32(payload, 37),
         terminalErrorCount: readU32(payload, 41),
-        flashReadMs: readU32(payload, 45)
+        flashReadMs: readU32(payload, 45),
+        // Payload extension (version byte stays 1): node CPU2 wireless stack
+        // identity, present only when the node sends the 65-byte frame.
+        cpu2Fw: payload.length >= 65
+          ? `${payload[57]}.${payload[58]}.${payload[59]} build ${payload[60]}`
+          : null,
+        cpu2Fus: payload.length >= 65
+          ? `${payload[61]}.${payload[62]}.${payload[63]}`
+          : null
       };
     }
 
@@ -1131,7 +1139,8 @@ input[type="checkbox"] {
         ` notify_complete=${stats.notificationCompleteCount}` +
         ` tx_pool=${stats.txPoolEventCount}/${stats.txPoolBuffers}` +
         ` watchdog=${stats.watchdogWakeCount} terminal=${stats.terminalErrorCount}` +
-        ` flash_read=${stats.flashReadMs}ms`;
+        ` flash_read=${stats.flashReadMs}ms` +
+        (stats.cpu2Fw ? ` cpu2_fw=${stats.cpu2Fw} fus=${stats.cpu2Fus}` : "");
     }
 
     function formatMasterLinkEvent(eventId, stateValue, value) {
