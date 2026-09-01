@@ -1,0 +1,54 @@
+{
+  "model_name": "vantare_bicep_curl_v1",
+  "class_mapping": {
+    "0": "correct",
+    "1": "incomplete_range",
+    "2": "elbow_movement"
+  },
+  "node_placement": {
+    "2": "wrist_distal_forearm",
+    "3": "elbow_region",
+    "4": "upper_arm_near_shoulder"
+  },
+  "preprocessing": {
+    "target_hz": 50,
+    "window_seconds": 2.0,
+    "window_samples": 100,
+    "stride_seconds": 0.5,
+    "synchronized_channels": 72,
+    "features": 576
+  },
+  "input": {
+    "name": "features",
+    "dtype": "float32",
+    "shape": [
+      "batch_size",
+      576
+    ]
+  },
+  "outputs": [
+    {
+      "name": "label",
+      "meaning": "predicted_class_id",
+      "dtype": "tensor(int64)"
+    },
+    {
+      "name": "probabilities",
+      "meaning": "class_probabilities",
+      "dtype": "tensor(float)",
+      "probability_order": [
+        "correct",
+        "incomplete_range",
+        "elbow_movement"
+      ]
+    }
+  ],
+  "live_inference": {
+    "warmup_seconds": 2.0,
+    "prediction_interval_seconds": 0.5,
+    "recommended_probability_threshold": 0.7,
+    "required_consecutive_incorrect_windows": 2,
+    "haptic_cooldown_seconds": 2.0
+  },
+  "warning": "Version 1 personalized model. No rest or transition class is available."
+}

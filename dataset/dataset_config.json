@@ -1,0 +1,32 @@
+{
+  "dataset_name": "vantare_bicep_curl_v1",
+  "dataset_version": 1,
+  "task": "personalized_bicep_curl_form_classification",
+  "included_nodes": [2, 3, 4],
+  "excluded_sources": ["MASTER"],
+  "node_placements": {
+    "2": "wrist_distal_forearm",
+    "3": "elbow_region",
+    "4": "upper_arm_near_shoulder"
+  },
+  "sensors_per_node": ["BNO85", "ICM45686"],
+  "class_mapping": {
+    "0": "correct",
+    "1": "incomplete_range",
+    "2": "elbow_movement"
+  },
+  "sessions": [
+    {"session": 1, "folder": "correct/session_01", "class_id": 0, "label": "correct"},
+    {"session": 2, "folder": "correct/session_02", "class_id": 0, "label": "correct"},
+    {"session": 3, "folder": "incomplete_range/session_03", "class_id": 1, "label": "incomplete_range"},
+    {"session": 4, "folder": "incomplete_range/session_04", "class_id": 1, "label": "incomplete_range"},
+    {"session": 5, "folder": "elbow_movement/session_05", "class_id": 2, "label": "elbow_movement"},
+    {"session": 6, "folder": "elbow_movement/session_06", "class_id": 2, "label": "elbow_movement"}
+  ],
+  "validation_folds": [
+    {"name": "A", "train_sessions": [1, 3, 5], "test_sessions": [2, 4, 6]},
+    {"name": "B", "train_sessions": [2, 4, 6], "test_sessions": [1, 3, 5]}
+  ],
+  "expected_files_per_session": 9,
+  "expected_data_files": 54
+}
