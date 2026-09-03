@@ -1176,7 +1176,7 @@ namespace exo {
 			/* 40 ms = 25 Hz per sensor = the live contract rate (design Section 11).
 			 * The queue clamps anything below 40 ms to 40 anyway. */
 			uint32_t live_interval_ms_ = 40U;
-			NodeLiveSampleQueue<kMaxLivePayload, 12U> live_queue_ { };
+			NodeLiveSampleQueue<kMaxLivePayload, 16U> live_queue_ { };
 			bool prepared_ = false;
 			bool ready_ = false;
 			uint32_t detected_flash_capacity_ = 0U;

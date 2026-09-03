@@ -369,6 +369,22 @@ static_assert(kNodeLiveBundleMarker != 1U && kNodeLiveBundleMarker != 2U,
 static uint32_t g_node_live_sent_count = 0U;
 static uint32_t g_node_live_gate_bp_count = 0U;
 static uint32_t g_node_live_bundle_next_ms = 0U;
+/* Last sample of each sensor, re-sent in a bundle when that sensor produced
+ * nothing fresh this tick so its stream stays at the bundle cadence (the BNO
+ * 100 Hz report jitters against the 40 ms tick and would otherwise drop ~10%).
+ * The Master re-stamps every forwarded frame with its own clock, so a repeated
+ * value still arrives as a fresh, monotonic sample at the host. */
+static uint32_t g_node_live_bno_fresh_count = 0U;
+static uint32_t g_node_live_icm_fresh_count = 0U;
+static exo::NodeRecordingApp::LiveSample g_node_live_last_bno{};
+static exo::NodeRecordingApp::LiveSample g_node_live_last_icm{};
+static bool g_node_live_last_bno_valid = false;
+static bool g_node_live_last_icm_valid = false;
+static uint32_t g_node_live_last_bno_ms = 0U;
+static uint32_t g_node_live_last_icm_ms = 0U;
+/* Stop repeating a sensor's last value once it has genuinely stalled - past
+ * this the stream should show a real gap, not stale data fed to the model. */
+static constexpr uint32_t kNodeLiveRepeatMaxAgeMs = 400U;
 
 extern "C" uint8_t Custom_APP_PipeDataNotifyEnabled(void);
 extern "C" uint8_t exo_node_ble_status_notify_enabled(void);
@@ -477,47 +493,65 @@ static void node_blepipe_process_live_samples()
 
 	/* Paced bundle send: one PipeDataTx notification per live interval carrying
 	 * BOTH sensors' latest sample. Paced (not burst) so the leaf link is never
-	 * oversubscribed - at 25 Hz a bundle is ~0.5 packets per connection event. */
+	 * oversubscribed - at 25 Hz a bundle is ~0.5 packets per connection event.
+	 * Pace ~10% faster than the contract interval so a few % of leaf-link RF
+	 * loss still leaves the delivered rate above the 25 Hz gate. */
 	uint32_t interval_ms = node_recording_app.live_interval_ms();
-	if (interval_ms < 20U) { interval_ms = 20U; }
+	interval_ms = (interval_ms * 9U) / 10U;
+	if (interval_ms < 18U) { interval_ms = 18U; }
 	if (g_node_live_bundle_next_ms != 0U &&
 			static_cast<int32_t>(now_ms - g_node_live_bundle_next_ms) < 0) {
 		return;
 	}
 
-	/* Drain the queue, keeping only the freshest sample of each sensor. */
+	/* Drain the queue, refreshing the per-sensor last-known sample. */
 	exo::NodeRecordingApp::LiveSample s{};
-	exo::NodeRecordingApp::LiveSample bno{};
-	exo::NodeRecordingApp::LiveSample icm{};
-	bool have_bno = false;
-	bool have_icm = false;
+	bool bno_fresh = false;
+	bool icm_fresh = false;
 	for (uint8_t drained = 0U; drained < 24U && node_recording_app.pop_live_sample(s); ++drained) {
 		if (s.sensor_id == exo::NodeRecordingApp::kBnoLiveSensorId) {
-			bno = s;
-			have_bno = true;
+			g_node_live_last_bno = s;
+			g_node_live_last_bno_valid = true;
+			g_node_live_last_bno_ms = now_ms;
+			bno_fresh = true;
+			++g_node_live_bno_fresh_count;
 		} else if (s.sensor_id == exo::NodeRecordingApp::kIcmLiveSensorId) {
-			icm = s;
-			have_icm = true;
+			g_node_live_last_icm = s;
+			g_node_live_last_icm_valid = true;
+			g_node_live_last_icm_ms = now_ms;
+			icm_fresh = true;
+			++g_node_live_icm_fresh_count;
 		}
 	}
-	if (!have_bno && !have_icm) {
-		/* Nothing new this tick; try again next interval. */
+	if (!bno_fresh && !icm_fresh) {
+		/* Nothing new from either sensor; don't send a pure repeat. */
 		g_node_live_bundle_next_ms = now_ms + interval_ms;
 		return;
 	}
 
+	/* Include BOTH sensors (last-known if not fresh this tick) so neither
+	 * stream drops a grid point while the other keeps the cadence - unless a
+	 * sensor has genuinely stalled, then let its stream gap. */
+	const bool put_bno = g_node_live_last_bno_valid &&
+			(now_ms - g_node_live_last_bno_ms) < kNodeLiveRepeatMaxAgeMs;
+	const bool put_icm = g_node_live_last_icm_valid &&
+			(now_ms - g_node_live_last_icm_ms) < kNodeLiveRepeatMaxAgeMs;
+	if (!put_bno && !put_icm) {
+		g_node_live_bundle_next_ms = now_ms + interval_ms;
+		return;
+	}
 	uint8_t payload[3U + (2U * exo::NodeRecordingApp::kMaxLivePayload)]{};
 	uint16_t n = 0U;
 	payload[n++] = kNodeLiveBundleMarker;
-	payload[n++] = static_cast<uint8_t>(have_bno ? bno.payload_len : 0U);
-	if (have_bno) {
-		memcpy(payload + n, bno.payload, bno.payload_len);
-		n = static_cast<uint16_t>(n + bno.payload_len);
+	payload[n++] = static_cast<uint8_t>(put_bno ? g_node_live_last_bno.payload_len : 0U);
+	if (put_bno) {
+		memcpy(payload + n, g_node_live_last_bno.payload, g_node_live_last_bno.payload_len);
+		n = static_cast<uint16_t>(n + g_node_live_last_bno.payload_len);
 	}
-	payload[n++] = static_cast<uint8_t>(have_icm ? icm.payload_len : 0U);
-	if (have_icm) {
-		memcpy(payload + n, icm.payload, icm.payload_len);
-		n = static_cast<uint16_t>(n + icm.payload_len);
+	payload[n++] = static_cast<uint8_t>(put_icm ? g_node_live_last_icm.payload_len : 0U);
+	if (put_icm) {
+		memcpy(payload + n, g_node_live_last_icm.payload, g_node_live_last_icm.payload_len);
+		n = static_cast<uint16_t>(n + g_node_live_last_icm.payload_len);
 	}
 
 	tBleStatus tx_status = BLE_STATUS_INVALID_PARAMS;
@@ -525,7 +559,7 @@ static void node_blepipe_process_live_samples()
 			BLEPIPE_MSG_LEAF_SAMPLE, BLEPIPE_ID_HUB, payload, n, nullptr, &tx_status)) {
 		/* Count individual samples (not bundles) so it lines up with the
 		 * Master's per-sample rx counter. */
-		g_node_live_sent_count += (have_bno ? 1U : 0U) + (have_icm ? 1U : 0U);
+		g_node_live_sent_count += (put_bno ? 1U : 0U) + (put_icm ? 1U : 0U);
 		g_node_live_tx_gate.on_send_accepted(now_ms);
 		g_node_live_bundle_next_ms = now_ms + interval_ms;
 	} else if (tx_status == BLE_STATUS_BUSY ||
@@ -958,6 +992,8 @@ struct __attribute__((packed)) NodeUploadLinkStats {
 	uint32_t live_gate_bp;   /* live tx-gate backpressure events */
 	uint8_t live_stream_on;
 	uint8_t live_pad[3];
+	uint32_t live_bno_fresh; /* fresh BNO samples pulled from the live queue */
+	uint32_t live_icm_fresh; /* fresh ICM samples pulled from the live queue */
 };
 
 static void node_blepipe_report_upload_diagnostics()
@@ -1011,6 +1047,8 @@ static void node_blepipe_report_upload_diagnostics()
 	status.live_pad[0] = 0U;
 	status.live_pad[1] = 0U;
 	status.live_pad[2] = 0U;
+	status.live_bno_fresh = g_node_live_bno_fresh_count;
+	status.live_icm_fresh = g_node_live_icm_fresh_count;
 	status.fw_major = s_wireless_info.VersionMajor;
 	status.fw_minor = s_wireless_info.VersionMinor;
 	status.fw_sub = s_wireless_info.VersionSub;
@@ -1278,6 +1316,12 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 			g_node_live_bundle_next_ms = 0U;
 			g_node_live_sent_count = 0U;
 			g_node_live_gate_bp_count = 0U;
+			g_node_live_bno_fresh_count = 0U;
+			g_node_live_icm_fresh_count = 0U;
+			g_node_live_last_bno_valid = false;
+			g_node_live_last_icm_valid = false;
+			g_node_live_last_bno_ms = 0U;
+			g_node_live_last_icm_ms = 0U;
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_live_stream_enabled(true);
 #endif

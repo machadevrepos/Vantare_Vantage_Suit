@@ -41,7 +41,7 @@ uint8_t exo_hub_central_client_leaf_link_tx_phy(uint8_t node_id);
 /* Live-preview forwarding health last reported by a node (LINK_STATS v2 tail);
  * any out-pointer may be NULL. All zero if the node has not reported. */
 void exo_hub_central_client_leaf_live_diag(uint8_t node_id, uint32_t *offered,
-    uint32_t *dropped, uint32_t *sent, uint32_t *gate_wdog, uint32_t *gate_bp,
+    uint32_t *dropped, uint32_t *sent, uint32_t *bno_fresh, uint32_t *icm_fresh,
     uint16_t *dle_tx_octets, uint8_t *stream_on);
 void exo_hub_central_client_reset_leaf_live_diag(void);
 

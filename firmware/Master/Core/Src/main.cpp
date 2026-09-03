@@ -2318,6 +2318,15 @@ namespace {
 			(void) exo_hub_central_client_set_live_link_timing(1U);
 		}
 
+		/* Emit ONE status-lane frame per call, rotating LIVE -> LIVE2 -> LIVE3,
+		 * so the diagnostic never queues 3 notifications back-to-back into the
+		 * shared browser TX pool (which briefly starved the live forward and
+		 * showed up as a ~150 ms gap once per second). */
+		static uint8_t s_diag_rotation = 0U;
+		const uint8_t diag_which = s_diag_rotation;
+		s_diag_rotation = static_cast<uint8_t>((s_diag_rotation + 1U) % 3U);
+
+		if (diag_which == 0U) {
 		const uint32_t pci_raw = APP_BLE_GetServerConnIntervalRaw();
 		char line[180];
 		int n = snprintf(line, sizeof(line),
@@ -2344,11 +2353,14 @@ namespace {
 					BLEPIPE_ID_BROADCAST, reinterpret_cast<const uint8_t*>(line),
 					static_cast<uint16_t>(n < static_cast<int>(sizeof(line)) ? n : static_cast<int>(sizeof(line) - 1)));
 		}
+		}
 
 		/* Second line: per-leaf link timing. iv = confirmed connection interval
 		 * (ms), st = LinkTuneState (6=Ready 7=Degraded 8=Failed 255=disconnected),
 		 * rt = fast-request retries. iv should be <= ~30 ms; st should be 6. */
-		n = snprintf(line, sizeof(line),
+		if (diag_which == 1U) {
+		char line[180];
+		const int n = snprintf(line, sizeof(line),
 				"LIVE2 n2[iv=%lu.%02lu st=%u rt=%u] n3[iv=%lu.%02lu st=%u rt=%u] n4[iv=%lu.%02lu st=%u rt=%u]",
 				static_cast<unsigned long>((exo_hub_central_client_leaf_link_interval_raw(2U) * 5U) / 4U),
 				static_cast<unsigned long>(((exo_hub_central_client_leaf_link_interval_raw(2U) * 5U) % 4U) * 25U),
@@ -2367,35 +2379,34 @@ namespace {
 					BLEPIPE_ID_BROADCAST, reinterpret_cast<const uint8_t*>(line),
 					static_cast<uint16_t>(n < static_cast<int>(sizeof(line)) ? n : static_cast<int>(sizeof(line) - 1)));
 		}
+		}
 
-		/* Third line: node-reported node->master leg. o = live samples the node
-		 * queued (production, want ~50/s/node), d = node queue drop-oldest events,
-		 * s = LEAF_SAMPLE the node's BLE stack accepted. (s - the Master's rx for
-		 * that node) = leaf-link loss. dtx = node DLE tx octets, phy = leaf TX
-		 * PHY (1 or 2 Mbit; want 2). */
-		uint32_t o2 = 0U, d2 = 0U, s2 = 0U, o3 = 0U, d3 = 0U, s3 = 0U,
-				o4 = 0U, d4 = 0U, s4 = 0U, bp2 = 0U, bp3 = 0U, bp4 = 0U, ign = 0U;
-		uint16_t dtx2 = 0U, dtx3 = 0U, dtx4 = 0U;
-		uint8_t ign8 = 0U;
-		exo_hub_central_client_leaf_live_diag(2U, &o2, &d2, &s2, &ign, &bp2, &dtx2, &ign8);
-		exo_hub_central_client_leaf_live_diag(3U, &o3, &d3, &s3, &ign, &bp3, &dtx3, &ign8);
-		exo_hub_central_client_leaf_live_diag(4U, &o4, &d4, &s4, &ign, &bp4, &dtx4, &ign8);
-		char l3[196];
+		/* Third line: node-reported node->master leg, per node. s = LEAF_SAMPLE
+		 * the node's BLE stack accepted; bnf/icf = fresh BNO/ICM samples/s (both
+		 * want ~25; low bnf = BNO sensor dropouts). (s - Master rx) = leaf-link
+		 * RF loss. mdrp = Master forward-queue drops (0 = not a Master problem).
+		 * phy want 2. */
+		if (diag_which == 2U) {
+		uint32_t s3 = 0U, bnf3 = 0U, icf3 = 0U;
+		uint32_t s4 = 0U, bnf4 = 0U, icf4 = 0U;
+		exo_hub_central_client_leaf_live_diag(3U, nullptr, nullptr, &s3, &bnf3, &icf3, nullptr, nullptr);
+		exo_hub_central_client_leaf_live_diag(4U, nullptr, nullptr, &s4, &bnf4, &icf4, nullptr, nullptr);
+		char l3[200];
 		const int m = snprintf(l3, sizeof(l3),
-				"LIVE3 n2[o=%lu d=%lu s=%lu bp=%lu dtx=%u phy=%u] n3[o=%lu d=%lu s=%lu bp=%lu dtx=%u phy=%u] n4[o=%lu d=%lu s=%lu bp=%lu dtx=%u phy=%u]",
-				static_cast<unsigned long>(o2), static_cast<unsigned long>(d2), static_cast<unsigned long>(s2),
-				static_cast<unsigned long>(bp2), static_cast<unsigned>(dtx2),
-				static_cast<unsigned>(exo_hub_central_client_leaf_link_tx_phy(2U)),
-				static_cast<unsigned long>(o3), static_cast<unsigned long>(d3), static_cast<unsigned long>(s3),
-				static_cast<unsigned long>(bp3), static_cast<unsigned>(dtx3),
+				"LIVE3 n3[s=%lu bnf=%lu icf=%lu mdrp=%lu phy=%u] n4[s=%lu bnf=%lu icf=%lu mdrp=%lu phy=%u]",
+				static_cast<unsigned long>(s3),
+				static_cast<unsigned long>(bnf3), static_cast<unsigned long>(icf3),
+				static_cast<unsigned long>(leaf_ble_manager.live_dropped_for_node(3U)),
 				static_cast<unsigned>(exo_hub_central_client_leaf_link_tx_phy(3U)),
-				static_cast<unsigned long>(o4), static_cast<unsigned long>(d4), static_cast<unsigned long>(s4),
-				static_cast<unsigned long>(bp4), static_cast<unsigned>(dtx4),
+				static_cast<unsigned long>(s4),
+				static_cast<unsigned long>(bnf4), static_cast<unsigned long>(icf4),
+				static_cast<unsigned long>(leaf_ble_manager.live_dropped_for_node(4U)),
 				static_cast<unsigned>(exo_hub_central_client_leaf_link_tx_phy(4U)));
 		if (m > 0) {
 			(void) master_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LOG,
 					BLEPIPE_ID_BROADCAST, reinterpret_cast<const uint8_t*>(l3),
 					static_cast<uint16_t>(m < static_cast<int>(sizeof(l3)) ? m : static_cast<int>(sizeof(l3) - 1)));
+		}
 		}
 	}
 

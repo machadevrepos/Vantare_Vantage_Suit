@@ -41,9 +41,16 @@ public:
             return false;
         }
         const uint8_t index = static_cast<uint8_t>(slot);
+        /* Gate at 3/4 of the interval, not the full interval: a sensor report
+         * that lands a few ms early (the BNO 100 Hz report jitters against a
+         * 40 ms grid) is still admitted, so every bundle tick has a genuinely
+         * fresh sample of each sensor instead of ~1-in-12 falling through. The
+         * bundle sender keeps only the newest of each sensor, so an extra
+         * admit costs nothing. */
+        const uint32_t gate_ms = (interval_ms_ * 3U) / 4U;
         if (gate_valid_[index] &&
             static_cast<uint32_t>(acquisition_time_ms - gate_time_ms_[index]) <
-                interval_ms_) {
+                gate_ms) {
             ++decimated_;
             return false;
         }

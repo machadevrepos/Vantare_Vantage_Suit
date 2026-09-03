@@ -207,6 +207,8 @@ typedef struct {
   uint32_t sent;
   uint32_t gate_wdog;
   uint32_t gate_bp;
+  uint32_t bno_fresh;
+  uint32_t icm_fresh;
   uint16_t dle_tx_octets;
   uint8_t  stream_on;
   uint8_t  valid;
@@ -1417,6 +1419,13 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
                       ((uint32_t)payload[83] << 16U) | ((uint32_t)payload[84] << 24U);
         d->dle_tx_octets = (uint16_t)payload[7] | ((uint16_t)payload[8] << 8U);
         d->stream_on = payload[85];
+        if (payload_len >= 97U)
+        {
+          d->bno_fresh = (uint32_t)payload[89] | ((uint32_t)payload[90] << 8U) |
+                         ((uint32_t)payload[91] << 16U) | ((uint32_t)payload[92] << 24U);
+          d->icm_fresh = (uint32_t)payload[93] | ((uint32_t)payload[94] << 8U) |
+                         ((uint32_t)payload[95] << 16U) | ((uint32_t)payload[96] << 24U);
+        }
         d->valid = 1U;
       }
     }
@@ -1692,18 +1701,18 @@ uint8_t exo_hub_central_client_leaf_link_tx_phy(uint8_t node_id)
 
 /* Live-preview forwarding health last reported by the node (LINK_STATS v2). */
 void exo_hub_central_client_leaf_live_diag(uint8_t node_id, uint32_t *offered,
-    uint32_t *dropped, uint32_t *sent, uint32_t *gate_wdog, uint32_t *gate_bp,
+    uint32_t *dropped, uint32_t *sent, uint32_t *bno_fresh, uint32_t *icm_fresh,
     uint16_t *dle_tx_octets, uint8_t *stream_on)
 {
   const exo_leaf_live_diag_t *d = (node_id >= 1U && node_id <= EXO_HUB_LEAF_MAX)
       ? &g_leaf_live_diag[node_id - 1U] : nullptr;
-  const exo_leaf_live_diag_t zero = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+  static const exo_leaf_live_diag_t zero = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
   if (d == nullptr || d->valid == 0U) { d = &zero; }
   if (offered) *offered = d->offered;
   if (dropped) *dropped = d->dropped;
   if (sent) *sent = d->sent;
-  if (gate_wdog) *gate_wdog = d->gate_wdog;
-  if (gate_bp) *gate_bp = d->gate_bp;
+  if (bno_fresh) *bno_fresh = d->bno_fresh;
+  if (icm_fresh) *icm_fresh = d->icm_fresh;
   if (dle_tx_octets) *dle_tx_octets = d->dle_tx_octets;
   if (stream_on) *stream_on = d->stream_on;
 }

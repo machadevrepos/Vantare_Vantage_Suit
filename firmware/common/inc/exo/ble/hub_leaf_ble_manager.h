@@ -168,6 +168,15 @@ public:
     return live_slots_[live_slot_index_(node_id, sensor_id)].dropped;
   }
 
+  /* Master-side per-node live-queue drops (both sensor slots). Non-zero here
+   * means the Master received the sample from the node but its own forward
+   * queue overflowed - distinct from leaf-link RF loss. */
+  uint32_t live_dropped_for_node(uint8_t node_id) const {
+    if (node_id < 1U || node_id > kMaxLeaves) return 0U;
+    return live_slots_[live_slot_index_(node_id, 1U)].dropped +
+           live_slots_[live_slot_index_(node_id, 2U)].dropped;
+  }
+
   uint32_t live_coalesced(uint8_t node_id, uint8_t sensor_id) const {
     if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U) {
       return 0U;
