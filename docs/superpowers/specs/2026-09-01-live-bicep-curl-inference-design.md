@@ -126,6 +126,17 @@ differ. Until
 application must refuse to start inference rather than resample a 25 Hz stream
 onto a 50 Hz grid.
 
+**Grid sampling is nearest-sample decimation.** The training features were
+produced by `synchronize_session`, which calls `decimate_stream_to_grid` before
+assembling channels, so every training value is a real sensor reading. Linear
+interpolation between two samples 40 ms apart blends readings and systematically
+lowers standard deviation, range, RMS, and mean absolute difference — four of
+the eight statistics — relative to anything the model has seen. The offline
+path, the notebook's `LiveWindowAssembler`, and the browser must all decimate.
+The single authoritative implementation is
+`host/live_tool/pipeline/vantare_live_pipeline.py`; the notebook exports it
+verbatim and the browser mirrors it.
+
 Each channel contributes, in the exact order recorded by `feature_names.json`, these eight statistics: mean, standard deviation, minimum, maximum, range, interquartile range, root mean square, and mean absolute difference.
 
 The 72 synchronized channels comprise the BNO quaternion, linear acceleration, gravity, and gyroscope values; ICM accelerometer and gyroscope values; four per-node vector magnitudes; and three inter-node relative angles. Quaternion normalization, raw ICM scaling, vector-magnitude calculation, relative-angle calculation, resampling, and feature ordering must match the training notebook exactly.
@@ -257,7 +268,8 @@ Provides the live-session page and loads the modules and model assets. The appli
 - Maintains bounded buffers for the six node/sensor streams.
 - Establishes and maintains the cross-node time base described in Section 7.1.
 - Builds the common time grid at the contract rate.
-- Interpolates only when the source samples surrounding a target time are within the maximum interpolation span in the Section 10 gate table (`1.5T`, 60 ms at 25 Hz).
+- Samples the grid by **nearest real sample**, never by interpolation, matching `decimate_stream_to_grid` in the training pipeline. Ties resolve to the left sample.
+- Rejects a window when the samples bracketing any grid point are further apart than the maximum span in the Section 10 gate table (`1.5T`, 60 ms at 25 Hz).
 - Normalizes quaternions and calculates magnitudes and relative angles exactly as training did.
 - Produces two-second windows at the contract sample count (50 at 25 Hz) with the contract integer stride (12 samples at 25 Hz).
 - Calculates the 576 features in the exact `feature_names.json` order.
@@ -576,6 +588,14 @@ in Section 12.
 ### Python-to-browser parity test
 
 A fixed captured sensor fixture is processed through the Colab/Python preprocessing and through the browser preprocessing. Feature values must agree within an absolute or relative tolerance of `1e-4`. For the same feature vectors, browser and Python ONNX execution must select identical labels and each class probability must differ by no more than `1e-4`.
+
+Implemented as `host/tests/python/test_live_preprocessing_parity.py`, which
+compares the browser port against an independent, dependency-free Python
+reference (`host/tests/python/reference_preprocessing.py`) rather than against
+the shared pipeline module. Two implementations written separately that agree
+to `1e-4` are evidence a single shared implementation cannot provide. The suite
+also asserts its own fixture separates nearest-sample decimation from
+interpolation, so it cannot pass if both sides regress together.
 
 ### Session replay parity test
 

@@ -311,11 +311,19 @@ namespace exo {
 					Bno85Sample bno_sample { };
 					if (bno85_.take_latest(now_us, bno_sample)) {
 						++data_rate_bno_count_;
+						/* Live preview decoupled from recording (design Section
+						 * 6.2): offer() self-guards on the queue's enabled flag,
+						 * so this feeds live streaming with no flash writes and
+						 * is a no-op while live streaming is disabled. */
+						(void)live_queue_.offer(kBnoLiveSensorId, &bno_sample,
+								static_cast<uint8_t>(sizeof(bno_sample)), now_us / 1000U);
 					}
 
 					Icm45686Sample icm_sample { };
 					if (icm45686_.read_sample(now_us, icm_sample)) {
 						++data_rate_icm_count_;
+						(void)live_queue_.offer(kIcmLiveSensorId, &icm_sample,
+								static_cast<uint8_t>(sizeof(icm_sample)), now_us / 1000U);
 					}
 				} else if (finalize_failed_) {
 					/* Capture is over and finalize gave up: stop sampling into a

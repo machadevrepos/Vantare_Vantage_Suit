@@ -53,3 +53,7 @@ temp/
 # ---- OS junk ----
 Thumbs.db
 .worktrees/
+
+# Local dataset archives (uploaded to Colab, never committed)
+dataset.rar
+*.rar

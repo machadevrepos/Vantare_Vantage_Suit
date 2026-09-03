@@ -1,0 +1,121 @@
+{
+  "model_name": "vantare_bicep_curl_v1_1",
+  "task": "personalized_bicep_curl_form_classification",
+  "class_mapping": {
+    "0": "correct",
+    "1": "incomplete_range",
+    "2": "elbow_movement"
+  },
+  "nodes": {
+    "2": "wrist_distal_forearm",
+    "3": "elbow_region",
+    "4": "upper_arm_near_shoulder"
+  },
+  "live_sensor_packet_contract": {
+    "common_fields": {
+      "node": "integer 2, 3, or 4",
+      "sensor": "BNO85 or ICM45686",
+      "timestamp_us": "monotonic integer microseconds per stream"
+    },
+    "BNO85_values": [
+      "quat_i",
+      "quat_j",
+      "quat_k",
+      "quat_real",
+      "linear_accel_x_mps2",
+      "linear_accel_y_mps2",
+      "linear_accel_z_mps2",
+      "gravity_x_mps2",
+      "gravity_y_mps2",
+      "gravity_z_mps2",
+      "gyro_x_radps",
+      "gyro_y_radps",
+      "gyro_z_radps"
+    ],
+    "ICM45686_values": [
+      "accel_x_g",
+      "accel_y_g",
+      "accel_z_g",
+      "gyro_x_dps",
+      "gyro_y_dps",
+      "gyro_z_dps"
+    ]
+  },
+  "preprocessing": {
+    "target_hz": 25,
+    "window_seconds": 2.0,
+    "window_samples": 50,
+    "stride_seconds": 0.48,
+    "stride_samples": 12,
+    "raw_synchronized_channels": 72,
+    "feature_count": 576,
+    "feature_statistics": [
+      "mean",
+      "std",
+      "min",
+      "max",
+      "range",
+      "iqr",
+      "rms",
+      "mean_abs_diff"
+    ],
+    "quaternion_handling": "nearest-sample decimation onto the live grid, then unit normalization",
+    "live_warmup_seconds": 2.0,
+    "prediction_update_seconds": 0.48
+  },
+  "onnx": {
+    "file": "vantare_bicep_curl_v1_1.onnx",
+    "input": {
+      "name": "features",
+      "dtype": "float32",
+      "shape": [
+        "batch_size",
+        576
+      ]
+    },
+    "outputs": [
+      {
+        "name": "label",
+        "meaning": "predicted_class_id",
+        "dtype": "tensor(int64)",
+        "shape": [
+          null
+        ]
+      },
+      {
+        "name": "probabilities",
+        "meaning": "class_probabilities",
+        "dtype": "tensor(float)",
+        "shape": [
+          null,
+          3
+        ],
+        "column_order": [
+          "correct",
+          "incomplete_range",
+          "elbow_movement"
+        ]
+      }
+    ]
+  },
+  "recommended_haptic_gate_v1": {
+    "incorrect_classes": [
+      1,
+      2
+    ],
+    "minimum_probability": 0.7,
+    "consecutive_windows": 2,
+    "cooldown_seconds": 2.0,
+    "minimum_time_before_first_possible_trigger_seconds": 2.48
+  },
+  "scope_warning": "Personalized feasibility model. No rest/transition class and no evidence for new users or changed mounting.",
+  "software_versions": {
+    "python": "3.13.15",
+    "numpy": "2.1.3",
+    "pandas": "2.2.3",
+    "scikit_learn": "1.6.1",
+    "skl2onnx": "1.20.0",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.29.0"
+  }
+}

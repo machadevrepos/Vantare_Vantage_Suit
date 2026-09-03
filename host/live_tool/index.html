@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vantare Vantage | Live Bicep-Curl Inference (V1, experimental)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:            #07090c;
+      --bg-raise:      #0d1117;
+      --panel:         #10151c;
+      --panel-2:       #141b24;
+      --edge:          #1e2733;
+      --edge-strong:   #2b3746;
+      --text:          #e6edf5;
+      --text-dim:      #9fb0c4;
+      --muted:         #6b7d92;
+      --accent:        #4da3ff;
+      --accent-dim:    #1d3a5c;
+      --ok:            #3fb96f;
+      --warn:          #e0a63f;
+      --bad:           #e05555;
+      --violet:        #c98bff;
+      --chart-grid:    #161d26;
+      --chart-axis:    #2b3746;
+      --chart-muted:   #6b7d92;
+      --radius:        10px;
+      --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+      --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(1200px 600px at 15% -10%, #10202e 0%, transparent 60%),
+        radial-gradient(900px 500px at 95% 0%, #1a1226 0%, transparent 55%),
+        var(--bg);
+      background-attachment: fixed;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 13.5px;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:hover { background: #2b3746; background-clip: content-box; }
+
+    /* ---------- top bar ---------- */
+    header {
+      position: sticky; top: 0; z-index: 30;
+      display: flex; align-items: center; gap: 16px;
+      padding: 12px 22px;
+      background: rgba(7, 9, 12, 0.86);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--edge);
+    }
+    .brand { display: flex; align-items: baseline; gap: 10px; }
+    .brand h1 { font-size: 15px; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+    .brand .mark {
+      width: 22px; height: 22px; border-radius: 6px;
+      background: linear-gradient(140deg, var(--accent), var(--violet));
+      display: inline-block; align-self: center;
+      box-shadow: 0 0 18px rgba(77, 163, 255, 0.35);
+    }
+    .brand .sub { color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+    header .spacer { flex: 1; }
+    .badge {
+      padding: 4px 12px; border-radius: 999px;
+      font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+      border: 1px solid var(--edge-strong); color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .badge.ok   { color: var(--ok);   border-color: rgba(63,185,111,.45); background: rgba(63,185,111,.08); }
+    .badge.busy { color: var(--warn); border-color: rgba(224,166,63,.45); background: rgba(224,166,63,.08); }
+    .badge.bad  { color: var(--bad);  border-color: rgba(224,85,85,.45);  background: rgba(224,85,85,.08); }
+    .badge.idle { color: var(--muted); }
+    .exp-tag {
+      font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
+      color: var(--warn); border: 1px dashed rgba(224,166,63,.5);
+      padding: 3px 8px; border-radius: 6px;
+    }
+
+    /* ---------- layout ---------- */
+    main {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr) 330px;
+      gap: 16px; padding: 16px 22px 40px;
+      align-items: start;
+    }
+    @media (max-width: 1400px) { main { grid-template-columns: 280px minmax(0, 1fr); } .col-right { grid-column: 1 / -1; } }
+    @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+    .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+    .panel {
+      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+      border: 1px solid var(--edge);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .panel > h2 {
+      margin: 0; padding: 10px 14px;
+      font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--edge);
+      background: rgba(255,255,255,.015);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .panel > h2 .hint { font-weight: 500; letter-spacing: 0; text-transform: none; color: #55677c; font-size: 10.5px; margin-left: auto; }
+    .panel .body { padding: 12px 14px; }
+    .panel .body.tight { padding: 8px 10px; }
+
+    /* ---------- controls ---------- */
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .row + .row { margin-top: 8px; }
+    button {
+      font-family: var(--sans); font-size: 12.5px; font-weight: 600;
+      color: var(--text); background: #1a2330;
+      border: 1px solid var(--edge-strong); border-radius: 7px;
+      padding: 7px 12px; cursor: pointer;
+      transition: background .13s, border-color .13s, transform .06s;
+    }
+    button:hover:not(:disabled) { background: #223042; border-color: #3c4c60; }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:disabled { opacity: .38; cursor: not-allowed; }
+    button.primary { background: linear-gradient(180deg, #2f7fd6, #245fa4); border-color: #3d8ee0; }
+    button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #3a8fe6, #2a6cb8); }
+    button.good { border-color: rgba(63,185,111,.5); color: #8ce0ac; }
+    button.danger { border-color: rgba(224,85,85,.5); color: #f0908f; }
+    button.danger:hover:not(:disabled) { background: #2a1618; }
+    button.sm { padding: 5px 9px; font-size: 11.5px; }
+    select, input[type="number"], input[type="text"] {
+      font-family: var(--mono); font-size: 12px;
+      background: #0b1017; color: var(--text);
+      border: 1px solid var(--edge-strong); border-radius: 6px;
+      padding: 6px 8px;
+    }
+    select:focus, input:focus { outline: none; border-color: var(--accent); }
+    input[type="range"] { accent-color: var(--accent); flex: 1; min-width: 90px; }
+    label.field { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-dim); }
+    label.field .val { font-family: var(--mono); color: var(--text); min-width: 42px; text-align: right; }
+    .divider { height: 1px; background: var(--edge); margin: 11px -14px; }
+    .note { color: var(--muted); font-size: 11.5px; margin-top: 8px; }
+    .note.danger { color: #c07a7a; }
+
+    /* ---------- result ---------- */
+    .result-wrap { padding: 16px 14px; text-align: center; }
+    .class-tag {
+      display: inline-block; padding: 8px 20px; border-radius: 999px;
+      font-size: 17px; font-weight: 700; letter-spacing: -0.01em;
+      border: 1px solid var(--edge-strong); color: var(--text-dim);
+    }
+    .class-tag.c0 { color: #8ce0ac; border-color: rgba(63,185,111,.5); background: rgba(63,185,111,.1); }
+    .class-tag.c1 { color: #f0c884; border-color: rgba(224,166,63,.5); background: rgba(224,166,63,.1); }
+    .class-tag.c2 { color: #dbb0ff; border-color: rgba(201,139,255,.5); background: rgba(201,139,255,.1); }
+    .class-tag.idle { color: var(--muted); }
+    .class-sub { color: var(--text-dim); font-size: 12.5px; margin-top: 8px; min-height: 18px; }
+    .prob { display: grid; grid-template-columns: 132px 1fr 54px; gap: 8px; align-items: center; margin-top: 8px; }
+    .prob .name { font-size: 11.5px; color: var(--text-dim); text-align: left; }
+    .prob .track { height: 7px; background: #0b1017; border-radius: 4px; overflow: hidden; border: 1px solid var(--edge); }
+    .prob .fill { height: 100%; width: 0%; border-radius: 4px; transition: width .16s ease-out; }
+    .prob:nth-child(1) .fill { background: linear-gradient(90deg, #2f8f57, #3fb96f); }
+    .prob:nth-child(2) .fill { background: linear-gradient(90deg, #b07f2c, #e0a63f); }
+    .prob:nth-child(3) .fill { background: linear-gradient(90deg, #8d5cc0, #c98bff); }
+    .prob .value { font-family: var(--mono); font-size: 11.5px; text-align: right; color: var(--text); }
+    .warm { height: 4px; background: #0b1017; border-radius: 3px; overflow: hidden; margin-top: 12px; border: 1px solid var(--edge); }
+    .warm .fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--violet)); transition: width .2s; }
+
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; font-family: var(--mono); color: var(--text); text-align: right; }
+
+    /* ---------- charts ---------- */
+    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 12px; }
+    .chart-card { background: var(--panel); border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
+    .chart-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; border-bottom: 1px solid var(--edge);
+      background: rgba(255,255,255,.015);
+    }
+    .chart-head .name { font-weight: 700; font-size: 12.5px; font-family: var(--mono); letter-spacing: .02em; }
+    .chart-head .name.master { color: var(--violet); }
+    .chart-head .name.node { color: var(--accent); }
+    .chart-head .role { font-size: 10.5px; color: var(--muted); }
+    .chart-head .spacer { flex: 1; }
+    .chart-head select { padding: 3px 6px; font-size: 11px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+    .dot.live { background: var(--ok); box-shadow: 0 0 8px rgba(63,185,111,.7); }
+    .dot.stale { background: var(--warn); }
+    .dot.dead { background: var(--bad); }
+    .chart-card canvas { display: block; width: 100%; height: 148px; }
+    .chart-foot {
+      display: flex; gap: 12px; flex-wrap: wrap;
+      padding: 6px 10px; border-top: 1px solid var(--edge);
+      font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+    }
+    .chart-foot b { color: var(--text-dim); font-weight: 500; }
+
+    /* ---------- tables ---------- */
+    table { width: 100%; border-collapse: collapse; font-size: 11.5px; font-family: var(--mono); }
+    th { text-align: right; color: var(--muted); font-weight: 500; padding: 5px 6px; border-bottom: 1px solid var(--edge); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+    th:first-child, td:first-child { text-align: left; }
+    td { padding: 5px 6px; text-align: right; border-bottom: 1px solid rgba(30,39,51,.5); }
+    tr.model td:first-child { color: var(--accent); }
+    tr.display td:first-child { color: var(--violet); }
+    td.bad { color: var(--bad); }
+    td.warn { color: var(--warn); }
+
+    /* ---------- log ---------- */
+    .logbox {
+      height: 190px; overflow-y: auto;
+      font-family: var(--mono); font-size: 11px; line-height: 1.5;
+      background: #06090d; border-top: 1px solid var(--edge);
+      padding: 8px 10px;
+    }
+    .logbox div { white-space: pre-wrap; word-break: break-word; color: var(--text-dim); }
+    .logbox .warn { color: var(--warn); }
+    .logbox .error { color: var(--bad); }
+    .history { max-height: 150px; overflow-y: auto; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+    .history div { padding: 2px 0; border-bottom: 1px solid rgba(30,39,51,.5); }
+    .qual div.pass { color: var(--ok); }
+    .qual div.fail { color: var(--bad); }
+    .qual { font-family: var(--mono); font-size: 11px; line-height: 1.6; }
+    .mono-sm { font-family: var(--mono); font-size: 11.5px; color: var(--text-dim); }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="brand">
+      <span class="mark"></span>
+      <h1>Vantare Vantage</h1>
+      <span class="sub">live bicep-curl inference</span>
+    </span>
+    <span class="exp-tag">V1 · EXPERIMENTAL · NOT A SAFETY SYSTEM</span>
+    <span class="spacer"></span>
+    <span id="throughputLine" class="badge idle">0.0 KB/s</span>
+    <span id="stateBadge" class="badge idle">Disconnected</span>
+  </header>
+
+  <main>
+    <!-- ================= LEFT ================= -->
+    <div class="col col-left">
+      <section class="panel">
+        <h2>Session</h2>
+        <div class="body">
+          <div class="row">
+            <button id="connectBtn" class="primary">Connect Master</button>
+            <button id="scanAllBtn" title="List every nearby BLE device. Use when the Master does not appear in the filtered chooser.">Scan All</button>
+            <button id="disconnectBtn">Disconnect</button>
+          </div>
+          <div class="row">
+            <button id="startBtn" class="good">Start Live</button>
+            <button id="stopBtn">Stop</button>
+          </div>
+          <div class="row">
+            <button id="qualifyBtn" class="sm">Run 60 s Qualification</button>
+            <button id="downloadBtn" class="sm">Download Log</button>
+          </div>
+          <div class="divider"></div>
+          <div id="modelPanel" class="mono-sm"></div>
+          <div class="warm"><div id="warmupFill" class="fill"></div></div>
+          <div id="reasonLine" class="note"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Stream Control <span class="hint">0xA0 / 0xA1 / 0xA2</span></h2>
+        <div class="body">
+          <div class="row">
+            <label class="field">Interval
+              <input id="intervalInput" type="number" min="40" max="80" step="5" value="40" style="width:66px">
+              <span class="val">ms</span>
+            </label>
+            <button id="applyIntervalBtn" class="sm">Apply</button>
+          </div>
+          <div class="row">
+            <button id="rawStartBtn" class="sm">Start Stream</button>
+            <button id="rawStopBtn" class="sm">Stop Stream</button>
+          </div>
+          <div class="note">40 ms is the qualified 25 Hz live contract. The Node
+            firmware clamps any request into 40–80 ms, so other values are
+            silently coerced.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Actuators <span class="hint">0xA3–0xA7</span></h2>
+        <div class="body">
+          <div class="row">
+            <label class="field">Target
+              <select id="actuatorTarget">
+                <option value="0">MASTER</option>
+                <option value="2" selected>N2 wrist</option>
+                <option value="3">N3 elbow</option>
+                <option value="4">N4 shoulder</option>
+              </select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field" style="flex:1">ERM
+              <input id="ermRange" type="range" min="0" max="100" value="50">
+              <span id="ermValue" class="val">50%</span>
+            </label>
+            <button id="ermApplyBtn" class="sm">Set</button>
+          </div>
+          <div class="row">
+            <label class="field" style="flex:1">Buzzer
+              <input id="buzzerRange" type="range" min="0" max="99" value="0">
+              <span id="buzzerValue" class="val">0%</span>
+            </label>
+            <button id="buzzerApplyBtn" class="sm">Set</button>
+          </div>
+          <div class="row">
+            <span class="mono-sm">RGB</span>
+            <button id="rgbRBtn" class="sm">R</button>
+            <button id="rgbGBtn" class="sm">G</button>
+            <button id="rgbBBtn" class="sm">B</button>
+            <button id="rgbOffBtn" class="sm">Off</button>
+          </div>
+          <div class="row">
+            <button id="touchTestBtn" class="sm">Touch Test</button>
+            <button id="overrideOffBtn" class="sm">Release Override</button>
+          </div>
+          <div class="divider"></div>
+          <div class="row">
+            <label class="field">Pulse
+              <input id="pulseIntensity" type="number" min="1" max="100" value="50" style="width:58px">
+              <span class="val">%</span>
+              <input id="pulseDuration" type="number" min="50" max="500" step="10" value="250" style="width:64px">
+              <span class="val">ms</span>
+            </label>
+            <button id="pulseTestBtn" class="sm">Test Pulse</button>
+          </div>
+          <div class="note">Bounded pulse (0xA7): the Node owns the stop timer
+            and rejects values outside 1–100 % / 50–500 ms.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Maintenance <span class="hint">0xB1–0xB4</span></h2>
+        <div class="body">
+          <div class="row">
+            <button id="rediscoverBtn" class="sm">Rediscover Nodes</button>
+            <button id="nodeReportBtn" class="sm">Node Report</button>
+          </div>
+          <div class="row">
+            <button id="resetRetainedBtn" class="danger sm">Reset Retained Sessions</button>
+          </div>
+          <div class="note danger">Destructive: erases un-uploaded session data
+            on every node. A node holding a retained session sits in
+            transfer-priority and streams nothing, so this is the escape hatch
+            when a transfer genuinely failed.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= CENTER ================= -->
+    <div class="col col-center">
+      <section class="panel">
+        <h2>Classification <span class="hint">V1 · 3 classes · 25 Hz</span></h2>
+        <div class="result-wrap">
+          <div id="classTag" class="class-tag idle">Not started</div>
+          <div id="classLine" class="class-sub"></div>
+          <div class="prob"><span class="name">correct</span><span class="track"><span id="probFill0" class="fill"></span></span><span id="probValue0" class="value">—</span></div>
+          <div class="prob"><span class="name">incomplete range</span><span class="track"><span id="probFill1" class="fill"></span></span><span id="probValue1" class="value">—</span></div>
+          <div class="prob"><span class="name">elbow movement</span><span class="track"><span id="probFill2" class="fill"></span></span><span id="probValue2" class="value">—</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Live Signals <span class="hint">30 Hz render, decoupled from BLE</span></h2>
+        <div class="body tight">
+          <div class="row" style="margin-bottom:10px">
+            <label class="field">Window
+              <select id="chartWindow">
+                <option value="5">5 s</option>
+                <option value="10" selected>10 s</option>
+                <option value="20">20 s</option>
+                <option value="30">30 s</option>
+              </select>
+            </label>
+            <label class="field">All charts
+              <select id="chartGroupAll">
+                <option value="">(per-chart)</option>
+                <option value="bno_gyro">BNO gyro</option>
+                <option value="bno_accel">BNO linear accel</option>
+                <option value="bno_quat">BNO quaternion</option>
+                <option value="icm_accel">ICM accel</option>
+                <option value="icm_gyro">ICM gyro</option>
+              </select>
+            </label>
+            <span class="spacer" style="flex:1"></span>
+            <button id="clearChartsBtn" class="sm">Clear</button>
+          </div>
+          <div id="charts" class="charts"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ================= RIGHT ================= -->
+    <div class="col col-right">
+      <section class="panel">
+        <h2>Inference</h2>
+        <div class="body">
+          <dl class="kv">
+            <dt>latency</dt><dd id="latencyLine">—</dd>
+            <dt>cadence</dt><dd id="cadenceLine">—</dd>
+            <dt>skew</dt><dd id="skewLine">—</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Haptics <span class="hint">manual arm only</span></h2>
+        <div class="body">
+          <div class="row">
+            <button id="armBtn" class="good">Arm</button>
+            <button id="disarmBtn" class="danger">Disarm</button>
+          </div>
+          <div id="hapticStatus" class="note"></div>
+          <div class="divider"></div>
+          <div id="hapticHistory" class="history"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Streams</h2>
+        <div class="body tight">
+          <table id="streamTable">
+            <thead><tr><th>stream</th><th>rate</th><th>lost</th><th>gap</th><th>stale</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="retentionLine" class="note"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Qualification</h2>
+        <div class="body"><div id="qualReport" class="qual">Not run.</div></div>
+      </section>
+    </div>
+  </main>
+
+  <section class="panel" style="margin: 0 22px 22px">
+    <h2>Log</h2>
+    <div id="logBox" class="logbox"></div>
+  </section>
+
+  <!-- Vendored, version-pinned ONNX Runtime Web (UMD). Must load before the
+       app module: live-inference.js reads window.ort. No CDN: the pinned
+       runtime and its WASM flags are part of the Section 12 parity claim. -->
+  <script src="./vendor/ort/ort.min.js"></script>
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

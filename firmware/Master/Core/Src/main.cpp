@@ -404,7 +404,14 @@ namespace {
 		exo::RecordReliableVerifyPayload verify;
 		uint8_t frame[UINT8_MAX];
 		uint8_t length;
+		uint8_t attempts;
+		uint32_t last_attempt_ms;
 	};
+	/* A held VerifyOk is retried until the node link accepts it: the node keeps
+	 * its retained session until this frame lands, and dropping it silently is
+	 * what forces a manual "Reset Retained Sessions" before the next run. */
+	static constexpr uint8_t kVerifyOkReleaseMaxAttempts = 40U;
+	static constexpr uint32_t kVerifyOkReleaseRetryMs = 250U;
 	static TrainingPendingVerifyOk g_training_pending_verify_ok[4] { };
 	static uint32_t g_pending_node_manifest_last_tick = 0U;
 	static uint32_t g_pending_node_defer_last_log_ms = 0U;
@@ -2221,6 +2228,11 @@ namespace {
 				case 0xA4U:
 				case 0xA5U:
 				case 0xA6U:
+				/* 0xA7 is the Node-owned bounded haptic pulse (design Section
+				 * 6.4). The Master has no pulse engine of its own, so it only
+				 * relays it; addressed to the hub it NACKs from
+				 * apply_ble_actuator_command's default. */
+				case 0xA7U:
 				if (length < 2U) {
 					master_blepipe_send_ack(hdr, 0U, payload[0]);
 					return false;
@@ -2503,6 +2515,8 @@ namespace {
 		pending.verify = verify;
 		pending.length = length;
 		memcpy(pending.frame, payload, length);
+		pending.attempts = 0U;
+		pending.last_attempt_ms = 0U;
 		pending.valid = true;
 		leaf_ble_manager.on_ble_reliable_verify_ok(verify.session_id,
 				verify.source_id,
@@ -2513,6 +2527,34 @@ namespace {
 				static_cast<unsigned>(master_training_csv_coordinator.completed_source_mask()));
 	}
 
+	/* Node-facing half of a VerifyOk: CommitDone plus the forwarded VerifyOk
+	 * frame. The node erases its retained session only when this arrives, so it
+	 * must NOT be gated on reliable-transfer ownership. Uploads are sequential,
+	 * so by the time a held VerifyOk is released the master has moved on to the
+	 * next node and leaf_ble_manager no longer owns this source; re-checking
+	 * ownership here silently dropped the release and left the node holding a
+	 * finalized session forever.
+	 *
+	 * Returns whether the node link accepted the frame for delivery. That is
+	 * not proof the node processed it -- the node sends no ack the master
+	 * tracks -- but a rejected send is a definite failure worth retrying. */
+	static bool send_node_verify_ok_release(
+			const exo::RecordReliableVerifyPayload &verify,
+			const uint8_t *payload,
+			uint8_t length)
+	{
+		(void) send_reliable_record_frame(exo::RecordReliableType::CommitDone,
+				verify.source_id,
+				verify.session_id,
+				0U,
+				0U,
+				reinterpret_cast<const uint8_t*>(&verify),
+				static_cast<uint16_t>(sizeof(verify)));
+		return forward_remote_record_control(verify.source_id, payload, length) != 0U;
+	}
+
+	/* Immediate path: the transfer is still active, so ownership is meaningful
+	 * here and the manager state must be advanced before sending. */
 	static void release_remote_node_verify_ok(
 			const exo::RecordReliableVerifyPayload &verify,
 			const uint8_t *payload,
@@ -2523,14 +2565,7 @@ namespace {
 				verify.file_crc32)) {
 			return;
 		}
-		(void) send_reliable_record_frame(exo::RecordReliableType::CommitDone,
-				verify.source_id,
-				verify.session_id,
-				0U,
-				0U,
-				reinterpret_cast<const uint8_t*>(&verify),
-				static_cast<uint16_t>(sizeof(verify)));
-		(void) forward_remote_record_control(verify.source_id, payload, length);
+		(void) send_node_verify_ok_release(verify, payload, length);
 	}
 
 	static void master_training_csv_release_completed_verify_ok()
@@ -2547,13 +2582,29 @@ namespace {
 			if (!pending.valid || (completed_mask & source_bit) == 0U) {
 				continue;
 			}
-			TrainingPendingVerifyOk approved = pending;
-			pending = TrainingPendingVerifyOk { };
-			EXO_LOG("[TRAIN][CSV] VerifyOk released source=%u session=%lu completed=0x%02X\r\n",
-					static_cast<unsigned>(approved.verify.source_id),
-					static_cast<unsigned long>(approved.verify.session_id),
-					static_cast<unsigned>(completed_mask));
-			release_remote_node_verify_ok(approved.verify, approved.frame, approved.length);
+			const uint32_t now_ms = HAL_GetTick();
+			if (pending.attempts != 0U &&
+					static_cast<uint32_t>(now_ms - pending.last_attempt_ms) < kVerifyOkReleaseRetryMs) {
+				continue;
+			}
+			pending.last_attempt_ms = now_ms;
+			if (pending.attempts < 0xFFU) {
+				++pending.attempts;
+			}
+			if (send_node_verify_ok_release(pending.verify, pending.frame, pending.length)) {
+				EXO_LOG("[TRAIN][CSV] VerifyOk released source=%u session=%lu completed=0x%02X attempts=%u\r\n",
+						static_cast<unsigned>(pending.verify.source_id),
+						static_cast<unsigned long>(pending.verify.session_id),
+						static_cast<unsigned>(completed_mask),
+						static_cast<unsigned>(pending.attempts));
+				pending = TrainingPendingVerifyOk { };
+			} else if (pending.attempts >= kVerifyOkReleaseMaxAttempts) {
+				EXO_LOG("[TRAIN][CSV] VerifyOk release FAILED source=%u session=%lu attempts=%u; node keeps retained session\r\n",
+						static_cast<unsigned>(pending.verify.source_id),
+						static_cast<unsigned long>(pending.verify.session_id),
+						static_cast<unsigned>(pending.attempts));
+				pending = TrainingPendingVerifyOk { };
+			}
 			return;
 		}
 	}

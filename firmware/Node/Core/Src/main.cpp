@@ -42,6 +42,10 @@
 #if EXO_NODE_FLASH_ENABLED
 #include <exo/recording/node_recording_app.h>
 #endif
+/* The bounded haptic pulse has no flash dependency, and g_node_haptic_pulse is
+ * declared unconditionally, so this include must sit outside the flash guard:
+ * inside it, a build with EXO_NODE_FLASH_ENABLED=0 fails to compile. */
+#include <exo/actuator/node_haptic_pulse.h>
 #ifndef EXO_NODE_SENSOR_TEST_ENABLE
 #define EXO_NODE_SENSOR_TEST_ENABLE 0
 #endif
@@ -284,6 +288,9 @@ extern "C" void NodeSwo_Logf(const char *format, ...)
 }
 
 PWM_PIN ERM_PWM(&htim1, TIM_CHANNEL_4, ERM_GPIO_Port, ERM_Pin);
+/* Node-owned bounded haptic pulse (design Section 6.4): the stop deadline
+ * lives here so a lost off-command cannot leave the motor running. */
+static exo::NodeHapticPulse g_node_haptic_pulse;
 PWM_PIN BUZZER(&htim1, TIM_CHANNEL_3, BUZZER_GPIO_Port, BUZZER_Pin);
 
 RGB_LED RGB(RGB_R_GPIO_Port, RGB_R_Pin, RGB_G_GPIO_Port, RGB_G_Pin, RGB_B_GPIO_Port, RGB_B_Pin, 1, 1);
@@ -1059,6 +1066,35 @@ static bool node_apply_actuator_command(const uint8_t *payload, uint16_t length)
 			g_node_actuator_override_enabled = true;
 			EXO_LOG("[BLE][NODE][CTRL] ERM=%u%%\r\n", static_cast<unsigned>(node_clamp_u8(payload[1], 0U, 100U)));
 			return true;
+		case 0xA7U:
+		{
+			/* [0xA7][intensity%][dur_lo][dur_hi][evt b0..b3] */
+			if (length < 8U) {
+				return false;
+			}
+			exo::HapticPulseRequest request{};
+			request.intensity_percent = payload[1];
+			request.duration_ms = static_cast<uint16_t>(payload[2] | (payload[3] << 8));
+			request.event_id = static_cast<uint32_t>(payload[4]) |
+					(static_cast<uint32_t>(payload[5]) << 8) |
+					(static_cast<uint32_t>(payload[6]) << 16) |
+					(static_cast<uint32_t>(payload[7]) << 24);
+			const exo::HapticPulseResult result =
+					g_node_haptic_pulse.submit(request, HAL_GetTick());
+			if (result != exo::HapticPulseResult::Accepted) {
+				EXO_LOG("[BLE][NODE][CTRL] pulse rejected evt=%lu reason=%u\r\n",
+						static_cast<unsigned long>(request.event_id),
+						static_cast<unsigned>(result));
+				return false;
+			}
+			ERM_PWM.SET_PERCENT(g_node_haptic_pulse.intensity_percent());
+			g_node_actuator_override_enabled = true;
+			EXO_LOG("[BLE][NODE][CTRL] pulse evt=%lu %u%% %ums\r\n",
+					static_cast<unsigned long>(request.event_id),
+					static_cast<unsigned>(request.intensity_percent),
+					static_cast<unsigned>(request.duration_ms));
+			return true;
+		}
 		case 0xA4U:
 			BUZZER.SET_PERCENT(node_clamp_u8(payload[1], 0U, 99U));
 			g_node_actuator_override_enabled = true;
@@ -1067,6 +1103,11 @@ static bool node_apply_actuator_command(const uint8_t *payload, uint16_t length)
 		case 0xA5U:
 			if ((payload[1] & 0x80U) != 0U) {
 				g_node_actuator_override_enabled = false;
+				/* Releasing the override ends any pulse in flight so active() never
+				 * reports a motor the Node is no longer driving. */
+				if (g_node_haptic_pulse.cancel()) {
+					ERM_PWM.SET_PERCENT(0U);
+				}
 				EXO_LOG("[BLE][NODE][CTRL] actuator override=OFF\r\n");
 				return true;
 			}
@@ -1166,6 +1207,7 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 	case 0xA4U:
 	case 0xA5U:
 	case 0xA6U:
+	case 0xA7U:
 	{
 		const bool ok = node_apply_actuator_command(payload, length);
 		node_blepipe_send_ack(hdr, ok ? 1U : 0U, payload[0]);
@@ -1902,6 +1944,10 @@ int main(void)
 		static uint32_t touch_feedback_until_ms = 0U;
 		static bool ignore_touch_until_release = (HAL_GPIO_ReadPin(TOUCH_MCU_GPIO_Port, TOUCH_MCU_Pin) == GPIO_PIN_SET);
 		Custom_APP_ProcessControlWrites();
+		/* Bounded haptic pulse expires locally, independent of BLE (Section 6.4). */
+		if (g_node_haptic_pulse.service(HAL_GetTick())) {
+			ERM_PWM.SET_PERCENT(0U);
+		}
 		exo_node_ble_link_process();
 
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED

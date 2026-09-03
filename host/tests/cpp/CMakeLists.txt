@@ -61,6 +61,7 @@ exo_add_test(test_master_node_transfer_window         test_master_node_transfer_
 exo_add_test(test_master_training_csv_formatter_v2    test_master_training_csv_formatter_v2.cpp)
 exo_add_test(test_master_training_csv_logger_v2       test_master_training_csv_logger_v2.cpp)
 exo_add_test(test_node_live_sample_queue              test_node_live_sample_queue.cpp)
+exo_add_test(test_node_haptic_pulse                   test_node_haptic_pulse.cpp)
 exo_add_test(test_remote_transfer_lifecycle_regression test_remote_transfer_lifecycle_regression.cpp)
 exo_add_test(test_coderabbit_csv_logger_regressions   test_coderabbit_csv_logger_regressions.cpp)
 exo_add_test(test_coderabbit_firmware_regressions     test_coderabbit_firmware_regressions.cpp)

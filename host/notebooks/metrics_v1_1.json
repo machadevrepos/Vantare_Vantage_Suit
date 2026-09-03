@@ -1,0 +1,100 @@
+{
+  "evaluation_method": "two complete-session-held-out folds",
+  "folds": [
+    {
+      "fold": "A",
+      "train_sessions": "1,3,5",
+      "test_sessions": "2,4,6",
+      "test_windows": 330,
+      "accuracy": 0.9242424242,
+      "balanced_accuracy": 0.9242424242,
+      "macro_f1": 0.9232513518
+    },
+    {
+      "fold": "B",
+      "train_sessions": "2,4,6",
+      "test_sessions": "1,3,5",
+      "test_windows": 330,
+      "accuracy": 0.9818181818,
+      "balanced_accuracy": 0.9818181818,
+      "macro_f1": 0.9818046481
+    }
+  ],
+  "mean_metrics": {
+    "accuracy": 0.953030303030303,
+    "balanced_accuracy": 0.953030303030303,
+    "macro_f1": 0.9525279999540666
+  },
+  "classification_report": {
+    "correct": {
+      "precision": 0.9701492537313433,
+      "recall": 0.8863636363636364,
+      "f1-score": 0.9263657957244655,
+      "support": 220.0
+    },
+    "incomplete_range": {
+      "precision": 0.895397489539749,
+      "recall": 0.9727272727272728,
+      "f1-score": 0.9324618736383442,
+      "support": 220.0
+    },
+    "elbow_movement": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 220.0
+    },
+    "accuracy": 0.953030303030303,
+    "macro avg": {
+      "precision": 0.9551822477570308,
+      "recall": 0.9530303030303031,
+      "f1-score": 0.95294255645427,
+      "support": 660.0
+    },
+    "weighted avg": {
+      "precision": 0.9551822477570308,
+      "recall": 0.953030303030303,
+      "f1-score": 0.9529425564542701,
+      "support": 660.0
+    }
+  },
+  "confusion_matrix_counts": [
+    [
+      195,
+      25,
+      0
+    ],
+    [
+      6,
+      214,
+      0
+    ],
+    [
+      0,
+      0,
+      220
+    ]
+  ],
+  "confusion_matrix_normalized": [
+    [
+      0.8863636363636364,
+      0.11363636363636363,
+      0.0
+    ],
+    [
+      0.02727272727272727,
+      0.9727272727272728,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "onnx_parity": {
+    "samples_checked": 128,
+    "label_agreement": 1.0,
+    "maximum_probability_difference": 5.803255281988662e-06
+  }
+}
