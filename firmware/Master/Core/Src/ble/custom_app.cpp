@@ -33,6 +33,9 @@
 extern "C" void exo_hub_ble_evt_trace(uint8_t evt, const uint8_t *payload, uint8_t length);
 extern "C" void exo_hub_ble_notify_state_trace(uint8_t channel, uint8_t enabled);
 extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length);
+static volatile uint32_t g_pipe_notification_complete_count = 0U;
+static volatile uint32_t g_pipe_tx_pool_event_count = 0U;
+static volatile uint16_t g_pipe_tx_pool_buffers = 0U;
 
 /* USER CODE END Includes */
 
@@ -227,6 +230,27 @@ void Custom_STM_App_Notification(Custom_STM_App_Notification_evt_t *pNotificatio
 
   /* USER CODE END CUSTOM_STM_App_Notification_2 */
   return;
+}
+
+extern "C" void Custom_APP_NotificationComplete(void)
+{
+  ++g_pipe_notification_complete_count;
+}
+
+extern "C" void Custom_APP_TxPoolAvailable(uint16_t available_buffers)
+{
+  g_pipe_tx_pool_buffers = available_buffers;
+  ++g_pipe_tx_pool_event_count;
+}
+
+extern "C" uint32_t Custom_APP_NotificationCompleteCount(void)
+{
+  return g_pipe_notification_complete_count;
+}
+
+extern "C" uint32_t Custom_APP_TxPoolEventCount(void)
+{
+  return g_pipe_tx_pool_event_count;
 }
 
 void Custom_APP_Notification(Custom_App_ConnHandle_Not_evt_t *pNotification)

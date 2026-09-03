@@ -262,7 +262,7 @@ export class Ui {
       const parts = [
         ["BNO", health.bnoRate === null ? "—" : `${health.bnoRate.toFixed(1)} Hz`],
         ["ICM", health.icmRate === null ? "—" : `${health.icmRate.toFixed(1)} Hz`],
-        ["lost", String(health.lost)],
+        ["loss", health.lossPct === null ? "—" : `${(health.lossPct * 100).toFixed(0)}%`],
         ["age", stale === null ? "—" : `${stale.toFixed(0)} ms`],
       ];
       for (const [key, value] of parts) {
@@ -298,7 +298,9 @@ export class Ui {
     for (const snap of streamSnapshots) {
       const row = this.ensureStreamRow(snap.key, snap.label, snap.isModelStream);
       row.cells[0].textContent = snap.rate === null ? "—" : `${snap.rate.toFixed(1)} Hz`;
-      row.cells[1].textContent = String(snap.lost);
+      row.cells[1].textContent = snap.lossPct === null ? "—" : `${(snap.lossPct * 100).toFixed(0)}%`;
+      row.cells[1].className =
+        snap.lossPct === null ? "" : snap.lossPct > 0.1 ? "bad" : snap.lossPct > 0.02 ? "warn" : "";
       row.cells[2].textContent = `${snap.maxGapMs.toFixed(0)} ms`;
       row.cells[3].textContent = snap.staleMs === null ? "—" : `${snap.staleMs.toFixed(0)} ms`;
       row.cells[3].className =

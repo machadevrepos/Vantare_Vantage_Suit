@@ -85,6 +85,8 @@ public:
       return false;
     }
     ++pending_live_count_;
+    ++live_rx_total_;
+    ++live_rx_by_node_[node_id - 1U];
     selected_live_index_ = kNoLiveSelection;
     start_or_record_active_ = true;
     return true;
@@ -127,6 +129,13 @@ public:
 
   bool live_preview_congested() const { return live_preview_congested_; }
 
+  /* Wake the live scheduler from the BLE notification-complete/TX-pool event.
+   * The transport, not a guessed millisecond cadence, determines when the
+   * next queued sample may be attempted. */
+  void on_live_transport_available(uint32_t now_ms) {
+    next_live_attempt_ms_ = now_ms;
+  }
+
   bool discard_next_live_sample() {
     const int8_t selected = select_next_live_index_();
     if (selected < 0) return false;
@@ -167,6 +176,18 @@ public:
   }
 
   uint8_t pending_live_sample_count() const { return pending_live_count_; }
+
+  /* Lifetime count of leaf live samples accepted from the nodes (never reset).
+   * A climbing total during a stream proves the nodes are forwarding; a frozen
+   * total points the finger at the node side, not the Master forwarder. */
+  uint32_t live_rx_total() const { return live_rx_total_; }
+  uint32_t live_rx_for_node(uint8_t node_id) const {
+    return (node_id >= 1U && node_id <= kMaxLeaves) ? live_rx_by_node_[node_id - 1U] : 0U;
+  }
+  void reset_live_rx_stats() {
+    live_rx_total_ = 0U;
+    for (uint8_t i = 0U; i < kMaxLeaves; ++i) live_rx_by_node_[i] = 0U;
+  }
 
   bool queue_record_done(const exo::RecordDoneMessage &message) {
     if (message.command != exo::RecordCommand::RecordDone ||
@@ -486,6 +507,8 @@ private:
   LiveSlot live_slots_[kLiveSlotCount]{};
   uint8_t sensor_preference_[kMaxLeaves]{};
   uint8_t pending_live_count_ = 0U;
+  uint32_t live_rx_total_ = 0U;
+  uint32_t live_rx_by_node_[kMaxLeaves]{};
   uint8_t next_preview_source_ = 1U;
   mutable int8_t selected_live_index_ = kNoLiveSelection;
   uint32_t next_live_attempt_ms_ = 0U;

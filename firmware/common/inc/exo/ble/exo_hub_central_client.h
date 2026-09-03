@@ -23,9 +23,27 @@ void exo_hub_central_client_request_targeted_reconnect(uint8_t node_id);
  * multi-link timing. Request queuing/acceptance is never confirmation. */
 void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
                                                 uint8_t fast_interval);
+/* Live-preview link timing: fast=1 requests the default fast interval on EVERY
+ * connected leaf (the 40 ms sample cadence needs far smaller intervals than
+ * the 30-50 ms multi-link default provides); fast=0 restores slow timing.
+ * Queues only; acceptance is never confirmation. Returns queues accepted. */
+uint8_t exo_hub_central_client_set_live_link_timing(uint8_t fast);
 /* True only when the exact connected generation armed by the most recent fast
  * request for this Node reached Ready or an explicit Degraded/Failed fallback. */
 uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id);
+/* Per-leaf link telemetry for the SWO-free live diag line. interval_raw is in
+ * 1.25 ms units (0 = not negotiated / node not connected); state is
+ * LinkTuneState::State cast to uint8 (0xFF = node not connected). */
+uint16_t exo_hub_central_client_leaf_link_interval_raw(uint8_t node_id);
+uint8_t exo_hub_central_client_leaf_link_state(uint8_t node_id);
+uint8_t exo_hub_central_client_leaf_link_retries(uint8_t node_id);
+uint8_t exo_hub_central_client_leaf_link_tx_phy(uint8_t node_id);
+/* Live-preview forwarding health last reported by a node (LINK_STATS v2 tail);
+ * any out-pointer may be NULL. All zero if the node has not reported. */
+void exo_hub_central_client_leaf_live_diag(uint8_t node_id, uint32_t *offered,
+    uint32_t *dropped, uint32_t *sent, uint32_t *gate_wdog, uint32_t *gate_bp,
+    uint16_t *dle_tx_octets, uint8_t *stream_on);
+void exo_hub_central_client_reset_leaf_live_diag(void);
 
 uint8_t exo_hub_central_client_broadcast_blepipe(uint8_t msg_type,
                                                  uint16_t src_id,

@@ -31,6 +31,22 @@ int main()
     assert(manager.pending_live_sample_count() == 15U);
     assert(manager.live_coalesced(1U, 1U) == 0U);
     assert(manager.live_dropped(1U, 1U) == 1U);
+    // A completed GATT notification is the transport wake-up. It must release
+    // the aggregate pacing immediately; waiting for a guessed millisecond
+    // interval is what turns six lanes into the observed 8.3 Hz.
+    {
+        exo::ble_hub::HubLeafBleManager transport_manager;
+        uint8_t transport_payload = 1U;
+        assert(transport_manager.push_leaf_sample(2U, 1U, &transport_payload, 1U));
+        transport_payload = 2U;
+        assert(transport_manager.push_leaf_sample(2U, 1U, &transport_payload, 1U));
+        exo::ble_hub::HubLeafBleManager::LiveSample transport_sample{};
+        assert(transport_manager.peek_next_live_sample(transport_sample, 0U));
+        transport_manager.on_live_sample_send_result(true, 0U);
+        assert(!transport_manager.peek_next_live_sample(transport_sample, 1U));
+        transport_manager.on_live_transport_available(1U);
+        assert(transport_manager.peek_next_live_sample(transport_sample, 1U));
+    }
 
     std::set<std::pair<int, int>> pairs;
     std::vector<int> source_order;

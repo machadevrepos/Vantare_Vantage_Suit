@@ -16,6 +16,7 @@ import {
   columnStatistics,
   percentileLinear,
 } from "../../live_tool/js/ml-preprocessing.js";
+import { TimeBase } from "../../live_tool/js/ble-protocol.js";
 
 const CHANNELS = buildChannelNames();
 const FEATURES = buildFeatureNames(CHANNELS);
@@ -261,6 +262,39 @@ function testNonMonotonicRejected() {
   assert.equal(pre.pushSample(2, 1, 0.02, 3, stream), false, "backwards timestamp must be rejected");
 }
 
+function testTimeBaseSkewIgnoresQueueGrowth() {
+  // Regression for the live-session degradation storm. Offset samples are
+  // trueOffset - linkDelay, so a single stream cannot distinguish clock drift
+  // from queue growth. What corrupts the shared grid is DIFFERENTIAL drift:
+  // one stream's mapping moving apart from the others. The gate must trip on
+  // the asymmetric case and pass the symmetric one.
+  const timeBase = new TimeBase();
+  const trueOffsetMs = -5000;
+  const delayOf = (i, totalRamp) => 10 + (totalRamp * i) / 399;
+  for (let i = 0; i < 400; i += 1) {
+    const t = i * 40;
+    timeBase.observe(2, t, t - trueOffsetMs + delayOf(i, 90)); // worst link
+    timeBase.observe(3, t, t - trueOffsetMs + delayOf(i, 45)); // mild
+    timeBase.observe(4, t, t - trueOffsetMs + delayOf(i, 45)); // mild
+  }
+  const skewBad = timeBase.skewMs(2);
+  const skewMild = timeBase.skewMs(3);
+  assert.notEqual(skewBad, null, "skew must be estimated once history spans ~8 s");
+  assert.ok(skewBad > 20, `asymmetric queue growth must trip the 20 ms skew gate, got ${skewBad?.toFixed(1)} ms`);
+  assert.ok(skewMild < 20, `well-behaved stream must pass the gate, got ${skewMild?.toFixed(1)} ms`);
+  // The estimator cannot see through even the least delayed sample in its
+  // window, so each mapped clock carries a small bias (~ the window's minimum
+  // link delay). What matters is that like-for-like streams agree and the
+  // bias stays bounded by the delay itself.
+  const masterTime = 400 * 40 - trueOffsetMs;
+  const mapped3 = timeBase.mappedMs(3, 400 * 40);
+  const mapped4 = timeBase.mappedMs(4, 400 * 40);
+  assert.ok(Math.abs(mapped3 - mapped4) < 2,
+      `like streams must map identically, delta ${Math.abs(mapped3 - mapped4).toFixed(1)} ms`);
+  const bias3 = Math.abs(mapped3 - masterTime);
+  assert.ok(bias3 < 60, `mapped bias ${bias3.toFixed(1)} ms exceeds the window delay bound`);
+}
+
 const tests = {
   testColumnStatistics,
   testFeatureOrdering,
@@ -272,6 +306,7 @@ const tests = {
   testHapticBlankingGate,
   testQuaternionNormalization,
   testNonMonotonicRejected,
+  testTimeBaseSkewIgnoresQueueGrowth,
 };
 
 let failed = 0;

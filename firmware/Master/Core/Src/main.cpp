@@ -53,6 +53,7 @@
 #include <exo/protocol/master_training_csv_coordinator.h>
 #include <exo/types/recording_types.h>
 #include <exo/ble/hub_leaf_ble_manager.h>
+#include <exo/ble/notification_gate.h>
 #include <exo/protocol/blepipe_proto.h>
 #include <exo/ble/custom_app.h>
 #include <exo/ble/app_ble.h>
@@ -316,6 +317,28 @@ namespace {
 
 	static volatile bool g_ble_stream_enabled = false;
 	static volatile uint32_t g_ble_stream_interval_ms = kDefaultStreamIntervalMs;
+	/* PipeDataTx is a single notification lane. The STM32WB GATT API exposes
+	 * completion/TX-pool events; keep the live forwarder asleep until one of
+	 * those events arrives instead of retrying on a guessed 10/20 ms cadence. */
+	static exo::BleNotificationGate g_master_live_tx_gate;
+	static uint32_t g_master_live_seen_notification_complete = 0U;
+	static uint32_t g_master_live_seen_tx_pool_event = 0U;
+	/* Live-forward telemetry, surfaced to the web tool via a MSG_LOG line on the
+	 * status lane (~1 Hz while streaming) so the pipeline can be debugged from
+	 * the page alone, with no SWO. */
+	static uint32_t g_master_fwd_ok_count = 0U;
+	static uint32_t g_master_fwd_fail_count = 0U;
+	/* Master own-IMU preview (node_id 0). On by default so the desktop tool's
+	 * Master graphs are unchanged; the live inference tool turns it off with
+	 * 0xA8 because the model consumes N2-N4 only and the ~2.6 KB/s of
+	 * master-own frames oversubscribes the link. */
+	static bool g_master_own_stream_enabled = true;
+	/* Set for a live-inference session (0xA0 while master-own stream is off).
+	 * While set, a node's retained-session RecordDone is acknowledged but NOT
+	 * acted on: the Master must not enter record-transfer mode (which suppresses
+	 * the live plot) just because a freshly reflashed node still holds an old
+	 * session in flash. Cleared on 0xA1. Non-destructive - node flash is kept. */
+	static bool g_live_stream_priority = false;
 	static volatile uint32_t g_ble_tx_drop_count = 0U;
 	static uint16_t g_ble_sequence = 0U;
 	static volatile bool g_ble_actuator_override_enabled = false;
@@ -957,39 +980,92 @@ namespace {
 		}
 	}
 
-	static bool send_ble_v2_sample(uint16_t node_id, uint8_t sensor_id, const uint8_t *payload, uint8_t payload_len)
+	static tBleStatus send_ble_v2_sample_status(uint16_t node_id, uint8_t sensor_id,
+				const uint8_t *payload, uint8_t payload_len)
 			{
 		if (APP_BLE_Get_Server_Connection_Status() != APP_BLE_CONNECTED_SERVER) {
-			return false;
+			return BLE_STATUS_FAILED;
 		}
 		uint8_t packet[244];
 		const uint8_t packed_len = exo::ble_v2_pack(node_id, sensor_id, g_ble_sequence++, HAL_GetTick(),
 				payload, payload_len, packet, static_cast<uint8_t>(sizeof(packet)));
 		if (packed_len == 0U) {
-			return false;
+			return BLE_STATUS_INVALID_PARAMS;
 		}
-		return Custom_APP_SendImuFrame(packet, packed_len) == BLE_STATUS_SUCCESS;
+		return Custom_APP_SendImuFrame(packet, packed_len);
 	}
+
+	static bool send_ble_v2_sample(uint16_t node_id, uint8_t sensor_id,
+			const uint8_t *payload, uint8_t payload_len)
+	{
+		return send_ble_v2_sample_status(node_id, sensor_id, payload, payload_len) ==
+				BLE_STATUS_SUCCESS;
+	}
+
+	/* One superloop pass may push several forwarded notifications into the GATT
+	 * TX pool. The STM32WB stack drains the whole pool in one connection event,
+	 * so bursting until it returns INSUFFICIENT_RESOURCES is what fills a
+	 * connection event; sending one-and-waiting caps throughput at one sample
+	 * per connection interval (~6 Hz per stream at a 30-40 ms browser interval).
+	 * Mirrors NodeUploadPump's credit burst. */
+	static constexpr uint8_t kLiveForwardBurstMax = 8U;
 
 	static void drain_leaf_stream_passthrough()
 	{
-		exo::ble_hub::HubLeafBleManager::LiveSample sample { };
 		const uint32_t now_ms = HAL_GetTick();
-		if (!leaf_ble_manager.peek_next_live_sample(sample, now_ms)) {
+		const uint32_t notification_complete_count = Custom_APP_NotificationCompleteCount();
+		if (notification_complete_count != g_master_live_seen_notification_complete) {
+			g_master_live_seen_notification_complete = notification_complete_count;
+			g_master_live_tx_gate.on_transport_available();
+			leaf_ble_manager.on_live_transport_available(now_ms);
+		}
+		const uint32_t tx_pool_event_count = Custom_APP_TxPoolEventCount();
+		if (tx_pool_event_count != g_master_live_seen_tx_pool_event) {
+			g_master_live_seen_tx_pool_event = tx_pool_event_count;
+			g_master_live_tx_gate.on_transport_available();
+			leaf_ble_manager.on_live_transport_available(now_ms);
+		}
+		exo::ble_hub::HubLeafBleManager::LiveSample sample { };
+		/* Streaming off / a node upload owns the links: flush one stale sample
+		 * per pass so a restart does not replay a backlog, then bail. */
+		if (!g_ble_stream_enabled ||
+				(g_ble_record_transfer_mode && !g_live_stream_priority)) {
+			if (leaf_ble_manager.peek_next_live_sample(sample)) {
+				(void)leaf_ble_manager.discard_next_live_sample();
+			}
 			return;
 		}
-		if (!g_ble_stream_enabled || g_ble_record_transfer_mode) {
-			(void)leaf_ble_manager.discard_next_live_sample();
+		if (!g_master_live_tx_gate.ready(now_ms)) {
 			return;
 		}
-		if (!send_ble_v2_sample(sample.node_id,
-				sample.sensor_id,
-				sample.payload,
-				sample.payload_len)) {
-			leaf_ble_manager.on_live_sample_send_result(false, now_ms);
-			return;
+		for (uint8_t sent = 0U; sent < kLiveForwardBurstMax; ++sent) {
+			/* Untimed peek: the gate + the stack's INSUFFICIENT_RESOURCES are the
+			 * flow control now, not the leaf manager's fixed 10/20 ms cadence. */
+			if (!leaf_ble_manager.peek_next_live_sample(sample)) {
+				break;
+			}
+			const tBleStatus send_status = send_ble_v2_sample_status(sample.node_id,
+					sample.sensor_id,
+					sample.payload,
+					sample.payload_len);
+			if (send_status == BLE_STATUS_SUCCESS) {
+				++g_master_fwd_ok_count;
+				(void)leaf_ble_manager.discard_next_live_sample();
+				continue;
+			}
+			++g_master_fwd_fail_count;
+			if (send_status == BLE_STATUS_BUSY ||
+					send_status == BLE_STATUS_INSUFFICIENT_RESOURCES) {
+				/* Expected backpressure: keep the sample queued, wait for the
+				 * completion / TX-pool event (or the gate watchdog). No 5 s
+				 * congestion latch for a transient full pool. */
+				g_master_live_tx_gate.on_backpressure(now_ms);
+			} else {
+				g_master_live_tx_gate.on_other_failure();
+				leaf_ble_manager.on_live_sample_send_result(false, now_ms);
+			}
+			break;
 		}
-		leaf_ble_manager.on_live_sample_send_result(true, now_ms);
 	}
 
 	static bool is_duplicate_start_record(const exo::StartRecordMessage &message)
@@ -1422,6 +1498,36 @@ namespace {
 				static_cast<unsigned>(erase_remote ? 1U : 0U),
 				static_cast<unsigned>(ok ? 1U : 0U));
 		return ok ? 1U : 0U;
+	}
+
+	/* The live-inference tool always sends 0xA8 (master-own stream off) before it
+	 * starts a stream. Treat that as the signal to claim the radio for a clean,
+	 * deterministic live session: clear any retained-session transfer state so
+	 * the live plot is never suppressed, and ignore new node RecordDone until the
+	 * session ends. Non-destructive - node flash copies are kept for a later
+	 * upload from the desktop tool. The plain desktop preview (master-own on) is
+	 * left completely untouched. */
+	static void master_enter_live_priority_if_live_tool()
+	{
+		if (g_master_own_stream_enabled) {
+			return;
+		}
+		g_live_stream_priority = true;
+		if (g_ble_record_transfer_mode || g_ble_start_or_record_in_progress ||
+				leaf_ble_manager.start_or_record_active() ||
+				pending_node_done_depth() > 0U) {
+			EXO_LOG("[BLE][HUB][LIVE] clearing transfer state for live session\r\n");
+			(void) master_record_reset_all(false);
+		}
+		g_master_fwd_ok_count = 0U;
+		g_master_fwd_fail_count = 0U;
+		leaf_ble_manager.reset_live_rx_stats();
+		exo_hub_central_client_reset_leaf_live_diag();
+	}
+
+	static void master_exit_live_priority_session()
+	{
+		g_live_stream_priority = false;
 	}
 
 	/* Re-pull one source that was written off after a stall. The node kept its
@@ -2181,6 +2287,118 @@ namespace {
 				static_cast<uint16_t>(1U + count));
 	}
 
+	/* SWO-free live-pipeline telemetry. One human-readable MSG_LOG line on the
+	 * status lane, ~1 Hz while streaming, so the web tool's log shows exactly
+	 * where the stream stalls:
+	 *   rx      - leaf samples the Master accepted from the nodes (climbing => nodes OK)
+	 *   fwdOK   - samples the Master notified to the web app
+	 *   wdog    - BleNotificationGate watchdog wakes (high => completion event absent)
+	 *   nc / tp - notification-complete / tx-pool controller-event counts
+	 */
+	static void master_blepipe_send_live_diag()
+	{
+		static uint32_t s_last_ms = 0U;
+		const uint32_t now_ms = HAL_GetTick();
+		if (!g_ble_stream_enabled) {
+			s_last_ms = 0U;
+			return;
+		}
+		if (s_last_ms != 0U && (now_ms - s_last_ms) < 1000U) {
+			return;
+		}
+		s_last_ms = now_ms == 0U ? 1U : now_ms;
+
+		/* Self-heal every ~4 s: re-request fast timing on any leaf not cleanly
+		 * Ready at a fast interval (lost scheduler race, reconnect, degraded).
+		 * Idempotent - a clean fast leaf is skipped inside. Rate-limited so a
+		 * genuinely ungrantable target does not thrash the LL arbiter. */
+		static uint32_t s_link_rearm_ms = 0U;
+		if (s_link_rearm_ms == 0U || (now_ms - s_link_rearm_ms) >= 4000U) {
+			s_link_rearm_ms = now_ms == 0U ? 1U : now_ms;
+			(void) exo_hub_central_client_set_live_link_timing(1U);
+		}
+
+		const uint32_t pci_raw = APP_BLE_GetServerConnIntervalRaw();
+		char line[180];
+		int n = snprintf(line, sizeof(line),
+				"LIVE strm=%u own=%u xfer=%u lp=%u pciMs=%lu.%02lu rx=%lu(n2=%lu n3=%lu n4=%lu) fwdOK=%lu fwdF=%lu pend=%u wdog=%lu nc=%lu tp=%lu drop=%lu",
+				static_cast<unsigned>(g_ble_stream_enabled ? 1U : 0U),
+				static_cast<unsigned>(g_master_own_stream_enabled ? 1U : 0U),
+				static_cast<unsigned>(g_ble_record_transfer_mode ? 1U : 0U),
+				static_cast<unsigned>(g_live_stream_priority ? 1U : 0U),
+				static_cast<unsigned long>((pci_raw * 5U) / 4U),
+				static_cast<unsigned long>(((pci_raw * 5U) % 4U) * 25U),
+				static_cast<unsigned long>(leaf_ble_manager.live_rx_total()),
+				static_cast<unsigned long>(leaf_ble_manager.live_rx_for_node(2U)),
+				static_cast<unsigned long>(leaf_ble_manager.live_rx_for_node(3U)),
+				static_cast<unsigned long>(leaf_ble_manager.live_rx_for_node(4U)),
+				static_cast<unsigned long>(g_master_fwd_ok_count),
+				static_cast<unsigned long>(g_master_fwd_fail_count),
+				static_cast<unsigned>(leaf_ble_manager.pending_live_sample_count()),
+				static_cast<unsigned long>(g_master_live_tx_gate.watchdog_wake_count()),
+				static_cast<unsigned long>(Custom_APP_NotificationCompleteCount()),
+				static_cast<unsigned long>(Custom_APP_TxPoolEventCount()),
+				static_cast<unsigned long>(g_ble_tx_drop_count));
+		if (n > 0) {
+			(void) master_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LOG,
+					BLEPIPE_ID_BROADCAST, reinterpret_cast<const uint8_t*>(line),
+					static_cast<uint16_t>(n < static_cast<int>(sizeof(line)) ? n : static_cast<int>(sizeof(line) - 1)));
+		}
+
+		/* Second line: per-leaf link timing. iv = confirmed connection interval
+		 * (ms), st = LinkTuneState (6=Ready 7=Degraded 8=Failed 255=disconnected),
+		 * rt = fast-request retries. iv should be <= ~30 ms; st should be 6. */
+		n = snprintf(line, sizeof(line),
+				"LIVE2 n2[iv=%lu.%02lu st=%u rt=%u] n3[iv=%lu.%02lu st=%u rt=%u] n4[iv=%lu.%02lu st=%u rt=%u]",
+				static_cast<unsigned long>((exo_hub_central_client_leaf_link_interval_raw(2U) * 5U) / 4U),
+				static_cast<unsigned long>(((exo_hub_central_client_leaf_link_interval_raw(2U) * 5U) % 4U) * 25U),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_state(2U)),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_retries(2U)),
+				static_cast<unsigned long>((exo_hub_central_client_leaf_link_interval_raw(3U) * 5U) / 4U),
+				static_cast<unsigned long>(((exo_hub_central_client_leaf_link_interval_raw(3U) * 5U) % 4U) * 25U),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_state(3U)),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_retries(3U)),
+				static_cast<unsigned long>((exo_hub_central_client_leaf_link_interval_raw(4U) * 5U) / 4U),
+				static_cast<unsigned long>(((exo_hub_central_client_leaf_link_interval_raw(4U) * 5U) % 4U) * 25U),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_state(4U)),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_retries(4U)));
+		if (n > 0) {
+			(void) master_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LOG,
+					BLEPIPE_ID_BROADCAST, reinterpret_cast<const uint8_t*>(line),
+					static_cast<uint16_t>(n < static_cast<int>(sizeof(line)) ? n : static_cast<int>(sizeof(line) - 1)));
+		}
+
+		/* Third line: node-reported node->master leg. o = live samples the node
+		 * queued (production, want ~50/s/node), d = node queue drop-oldest events,
+		 * s = LEAF_SAMPLE the node's BLE stack accepted. (s - the Master's rx for
+		 * that node) = leaf-link loss. dtx = node DLE tx octets, phy = leaf TX
+		 * PHY (1 or 2 Mbit; want 2). */
+		uint32_t o2 = 0U, d2 = 0U, s2 = 0U, o3 = 0U, d3 = 0U, s3 = 0U,
+				o4 = 0U, d4 = 0U, s4 = 0U, bp2 = 0U, bp3 = 0U, bp4 = 0U, ign = 0U;
+		uint16_t dtx2 = 0U, dtx3 = 0U, dtx4 = 0U;
+		uint8_t ign8 = 0U;
+		exo_hub_central_client_leaf_live_diag(2U, &o2, &d2, &s2, &ign, &bp2, &dtx2, &ign8);
+		exo_hub_central_client_leaf_live_diag(3U, &o3, &d3, &s3, &ign, &bp3, &dtx3, &ign8);
+		exo_hub_central_client_leaf_live_diag(4U, &o4, &d4, &s4, &ign, &bp4, &dtx4, &ign8);
+		char l3[196];
+		const int m = snprintf(l3, sizeof(l3),
+				"LIVE3 n2[o=%lu d=%lu s=%lu bp=%lu dtx=%u phy=%u] n3[o=%lu d=%lu s=%lu bp=%lu dtx=%u phy=%u] n4[o=%lu d=%lu s=%lu bp=%lu dtx=%u phy=%u]",
+				static_cast<unsigned long>(o2), static_cast<unsigned long>(d2), static_cast<unsigned long>(s2),
+				static_cast<unsigned long>(bp2), static_cast<unsigned>(dtx2),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_tx_phy(2U)),
+				static_cast<unsigned long>(o3), static_cast<unsigned long>(d3), static_cast<unsigned long>(s3),
+				static_cast<unsigned long>(bp3), static_cast<unsigned>(dtx3),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_tx_phy(3U)),
+				static_cast<unsigned long>(o4), static_cast<unsigned long>(d4), static_cast<unsigned long>(s4),
+				static_cast<unsigned long>(bp4), static_cast<unsigned>(dtx4),
+				static_cast<unsigned>(exo_hub_central_client_leaf_link_tx_phy(4U)));
+		if (m > 0) {
+			(void) master_blepipe_send(CUSTOM_STM_PIPESTATTX, BLEPIPE_MSG_LOG,
+					BLEPIPE_ID_BROADCAST, reinterpret_cast<const uint8_t*>(l3),
+					static_cast<uint16_t>(m < static_cast<int>(sizeof(l3)) ? m : static_cast<int>(sizeof(l3) - 1)));
+		}
+	}
+
 	static bool master_handle_blepipe_command(const blepipe_hdr_t &hdr,
 			const uint8_t *payload,
 			uint16_t length)
@@ -2192,18 +2410,29 @@ namespace {
 		switch (payload[0]) {
 			case 0xA0U:
 				g_ble_stream_enabled = true;
+				g_master_live_tx_gate.reset();
+				master_enter_live_priority_if_live_tool();
 				(void) exo_hub_central_client_broadcast_blepipe(BLEPIPE_MSG_STREAM_CONTROL,
 						hdr.src_id,
 						payload,
 						length);
+				/* The 40 ms live cadence cannot fit the 30-50 ms multi-link
+				 * default interval: queue the transfer-proven fast interval on
+				 * every connected leaf, and ask the browser for a short interval
+				 * on the server link so the forwarder can burst per event. */
+				(void) exo_hub_central_client_set_live_link_timing(1U);
+				APP_BLE_RequestServerFastConnInterval();
 				master_blepipe_send_ack(hdr, 1U, payload[0]);
 				return true;
 			case 0xA1U:
 				g_ble_stream_enabled = false;
+				g_master_live_tx_gate.reset();
+				master_exit_live_priority_session();
 				(void) exo_hub_central_client_broadcast_blepipe(BLEPIPE_MSG_STREAM_CONTROL,
 						hdr.src_id,
 						payload,
 						length);
+				(void) exo_hub_central_client_set_live_link_timing(0U);
 				master_blepipe_send_ack(hdr, 1U, payload[0]);
 				return true;
 			case 0xA2U:
@@ -2253,6 +2482,19 @@ namespace {
 				}
 				master_blepipe_send_ack(hdr, 0U, payload[0]);
 				return false;
+			case 0xA8U:
+				/* Master own-IMU preview on/off (payload[1] 0=off 1=on). Live
+				 * inference turns it off: the model consumes N2-N4 only and
+				 * the master-own frames are pure link-budget overhead there.
+				 * Master-local only; nothing to relay to the nodes. */
+				if (length < 2U) {
+					master_blepipe_send_ack(hdr, 0U, payload[0]);
+					return false;
+				}
+				g_master_own_stream_enabled = payload[1] != 0U;
+				EXO_LOG("[BLE][HUB][CTRL] master own stream=%s\r\n", payload[1] ? "ON" : "OFF");
+				master_blepipe_send_ack(hdr, 1U, payload[0]);
+				return true;
 			case 0xB0U:
 				if (length >= 3U) {
 					const uint8_t current_id = payload[1];
@@ -3303,6 +3545,7 @@ int main(void)
 		record_sync_process();
 		record_stop_sync_process();
 		drain_leaf_stream_passthrough();
+		master_blepipe_send_live_diag();
 		master_training_csv_coordinator.service(g_local_session_recorder, HAL_GetTick());
 		master_training_csv_release_completed_verify_ok();
 		/* Transfer progress telemetry: proves whether chunks actually move
@@ -3565,7 +3808,7 @@ int main(void)
 		}
 		if (g_ble_record_transfer_mode || leaf_ble_manager.start_or_record_active()) {
 			drain_pending_node_record_done();
-			if (pending_node_done_depth() > 0U) {
+			if (pending_node_done_depth() > 0U && !g_live_stream_priority) {
 				g_ble_record_transfer_mode = true;
 				g_ble_start_or_record_in_progress = true;
 			}
@@ -3847,14 +4090,19 @@ int main(void)
 #if EXO_ACQ_DIAG_QUIET_COMMS
 		/* Experiment C: the live plot stream is nonessential during a recorded
 		 * capture; the stored session is the deliverable. */
-		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) && !g_acq_diag.capturing;
+		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) &&
+				g_master_own_stream_enabled && !g_acq_diag.capturing;
 #else
 		/* The live plot stream is paused while a recorded capture owns the
 		 * sensors or a node upload owns the links: notify packing competes
 		 * with the BNO service budget and the chunk ACK path for the same
 		 * superloop time, and the stored session is the deliverable.
-		 * Streaming resumes automatically when capture and transfer end. */
+		 * Streaming resumes automatically when capture and transfer end.
+		 * g_master_own_stream_enabled (0xA8) additionally silences the
+		 * Master's own frames for live inference, which needs the link
+		 * budget for the six node streams. */
 		const bool g_ble_stream_enabled_now = (g_ble_stream_enabled != false) &&
+				g_master_own_stream_enabled &&
 				!hub_sensor_test_app.record_bno_queue_active() &&
 				!g_ble_record_transfer_mode && !g_remote_transfer_active;
 #endif
@@ -4221,6 +4469,15 @@ extern "C" uint8_t exo_hub_leaf_record_done_ingest(const uint8_t *payload, uint1
 				static_cast<unsigned long>(message.total_size));
 		return 1U;
 	}
+	if (g_live_stream_priority) {
+		/* A live-inference session owns the radio. Acknowledge so the node stops
+		 * retrying, but do NOT queue the transfer or flip record-transfer mode -
+		 * that would kill the live plot. The node keeps its flash copy. */
+		EXO_LOG("[BLE][HUB][LEAF] record_done deferred (live priority) node=%u session=%lu\r\n",
+				static_cast<unsigned>(message.node_id),
+				static_cast<unsigned long>(message.session_id));
+		return 1U;
+	}
 	const uint8_t ok = leaf_ble_manager.queue_record_done(message) ? 1U : 0U;
 	if (ok != 0U) {
 		const uint8_t training_index = static_cast<uint8_t>(message.node_id - 1U);
@@ -4423,19 +4680,26 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 			return 0U;
 		case 0xA0U: /* start stream */
 			g_ble_stream_enabled = true;
+			g_master_live_tx_gate.reset();
+			master_enter_live_priority_if_live_tool();
 			(void) exo_hub_central_client_broadcast_blepipe(BLEPIPE_MSG_STREAM_CONTROL,
 			BLEPIPE_ID_HUB,
-					payload,
-					length);
+				payload,
+				length);
+			(void) exo_hub_central_client_set_live_link_timing(1U);
+			APP_BLE_RequestServerFastConnInterval();
 			EXO_LOG("[BLE][HUB][CTRL] stream=ON\r\n");
 			(void) Custom_APP_SendCmdAck(payload, length, 1U);
 			return 1U;
 		case 0xA1U: /* stop stream */
 			g_ble_stream_enabled = false;
+			g_master_live_tx_gate.reset();
+			master_exit_live_priority_session();
 			(void) exo_hub_central_client_broadcast_blepipe(BLEPIPE_MSG_STREAM_CONTROL,
 			BLEPIPE_ID_HUB,
-					payload,
-					length);
+				payload,
+				length);
+			(void) exo_hub_central_client_set_live_link_timing(0U);
 			EXO_LOG("[BLE][HUB][CTRL] stream=OFF\r\n");
 			(void) Custom_APP_SendCmdAck(payload, length, 1U);
 			return 1U;
@@ -4459,6 +4723,16 @@ extern "C" uint8_t exo_hub_ble_write(const uint8_t *payload, uint8_t length)
 						length);
 				EXO_LOG("[BLE][HUB][CTRL] stream interval=%lu ms\r\n", static_cast<unsigned long>(interval));
 			}
+			(void) Custom_APP_SendCmdAck(payload, length, 1U);
+			return 1U;
+		case 0xA8U: /* master own-IMU preview on/off; live inference frees the link */
+			if (length < 2U) {
+				EXO_LOG("[CTRL] master own stream no arg l=%u\r\n", static_cast<unsigned>(length));
+				(void) Custom_APP_SendCmdAck(payload, length, 0U);
+				return 0U;
+			}
+			g_master_own_stream_enabled = payload[1] != 0U;
+			EXO_LOG("[BLE][HUB][CTRL] master own stream=%s\r\n", payload[1] ? "ON" : "OFF");
 			(void) Custom_APP_SendCmdAck(payload, length, 1U);
 			return 1U;
 		case 0xA3U: /* set ERM percent 0..100 */

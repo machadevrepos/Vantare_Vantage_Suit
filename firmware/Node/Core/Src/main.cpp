@@ -58,6 +58,7 @@
 #include <exo/ble/app_ble.h>
 #include <exo/ble/custom_app.h>
 #include <exo/ble/node_upload_pump.h>
+#include <exo/ble/notification_gate.h>
 #include "shci.h"
 #include "stm32wbxx_ll_cortex.h"
 #include "stm32wbxx_ll_exti.h"
@@ -351,6 +352,23 @@ static uint32_t g_node_upload_seen_tx_pool_event_count = 0U;
 static uint32_t g_node_upload_seen_disconnect_count = 0U;
 static uint32_t g_node_upload_flash_read_ms = 0U;
 static uint32_t g_node_upload_diag_last_ms = 0U;
+/* PipeDataTx has one controller-owned notification lane. Live forwarding is
+ * released by the completion/TX-pool events (or the gate watchdog), and bursts
+ * into the TX pool so it is not capped at one sample per leaf connection event. */
+static exo::BleNotificationGate g_node_live_tx_gate;
+static uint32_t g_node_live_seen_notification_complete_count = 0U;
+static uint32_t g_node_live_seen_tx_pool_event_count = 0U;
+/* Marker byte for a bundled live frame: both sensors' latest sample in ONE
+ * PipeDataTx notification per tick, instead of one notification per sensor.
+ * Halves the node->master packet count (the shared-radio ceiling). Distinct
+ * from the legacy per-sensor path's payload[0] = sensor_id (1 or 2). */
+static constexpr uint8_t kNodeLiveBundleMarker = 0x03U;
+static_assert(kNodeLiveBundleMarker != 1U && kNodeLiveBundleMarker != 2U,
+		"bundle marker must not collide with a sensor_id");
+/* Live-stream forwarding telemetry, reported to the Master (SWO-free). */
+static uint32_t g_node_live_sent_count = 0U;
+static uint32_t g_node_live_gate_bp_count = 0U;
+static uint32_t g_node_live_bundle_next_ms = 0U;
 
 extern "C" uint8_t Custom_APP_PipeDataNotifyEnabled(void);
 extern "C" uint8_t exo_node_ble_status_notify_enabled(void);
@@ -432,28 +450,94 @@ static bool node_blepipe_send(Custom_STM_Char_Opcode_t char_opcode,
 static void node_blepipe_process_live_samples()
 {
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
+	const uint32_t now_ms = HAL_GetTick();
+	const uint32_t notification_complete_count = Custom_APP_NotificationCompleteCount();
+	if (notification_complete_count != g_node_live_seen_notification_complete_count) {
+		g_node_live_seen_notification_complete_count = notification_complete_count;
+		g_node_live_tx_gate.on_transport_available();
+	}
+	const uint32_t tx_pool_event_count = Custom_APP_TxPoolEventCount();
+	if (tx_pool_event_count != g_node_live_seen_tx_pool_event_count) {
+		g_node_live_seen_tx_pool_event_count = tx_pool_event_count;
+		g_node_live_tx_gate.on_transport_available();
+	}
+	if (!g_node_live_tx_gate.ready(now_ms)) {
+		return;
+	}
 	if (g_node_upload_pump.live_preview_suppressed()) {
 		return;
 	}
 	if (Custom_APP_PipeDataNotifyEnabled() == 0U) {
+		/* A disconnect/CCCD cycle can consume the old completion event while
+		 * the gate is closed. Re-arm before the next notification-enable event. */
+		g_node_live_tx_gate.reset();
+		g_node_live_bundle_next_ms = 0U;
 		return;
 	}
-	exo::NodeRecordingApp::LiveSample sample{};
-	for (uint8_t sent = 0U; sent < 2U && node_recording_app.peek_live_sample(sample); ++sent) {
-		uint8_t payload[1U + exo::NodeRecordingApp::kMaxLivePayload]{};
-		payload[0] = sample.sensor_id;
-		memcpy(payload + 1U, sample.payload, sample.payload_len);
-		if (!node_blepipe_send(CUSTOM_STM_PIPEDATATX,
-				BLEPIPE_MSG_LEAF_SAMPLE,
-				BLEPIPE_ID_HUB,
-				payload,
-				static_cast<uint16_t>(sample.payload_len + 1U))) {
-			// The BLE stack commonly accepts only one notification at a time.
-			// Retain this sample and retry on the next process pass instead of
-			// turning transient backpressure into a hole in the live plot.
-			break;
+
+	/* Paced bundle send: one PipeDataTx notification per live interval carrying
+	 * BOTH sensors' latest sample. Paced (not burst) so the leaf link is never
+	 * oversubscribed - at 25 Hz a bundle is ~0.5 packets per connection event. */
+	uint32_t interval_ms = node_recording_app.live_interval_ms();
+	if (interval_ms < 20U) { interval_ms = 20U; }
+	if (g_node_live_bundle_next_ms != 0U &&
+			static_cast<int32_t>(now_ms - g_node_live_bundle_next_ms) < 0) {
+		return;
+	}
+
+	/* Drain the queue, keeping only the freshest sample of each sensor. */
+	exo::NodeRecordingApp::LiveSample s{};
+	exo::NodeRecordingApp::LiveSample bno{};
+	exo::NodeRecordingApp::LiveSample icm{};
+	bool have_bno = false;
+	bool have_icm = false;
+	for (uint8_t drained = 0U; drained < 24U && node_recording_app.pop_live_sample(s); ++drained) {
+		if (s.sensor_id == exo::NodeRecordingApp::kBnoLiveSensorId) {
+			bno = s;
+			have_bno = true;
+		} else if (s.sensor_id == exo::NodeRecordingApp::kIcmLiveSensorId) {
+			icm = s;
+			have_icm = true;
 		}
-		(void)node_recording_app.discard_live_sample();
+	}
+	if (!have_bno && !have_icm) {
+		/* Nothing new this tick; try again next interval. */
+		g_node_live_bundle_next_ms = now_ms + interval_ms;
+		return;
+	}
+
+	uint8_t payload[3U + (2U * exo::NodeRecordingApp::kMaxLivePayload)]{};
+	uint16_t n = 0U;
+	payload[n++] = kNodeLiveBundleMarker;
+	payload[n++] = static_cast<uint8_t>(have_bno ? bno.payload_len : 0U);
+	if (have_bno) {
+		memcpy(payload + n, bno.payload, bno.payload_len);
+		n = static_cast<uint16_t>(n + bno.payload_len);
+	}
+	payload[n++] = static_cast<uint8_t>(have_icm ? icm.payload_len : 0U);
+	if (have_icm) {
+		memcpy(payload + n, icm.payload, icm.payload_len);
+		n = static_cast<uint16_t>(n + icm.payload_len);
+	}
+
+	tBleStatus tx_status = BLE_STATUS_INVALID_PARAMS;
+	if (node_blepipe_send_with_status(CUSTOM_STM_PIPEDATATX,
+			BLEPIPE_MSG_LEAF_SAMPLE, BLEPIPE_ID_HUB, payload, n, nullptr, &tx_status)) {
+		/* Count individual samples (not bundles) so it lines up with the
+		 * Master's per-sample rx counter. */
+		g_node_live_sent_count += (have_bno ? 1U : 0U) + (have_icm ? 1U : 0U);
+		g_node_live_tx_gate.on_send_accepted(now_ms);
+		g_node_live_bundle_next_ms = now_ms + interval_ms;
+	} else if (tx_status == BLE_STATUS_BUSY ||
+			tx_status == BLE_STATUS_INSUFFICIENT_RESOURCES) {
+		/* Bundle dropped (its samples were already the freshest); the next tick
+		 * carries even fresher data. Wait for the controller event / watchdog. */
+		g_node_live_tx_gate.on_backpressure(now_ms);
+		++g_node_live_gate_bp_count;
+		g_node_live_bundle_next_ms = now_ms + interval_ms;
+	} else {
+		g_node_live_tx_gate.on_other_failure();
+		g_node_live_bundle_next_ms = now_ms + interval_ms;
 	}
 #endif
 }
@@ -865,6 +949,15 @@ struct __attribute__((packed)) NodeUploadLinkStats {
 	uint8_t fus_minor;
 	uint8_t fus_sub;
 	uint8_t fw_reserved;
+	/* Version 2 tail: live-preview forwarding health, so the Master can show the
+	 * node->master leg on the web log with no SWO. All zero during an upload. */
+	uint32_t live_offered;   /* samples the live queue accepted (post-decimation) */
+	uint32_t live_dropped;   /* live-queue drop-oldest events (leaf link too slow) */
+	uint32_t live_sent;      /* LEAF_SAMPLE notifications the BLE stack accepted */
+	uint32_t live_gate_wdog; /* live tx-gate watchdog wakes */
+	uint32_t live_gate_bp;   /* live tx-gate backpressure events */
+	uint8_t live_stream_on;
+	uint8_t live_pad[3];
 };
 
 static void node_blepipe_report_upload_diagnostics()
@@ -906,7 +999,18 @@ static void node_blepipe_report_upload_diagnostics()
 		SHCI_GetWirelessFwInfo(&s_wireless_info);
 		s_wireless_info_valid = true;
 	}
+	/* Frame version stays 1: the desktop decoder keys on it. New readers detect
+	 * the v2 live-preview tail by payload length. */
 	status.version = 1U;
+	status.live_offered = node_recording_app.live_accepted_count();
+	status.live_dropped = node_recording_app.live_drop_count();
+	status.live_sent = g_node_live_sent_count;
+	status.live_gate_wdog = g_node_live_tx_gate.watchdog_wake_count();
+	status.live_gate_bp = g_node_live_gate_bp_count;
+	status.live_stream_on = node_stream_enabled ? 1U : 0U;
+	status.live_pad[0] = 0U;
+	status.live_pad[1] = 0U;
+	status.live_pad[2] = 0U;
 	status.fw_major = s_wireless_info.VersionMajor;
 	status.fw_minor = s_wireless_info.VersionMinor;
 	status.fw_sub = s_wireless_info.VersionSub;
@@ -1170,6 +1274,10 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 	case 0xA0U:
 		if (length == 1U) {
 			node_stream_enabled = true;
+			g_node_live_tx_gate.reset();
+			g_node_live_bundle_next_ms = 0U;
+			g_node_live_sent_count = 0U;
+			g_node_live_gate_bp_count = 0U;
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_live_stream_enabled(true);
 #endif
@@ -1182,6 +1290,7 @@ static bool node_handle_blepipe_command(const blepipe_hdr_t &hdr,
 	case 0xA1U:
 		if (length == 1U) {
 			node_stream_enabled = false;
+			g_node_live_tx_gate.reset();
 #if EXO_NODE_BLE_FORWARD_ENABLE && EXO_NODE_FLASH_ENABLED
 			node_recording_app.set_live_stream_enabled(false);
 #endif

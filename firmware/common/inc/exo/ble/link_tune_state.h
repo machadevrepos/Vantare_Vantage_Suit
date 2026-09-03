@@ -57,6 +57,16 @@ class LinkTuneState {
   static constexpr uint16_t kBulkMaxCeLength = 0x0030U; /* 30 ms */
   static_assert(kBulkMaxCeLength <= (2U * kBulkInterval),
                 "bulk connection event cannot exceed its interval");
+  /* Live multi-link fast timing (three leaves + the browser share the radio).
+   * Bulk parks the other links and takes a 30 ms CE; the live preview instead
+   * gives every fast leaf a SMALL connection-event budget so each can ship a
+   * few notifications per event without starving its peers. Without this the
+   * WB scheduler delivers ~1 packet per event per leaf (~31 samples/s), well
+   * under the 50/s a node produces. Units: 0.625 ms. */
+  static constexpr uint16_t kLiveMinCeLength = 0x0002U; /* 1.25 ms */
+  static constexpr uint16_t kLiveMaxCeLength = 0x0008U; /* 5 ms */
+  static_assert(kLiveMaxCeLength <= (2U * kFastIntervalMin),
+                "live connection event cannot exceed its interval");
   static_assert((kParkedInterval % kBulkInterval) == 0U,
                 "parked interval must remain an exact bulk-interval multiple");
   static constexpr uint32_t kRetryDelayMs = 50U;
@@ -770,8 +780,23 @@ class LinkTuneState {
   static constexpr uint16_t max_ce_length(Interval interval,
                                           uint16_t fast_interval,
                                           uint8_t fallback_level) {
-    return interval == Interval::Fast && fast_interval == kBulkInterval &&
-           fallback_level == 0U ? kBulkMaxCeLength : 0U;
+    if (interval != Interval::Fast) {
+      return 0U;
+    }
+    if (fast_interval == kBulkInterval && fallback_level == 0U) {
+      return kBulkMaxCeLength;
+    }
+    /* Live-preview fast timing (and every one of its fallback widenings): a
+     * small multi-link CE so each leaf ships several notifications per event. */
+    return kLiveMaxCeLength;
+  }
+
+  static constexpr uint16_t min_ce_length(Interval interval,
+                                          uint16_t fast_interval) {
+    if (interval != Interval::Fast) {
+      return 0U;
+    }
+    return fast_interval == kBulkInterval ? kBulkMinCeLength : kLiveMinCeLength;
   }
 
   constexpr Request make_request(uint8_t link, Entry &entry) {
@@ -794,9 +819,7 @@ class LinkTuneState {
                                           entry.interval_fallback_level);
       request.interval_max = interval_max(entry.interval, entry.fast_interval,
                                           entry.interval_fallback_level);
-      request.min_ce_length = entry.interval == Interval::Fast &&
-                              entry.fast_interval == kBulkInterval ?
-                              kBulkMinCeLength : 0U;
+      request.min_ce_length = min_ce_length(entry.interval, entry.fast_interval);
       request.max_ce_length = max_ce_length(entry.interval, entry.fast_interval,
                                             entry.interval_fallback_level);
       entry.telemetry.requested_interval_min = request.interval_min;

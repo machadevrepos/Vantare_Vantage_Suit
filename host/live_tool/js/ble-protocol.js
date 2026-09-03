@@ -51,11 +51,20 @@ export const CMD = {
   SET_RGB: 0xa5,
   TOUCH_TEST: 0xa6,
   HAPTIC_PULSE: 0xa7,
+  /** Master own-IMU preview toggle (payload[1] 0=off 1=on). Live inference
+   * turns it off: the model consumes N2-N4 only, and the ~2.6 KB/s of
+   * master-own frames oversubscribes the ~9.8 KB/s link. */
+  MASTER_OWN_STREAM: 0xa8,
   QUERY_NODE_ID: 0xb1,
   REDISCOVER: 0xb2,
   RESET_RETAINED: 0xb3,
   DISCOVERED_NODES: 0xb4,
 };
+
+/** command byte -> readable name, for logging Master ACK/NACK frames. */
+export const CMD_NAME = Object.fromEntries(
+  Object.entries(CMD).map(([name, code]) => [code, name])
+);
 
 /** Actuator override bit understood by 0xA5 on both Master and Node. */
 export const RGB_OVERRIDE_OFF = 0x80;
@@ -76,6 +85,8 @@ export const BLEPIPE = {
   MSG_ACK: 0x12,
   MSG_NACK: 0x13,
   MSG_STREAM_CONTROL: 0x32,
+  MSG_TOPOLOGY: 0x21,
+  MSG_LOG: 0x24,
   DST_BROADCAST: 0xffff,
   SRC_PHONE: 0x1000,
 };
@@ -249,11 +260,15 @@ function decodeIcmPayload(payload) {
  * are removed, which is exactly what this mapping reproduces.
  */
 export class StreamHealth {
-  constructor(nodeId, sensorId) {
+  constructor(nodeId, sensorId, targetRateHz = 25) {
     this.nodeId = nodeId;
     this.sensorId = sensorId;
+    // The Master stamps every relayed envelope with ONE global sequence
+    // counter shared across all streams, so per-stream sequence gaps count
+    // other streams' frames and say nothing about loss. Loss is measured as
+    // the arrival deficit against the contract rate instead.
+    this.targetRateHz = targetRateHz;
     this.received = 0;
-    this.lost = 0;
     this.lastSeq = null;
     this.lastRecvMs = null;
     this.lastNodeTimeMs = null;
@@ -263,10 +278,6 @@ export class StreamHealth {
   }
 
   observe(sequence, nodeTimeMs, recvMs, bytes) {
-    if (this.lastSeq !== null) {
-      const gap = (sequence - this.lastSeq - 1 + 65536) % 65536;
-      if (gap > 0 && gap < 4096) this.lost += gap;
-    }
     if (this.lastRecvMs !== null) {
       this.maxGapMs = Math.max(this.maxGapMs, recvMs - this.lastRecvMs);
     }
@@ -285,6 +296,18 @@ export class StreamHealth {
     return spanS > 0 ? (this.received - 1) / spanS : 0;
   }
 
+  /**
+   * Fraction (0..1) of the contract-rate samples that never arrived: 1 minus
+   * received/expected over the observed span. Null while too little data has
+   * arrived to judge.
+   */
+  lossFraction() {
+    if (this.received < 2 || this.firstRecvMs === null || this.lastRecvMs === null) return null;
+    const spanS = (this.lastRecvMs - this.firstRecvMs) / 1000;
+    if (spanS <= 0) return null;
+    return Math.max(0, 1 - this.received / (spanS * this.targetRateHz));
+  }
+
   staleMs(nowMs) {
     return this.lastRecvMs === null ? Infinity : nowMs - this.lastRecvMs;
   }
@@ -292,23 +315,41 @@ export class StreamHealth {
 
 export class TimeBase {
   constructor() {
-    this.offsets = new Map(); // sourceId -> { pairs: [], offsetMs: null, initialOffsetMs: null, driftMsPerMin: 0 }
+    // Per stream: `pairs` feeds a rolling-max offset estimate (see observe);
+    // `history` stores the estimate every 500 ms so the skew gate can measure
+    // how one stream's clock mapping drifts RELATIVE to the other streams —
+    // the cross-node disagreement that actually corrupts the shared grid.
+    this.offsets = new Map();
     for (const id of DISPLAY_SOURCE_IDS) {
-      this.offsets.set(id, { pairs: [], offsetMs: null, initialOffsetMs: null, driftMsPerMin: 0 });
+      this.offsets.set(id, {
+        pairs: [], offsetMs: null, driftMsPerMin: 0,
+        history: [], lastHistoryMs: -Infinity,
+      });
     }
   }
 
   observe(nodeId, nodeTimeMs, recvMs) {
     const state = this.offsets.get(nodeId);
     if (!state) return;
+    // A raw sample = nodeTime - recv = trueOffset - linkDelay: it sits BELOW
+    // the true clock offset, and queueing delay only pulls it further down.
+    // The rolling maximum over ~2 s is the least-delayed recent sample; it
+    // tracks both clock drift and delay changes within ~one window, keeping
+    // each stream's mapped clock aligned with its present reality.
     state.pairs.push(nodeTimeMs - recvMs);
-    if (state.pairs.length > 100) state.pairs.shift();
-    if (state.pairs.length >= 5) {
-      const sorted = [...state.pairs].sort((a, b) => a - b);
-      const mid = sorted.length >> 1;
-      state.offsetMs = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-      if (state.initialOffsetMs === null) state.initialOffsetMs = state.offsetMs;
-      state.driftMsPerMin = state.offsetMs - state.initialOffsetMs;
+    if (state.pairs.length > 50) state.pairs.shift();
+    let maxOffset = -Infinity;
+    for (const value of state.pairs) {
+      if (value > maxOffset) maxOffset = value;
+    }
+    state.offsetMs = maxOffset;
+
+    if (recvMs - state.lastHistoryMs >= 500) {
+      state.lastHistoryMs = recvMs;
+      state.history.push({ atMs: recvMs, offsetMs: maxOffset });
+      if (state.history.length > 24) state.history.shift();
+      const oldest = state.history[0];
+      state.driftMsPerMin = ((state.offsetMs - oldest.offsetMs) * 60000) / Math.max(1, recvMs - oldest.atMs);
     }
   }
 
@@ -319,18 +360,42 @@ export class TimeBase {
     return nodeTimeMs - state.offsetMs;
   }
 
-  /** Estimated offset error relative to session start, in ms. */
+  /**
+   * Estimated cross-node alignment error in ms (Section 10): how far this
+   * stream's clock mapping has drifted over the last ~10 s RELATIVE to the
+   * median drift of the model streams. A common bias cancels; a stream whose
+   * link degrades differently from the others is what breaks the shared
+   * grid. Null while history spans less than ~8 s.
+   */
   skewMs(nodeId) {
-    const state = this.offsets.get(nodeId);
-    if (!state || state.offsetMs === null || state.initialOffsetMs === null) return null;
-    return Math.abs(state.offsetMs - state.initialOffsetMs);
+    const modelStreams = NODE_IDS
+      .map((id) => this.offsets.get(id))
+      .filter((state) => state && state.history.length >= 2);
+    if (modelStreams.length < NODE_IDS.length) return null;
+    const nowMs = modelStreams[0].history[modelStreams[0].history.length - 1].atMs;
+    const windowMs = 10000;
+    const drifts = new Map();
+    for (const id of NODE_IDS) {
+      const state = this.offsets.get(id);
+      let reference = null;
+      for (const entry of state.history) {
+        if (nowMs - entry.atMs <= windowMs) break;
+        reference = entry;
+      }
+      if (!reference) return null; // not enough span yet
+      drifts.set(id, state.offsetMs - reference.offsetMs);
+    }
+    const sorted = [...drifts.values()].sort((a, b) => a - b);
+    const medianDrift = sorted[sorted.length >> 1];
+    return Math.abs(drifts.get(nodeId) - medianDrift);
   }
 
   reset() {
     for (const state of this.offsets.values()) {
       state.pairs.length = 0;
       state.offsetMs = null;
-      state.initialOffsetMs = null;
+      state.history.length = 0;
+      state.lastHistoryMs = -Infinity;
       state.driftMsPerMin = 0;
     }
   }
@@ -478,9 +543,12 @@ export class BleTransport {
   }
 
   async startStream(intervalMs) {
+    // Silence the Master's own IMU preview first: it is display-only for this
+    // tool, and on the shared link it crowds out the six model streams.
+    await this.sendPipeCommand([CMD.MASTER_OWN_STREAM, 0], BLEPIPE.MSG_STREAM_CONTROL);
     await this.sendPipeCommand([CMD.SET_INTERVAL, intervalMs & 0xff], BLEPIPE.MSG_STREAM_CONTROL);
     await this.sendPipeCommand([CMD.START_STREAM], BLEPIPE.MSG_STREAM_CONTROL);
-    this.onLog(`Stream start sent: interval_ms=${intervalMs}.`);
+    this.onLog(`Stream start sent: interval_ms=${intervalMs}, master own-stream off.`);
   }
 
   /** 0xA2 alone: change the interval without restarting the stream. */
@@ -494,6 +562,8 @@ export class BleTransport {
 
   async stopStream() {
     await this.sendPipeCommand([CMD.STOP_STREAM], BLEPIPE.MSG_STREAM_CONTROL);
+    // Restore the Master's own preview so the desktop tool behaves as before.
+    await this.sendPipeCommand([CMD.MASTER_OWN_STREAM, 1], BLEPIPE.MSG_STREAM_CONTROL);
     this.onLog("Stream stop sent.");
   }
 
@@ -642,8 +712,12 @@ export class BleTransport {
     const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     const pipe = blepipeDecode(data);
     if (!pipe.ok) return;
+    const cmd = pipe.payload[0];
+    const name = CMD_NAME[cmd] ?? `0x${(cmd ?? 0).toString(16)}`;
     if (pipe.msgType === BLEPIPE.MSG_NACK) {
-      this.onLog(`Master NACK for command 0x${pipe.payload[0]?.toString(16) ?? "??"}`, "warn");
+      this.onLog(`Master NACK: ${name} rejected`, "warn");
+    } else if (pipe.msgType === BLEPIPE.MSG_ACK) {
+      this.onLog(`Master ACK: ${name}`);
     }
   }
 
@@ -652,12 +726,22 @@ export class BleTransport {
     const data = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     const pipe = blepipeDecode(data);
     if (!pipe.ok) return;
-    if (pipe.msgType === 0x21 /* MSG_TOPOLOGY */ && pipe.payload.length >= 1) {
+    if (pipe.msgType === BLEPIPE.MSG_TOPOLOGY && pipe.payload.length >= 1) {
       const count = pipe.payload[0] || 0;
       const ids = [];
       for (let i = 0; i < count && 1 + i < pipe.payload.length; i += 1) ids.push(pipe.payload[1 + i]);
       this.onLog(`Topology: ${ids.length ? ids.map((id) => `NODE${id}`).join(", ") : "none"}`);
       this.onTopology && this.onTopology(ids);
+    } else if (pipe.msgType === BLEPIPE.MSG_LOG && pipe.payload.length > 0) {
+      // SWO-free firmware telemetry: the Master emits an ASCII "LIVE ..." line
+      // ~1 Hz while streaming so the pipeline can be debugged from this page.
+      let text = "";
+      for (let i = 0; i < pipe.payload.length; i += 1) {
+        const c = pipe.payload[i];
+        if (c === 0) break;
+        text += String.fromCharCode(c);
+      }
+      if (text) this.onLog(`[master] ${text}`);
     }
   }
 

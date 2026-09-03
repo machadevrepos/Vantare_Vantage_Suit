@@ -77,6 +77,12 @@ tBleStatus Custom_APP_SendCmdTrace(const uint8_t *payload, uint8_t length, uint8
 tBleStatus Custom_APP_SendCmdNotify(const uint8_t *payload, uint8_t length);
 tBleStatus Custom_APP_SendRecordFrame(const uint8_t *payload, uint8_t length);
 tBleStatus Custom_APP_SendRecoveryFrame(const uint8_t *payload, uint8_t length);
+/* Foreground live forwarding is woken by these controller events instead of
+ * polling a fixed aggregate delay. */
+void Custom_APP_NotificationComplete(void);
+void Custom_APP_TxPoolAvailable(uint16_t available_buffers);
+uint32_t Custom_APP_NotificationCompleteCount(void);
+uint32_t Custom_APP_TxPoolEventCount(void);
 
 /* USER CODE END EF */
 

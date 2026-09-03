@@ -202,6 +202,8 @@ namespace exo {
 				live_queue_.configure(live_stream_enabled_, live_interval_ms_);
 			}
 
+			uint32_t live_interval_ms() const { return live_interval_ms_; }
+
 			bool pop_live_sample(LiveSample &sample) {
 				return live_queue_.pop(sample);
 			}
@@ -216,6 +218,10 @@ namespace exo {
 
 			uint32_t live_drop_count() const {
 				return live_queue_.dropped();
+			}
+
+			uint32_t live_accepted_count() const {
+				return live_queue_.accepted();
 			}
 
 			bool stop_recording(const StopRecordMessage &message) {
@@ -1167,8 +1173,10 @@ namespace exo {
 			uint32_t icm_append_fail_count_ = 0U;
 			bool armed_ = false;
 			bool live_stream_enabled_ = false;
-			uint32_t live_interval_ms_ = 20U;
-			NodeLiveSampleQueue<kMaxLivePayload, 8U> live_queue_ { };
+			/* 40 ms = 25 Hz per sensor = the live contract rate (design Section 11).
+			 * The queue clamps anything below 40 ms to 40 anyway. */
+			uint32_t live_interval_ms_ = 40U;
+			NodeLiveSampleQueue<kMaxLivePayload, 12U> live_queue_ { };
 			bool prepared_ = false;
 			bool ready_ = false;
 			uint32_t detected_flash_capacity_ = 0U;

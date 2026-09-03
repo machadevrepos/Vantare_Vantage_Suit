@@ -76,6 +76,8 @@ uint8_t APP_BLE_LeafClientPrepareScan(void);
 void APP_BLE_LeafClientScanIdle(void);
 void APP_BLE_LeafClientConnectIdle(void);
 uint8_t APP_BLE_LeafClientPhoneConnected(void);
+void APP_BLE_RequestServerFastConnInterval(void);
+uint16_t APP_BLE_GetServerConnIntervalRaw(void);
 
 /* USER CODE END EF */
 

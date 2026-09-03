@@ -20,16 +20,12 @@ public:
     static_assert(Capacity > 0U, "NodeLiveSampleQueue Capacity must be non-zero");
 
     static constexpr uint32_t kMinimumPreviewIntervalMs = 40U;
-    static constexpr uint32_t kCongestedPreviewIntervalMs = 80U;
-    static constexpr uint8_t kCongestionCoalesceThreshold = 4U;
-    static constexpr uint32_t kCongestionWindowMs = 1000U;
-    static constexpr uint32_t kRecoveryStableMs = 5000U;
+    static constexpr uint32_t kMaxPreviewIntervalMs = 80U;
 
     void configure(bool enabled, uint32_t interval_ms)
     {
         enabled_ = enabled;
-        normal_interval_ms_ = clamp_interval(interval_ms);
-        effective_interval_ms_ = normal_interval_ms_;
+        interval_ms_ = clamp_interval(interval_ms);
         clear();
     }
 
@@ -44,11 +40,10 @@ public:
         if (slot < 0) {
             return false;
         }
-        service_recovery(acquisition_time_ms);
         const uint8_t index = static_cast<uint8_t>(slot);
         if (gate_valid_[index] &&
             static_cast<uint32_t>(acquisition_time_ms - gate_time_ms_[index]) <
-                effective_interval_ms_) {
+                interval_ms_) {
             ++decimated_;
             return false;
         }
@@ -56,11 +51,12 @@ public:
         gate_time_ms_[index] = acquisition_time_ms;
 
         if (count_ >= Capacity) {
+            /* The link cannot drain fast enough right now. Keep the freshest
+             * Capacity samples: for live ML inference on a fixed grid a recent
+             * gap is far better than throttling production to a fraction of the
+             * contract rate (the old 5 s congestion latch). Count the loss. */
             ++dropped_;
-            note_congestion(acquisition_time_ms);
-            congested_ = true;
-            effective_interval_ms_ = kCongestedPreviewIntervalMs;
-            return false;
+            (void)discard_front();
         }
 
         const uint8_t write_index =
@@ -71,6 +67,7 @@ public:
         entry.acquisition_time_ms = acquisition_time_ms;
         memcpy(entry.payload, payload, payload_len);
         ++count_;
+        ++accepted_;
         return true;
     }
 
@@ -99,11 +96,12 @@ public:
     }
 
     uint32_t dropped() const { return dropped_; }
+    uint32_t accepted() const { return accepted_; }
     uint32_t coalesced() const { return 0U; }
     uint32_t decimated() const { return decimated_; }
-    bool congested() const { return congested_; }
-    uint32_t effective_interval_ms() const { return effective_interval_ms_; }
-    uint32_t normal_interval_ms() const { return normal_interval_ms_; }
+    bool congested() const { return false; }
+    uint32_t effective_interval_ms() const { return interval_ms_; }
+    uint32_t normal_interval_ms() const { return interval_ms_; }
     uint8_t count() const { return count_; }
 
     void clear()
@@ -118,12 +116,8 @@ public:
         tail_ = 0U;
         count_ = 0U;
         dropped_ = 0U;
+        accepted_ = 0U;
         decimated_ = 0U;
-        congested_ = false;
-        congestion_window_start_ms_ = 0U;
-        congestion_events_in_window_ = 0U;
-        last_congestion_ms_ = 0U;
-        effective_interval_ms_ = normal_interval_ms_;
     }
 
 private:
@@ -132,8 +126,8 @@ private:
         if (interval_ms < kMinimumPreviewIntervalMs) {
             return kMinimumPreviewIntervalMs;
         }
-        if (interval_ms > kCongestedPreviewIntervalMs) {
-            return kCongestedPreviewIntervalMs;
+        if (interval_ms > kMaxPreviewIntervalMs) {
+            return kMaxPreviewIntervalMs;
         }
         return interval_ms;
     }
@@ -145,50 +139,15 @@ private:
         return -1;
     }
 
-    void note_congestion(uint32_t now_ms)
-    {
-        last_congestion_ms_ = now_ms;
-        if (congestion_window_start_ms_ == 0U ||
-            static_cast<uint32_t>(now_ms - congestion_window_start_ms_) >
-                kCongestionWindowMs) {
-            congestion_window_start_ms_ = now_ms;
-            congestion_events_in_window_ = 1U;
-        } else if (congestion_events_in_window_ < 0xFFU) {
-            ++congestion_events_in_window_;
-        }
-        if (congestion_events_in_window_ >= kCongestionCoalesceThreshold) {
-            congested_ = true;
-            effective_interval_ms_ = kCongestedPreviewIntervalMs;
-        }
-    }
-
-    void service_recovery(uint32_t now_ms)
-    {
-        if (!congested_ || last_congestion_ms_ == 0U) {
-            return;
-        }
-        if (static_cast<uint32_t>(now_ms - last_congestion_ms_) >=
-                kRecoveryStableMs) {
-            congested_ = false;
-            effective_interval_ms_ = normal_interval_ms_;
-            congestion_window_start_ms_ = now_ms;
-            congestion_events_in_window_ = 0U;
-        }
-    }
-
     NodeLiveSample<MaxPayload> entries_[Capacity] {};
     bool gate_valid_[2] { false, false };
     uint32_t gate_time_ms_[2] { 0U, 0U };
     uint8_t tail_ = 0U;
     uint8_t count_ = 0U;
-    uint32_t normal_interval_ms_ = kMinimumPreviewIntervalMs;
-    uint32_t effective_interval_ms_ = kMinimumPreviewIntervalMs;
+    uint32_t interval_ms_ = kMinimumPreviewIntervalMs;
     uint32_t dropped_ = 0U;
+    uint32_t accepted_ = 0U;
     uint32_t decimated_ = 0U;
-    uint32_t congestion_window_start_ms_ = 0U;
-    uint32_t last_congestion_ms_ = 0U;
-    uint8_t congestion_events_in_window_ = 0U;
-    bool congested_ = false;
     bool enabled_ = false;
 };
 

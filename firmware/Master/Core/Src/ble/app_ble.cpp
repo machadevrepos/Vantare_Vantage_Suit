@@ -215,6 +215,9 @@ uint8_t a_AdvData[13] =
 
 /* USER CODE BEGIN PV */
 static uint16_t g_phone_connection_handle = 0xFFFFU;
+/* Last negotiated connection interval on the phone/browser (server) link, in
+ * 1.25 ms units. 0 = unknown. Surfaced to the live tool for SWO-free debugging. */
+static volatile uint16_t g_server_conn_interval_raw = 0U;
 static uint8_t g_leaf_client_connecting = 0U;
 static uint8_t g_phone_connected = 0U;
 static uint8_t g_leaf_scan_holds_advertising = 0U;
@@ -609,6 +612,12 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
                                                                  event->Conn_Interval,
                                                                  event->Conn_Latency,
                                                                  event->Supervision_Timeout);
+            if (event->Status == 0U && event->Connection_Handle == g_phone_connection_handle)
+            {
+              g_server_conn_interval_raw = event->Conn_Interval;
+              EXO_LOG("[BLE][APP] server conn interval now %u (x1.25ms)\r\n",
+                      (unsigned)event->Conn_Interval);
+            }
           }
 
           /* USER CODE END EVT_LE_CONN_UPDATE_COMPLETE */
@@ -704,6 +713,7 @@ SVCCTL_UserEvtFlowStatus_t SVCCTL_App_Notification(void *p_Pckt)
           {
             g_phone_connected = 1U;
             g_phone_connection_handle = p_connection_complete_event->Connection_Handle;
+            g_server_conn_interval_raw = p_connection_complete_event->Conn_Interval;
             if (g_leaf_client_connecting != 0U)
             {
               BleApplicationContext.Device_Connection_Status = APP_BLE_LP_CONNECTING;
@@ -1031,6 +1041,30 @@ void APP_BLE_LeafClientScanIdle(void)
 uint8_t APP_BLE_LeafClientPhoneConnected(void)
 {
   return g_phone_connected;
+}
+
+/* Ask the phone/browser (Central) for a short connection interval so the live
+ * forwarder can push more than one notification per connection event. Best
+ * effort: the Central may reject or ignore it. Called at stream start. */
+void APP_BLE_RequestServerFastConnInterval(void)
+{
+  if (g_phone_connection_handle == 0xFFFFU)
+  {
+    return;
+  }
+  const tBleStatus st = aci_l2cap_connection_parameter_update_req(
+      g_phone_connection_handle,
+      8U,    /* Conn_Interval_Min = 10.0 ms */
+      12U,   /* Conn_Interval_Max = 15.0 ms */
+      0U,    /* Peripheral latency */
+      500U); /* supervision timeout = 5000 ms */
+  EXO_LOG("[BLE][APP] server fast conn-param req h=0x%04X st=0x%02X\r\n",
+          (unsigned)g_phone_connection_handle, (unsigned)st);
+}
+
+uint16_t APP_BLE_GetServerConnIntervalRaw(void)
+{
+  return g_server_conn_interval_raw;
 }
 
 /* USER CODE END FD*/

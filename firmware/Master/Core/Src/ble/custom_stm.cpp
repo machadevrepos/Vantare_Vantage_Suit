@@ -22,6 +22,9 @@
 #include "common_blesvc.h"
 #include <exo/ble/custom_stm.h>
 
+extern "C" void Custom_APP_NotificationComplete(void);
+extern "C" void Custom_APP_TxPoolAvailable(uint16_t available_buffers);
+
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
@@ -138,6 +141,7 @@ static SVCCTL_EvtAckStatus_t Custom_STM_Event_Handler(void *Event)
   aci_gatt_write_permit_req_event_rp0   *write_perm_req;
   aci_gatt_read_permit_req_event_rp0    *read_req;
   aci_gatt_notification_complete_event_rp0    *notification_complete;
+  aci_gatt_tx_pool_available_event_rp0 *tx_pool_available;
   Custom_STM_App_Notification_evt_t     Notification;
   /* USER CODE BEGIN Custom_STM_Event_Handler_1 */
 
@@ -436,10 +440,19 @@ static SVCCTL_EvtAckStatus_t Custom_STM_Event_Handler(void *Event)
           notification_complete = (aci_gatt_notification_complete_event_rp0*)blecore_evt->data;
           Notification.Custom_Evt_Opcode = CUSTOM_STM_NOTIFICATION_COMPLETE_EVT;
           Notification.AttrHandle = notification_complete->Attr_Handle;
+          Custom_APP_NotificationComplete();
           Custom_STM_App_Notification(&Notification);
           /* USER CODE BEGIN EVT_BLUE_GATT_NOTIFICATION_COMPLETE_END */
 
           /* USER CODE END EVT_BLUE_GATT_NOTIFICATION_COMPLETE_END */
+          break;
+        }
+
+        case ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE:
+        {
+          tx_pool_available = (aci_gatt_tx_pool_available_event_rp0*)blecore_evt->data;
+          Custom_APP_TxPoolAvailable(tx_pool_available->Available_Buffers);
+          return_value = SVCCTL_EvtAckFlowEnable;
           break;
         }
 
@@ -552,7 +565,10 @@ void SVCCTL_InitCustomSvc(void)
                           SizePipedatatx,
                           CHAR_PROP_NOTIFY,
                           ATTR_PERMISSION_NONE,
-                          GATT_NOTIFY_ATTRIBUTE_WRITE | GATT_NOTIFY_WRITE_REQ_AND_WAIT_FOR_APPL_RESP | GATT_NOTIFY_READ_REQ_AND_WAIT_FOR_APPL_RESP,
+                          /* NOTIFICATION_COMPLETION: the live forwarder is woken by the
+                           * per-flush completion event instead of a guessed millisecond
+                           * cadence (see BleNotificationGate). */
+                          GATT_NOTIFY_ATTRIBUTE_WRITE | GATT_NOTIFY_WRITE_REQ_AND_WAIT_FOR_APPL_RESP | GATT_NOTIFY_READ_REQ_AND_WAIT_FOR_APPL_RESP | GATT_NOTIFY_NOTIFICATION_COMPLETION,
                           0x10,
                           CHAR_VALUE_LEN_CONSTANT,
                           &(CustomContext.CustomPipedatatxHdle));

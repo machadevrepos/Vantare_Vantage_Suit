@@ -14,7 +14,7 @@ export const ORT_VERSION_PINNED = "1.20.1";
 export const ORT_WASM_BASE = new URL("../vendor/ort/", import.meta.url).href;
 
 /** Bumped on every behavioral change so a stale cached page is detectable. */
-export const LIVE_TOOL_BUILD = "2026-09-03.1";
+export const LIVE_TOOL_BUILD = "2026-09-03.9";
 
 /** The qualified live contract rate (design Section 11). */
 export const APP_TARGET_HZ = 25;

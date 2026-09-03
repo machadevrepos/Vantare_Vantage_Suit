@@ -199,6 +199,20 @@ static uint8_t g_targeted_reconnect_attempts = 0U;
 static exo::LinkTuneState g_link_tune;
 static exo::TransferLinkRearmState g_transfer_link_rearm;
 
+/* Latest live-preview forwarding health reported by each leaf (LINK_STATS v2
+ * tail). Indexed by node_id-1. Surfaced to the web log via the Master diag. */
+typedef struct {
+  uint32_t offered;
+  uint32_t dropped;
+  uint32_t sent;
+  uint32_t gate_wdog;
+  uint32_t gate_bp;
+  uint16_t dle_tx_octets;
+  uint8_t  stream_on;
+  uint8_t  valid;
+} exo_leaf_live_diag_t;
+static exo_leaf_live_diag_t g_leaf_live_diag[EXO_HUB_LEAF_MAX];
+
 static const uint8_t k_blepipe_service_uuid[16] = { 0x3f, 0x88, 0x10, 0x00, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
 static const uint8_t k_blepipe_data_uuid[16]    = { 0x3f, 0x88, 0x10, 0x01, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
 static const uint8_t k_blepipe_ctrl_rx_uuid[16] = { 0x3f, 0x88, 0x10, 0x02, 0xb4, 0xa5, 0x4f, 0x7c, 0x9b, 0x60, 0x98, 0xe0, 0xb5, 0xc8, 0xa0, 0x00 };
@@ -1384,6 +1398,28 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
   }
   if (lane_kind == BLEPIPE_LANE_STATUS_TX)
   {
+    if (hdr.msg_type == BLEPIPE_MSG_LINK_STATS && payload_len >= 89U && payload[0] == 1U)
+    {
+      /* Version-1 frame, v2 live-preview tail (bytes 65..88). */
+      const uint8_t node = exo_leaf_slot_node_id(slot);
+      if (node >= 1U && node <= EXO_HUB_LEAF_MAX)
+      {
+        exo_leaf_live_diag_t *const d = &g_leaf_live_diag[node - 1U];
+        d->offered  = (uint32_t)payload[65] | ((uint32_t)payload[66] << 8U) |
+                      ((uint32_t)payload[67] << 16U) | ((uint32_t)payload[68] << 24U);
+        d->dropped  = (uint32_t)payload[69] | ((uint32_t)payload[70] << 8U) |
+                      ((uint32_t)payload[71] << 16U) | ((uint32_t)payload[72] << 24U);
+        d->sent     = (uint32_t)payload[73] | ((uint32_t)payload[74] << 8U) |
+                      ((uint32_t)payload[75] << 16U) | ((uint32_t)payload[76] << 24U);
+        d->gate_wdog = (uint32_t)payload[77] | ((uint32_t)payload[78] << 8U) |
+                       ((uint32_t)payload[79] << 16U) | ((uint32_t)payload[80] << 24U);
+        d->gate_bp  = (uint32_t)payload[81] | ((uint32_t)payload[82] << 8U) |
+                      ((uint32_t)payload[83] << 16U) | ((uint32_t)payload[84] << 24U);
+        d->dle_tx_octets = (uint16_t)payload[7] | ((uint16_t)payload[8] << 8U);
+        d->stream_on = payload[85];
+        d->valid = 1U;
+      }
+    }
     if (hdr.msg_type == BLEPIPE_MSG_LINK_STATS && payload_len >= 65U && payload[0] == 1U)
     {
       /* Full-length version-1 payload: everything the 57-byte frame carried,
@@ -1421,6 +1457,29 @@ static void exo_handle_pipe_packet(exo_leaf_slot_t *slot,
     }
     exo_handle_leaf_status(slot, &hdr, payload, payload_len);
     (void)Custom_APP_SendRecoveryFrame(data, decoded_frame_len);
+    return;
+  }
+  if (hdr.msg_type == BLEPIPE_MSG_LEAF_SAMPLE && payload_len >= 3U && payload[0] == 0x03U)
+  {
+    /* Bundled live frame: [0x03][bno_len][bno...][icm_len][icm...]. Split into
+     * the two per-sensor ingests the rest of the pipeline already expects. */
+    const uint8_t node = slot->node_id != 0U ? slot->node_id : slot->node_hint;
+    const uint8_t bno_len = payload[1];
+    uint16_t off = 2U;
+    if (bno_len > 0U && (uint16_t)(off + bno_len) <= payload_len)
+    {
+      (void)exo_hub_leaf_stream_ingest(node, 1U, payload + off, bno_len);
+    }
+    off = (uint16_t)(off + bno_len);
+    if (off < payload_len)
+    {
+      const uint8_t icm_len = payload[off];
+      off = (uint16_t)(off + 1U);
+      if (icm_len > 0U && (uint16_t)(off + icm_len) <= payload_len)
+      {
+        (void)exo_hub_leaf_stream_ingest(node, 2U, payload + off, icm_len);
+      }
+    }
     return;
   }
   if (hdr.msg_type == BLEPIPE_MSG_LEAF_SAMPLE && payload_len > 1U)
@@ -1526,6 +1585,53 @@ void exo_hub_central_client_set_transfer_timing(uint8_t node_id, uint8_t fast,
   }
 }
 
+uint8_t exo_hub_central_client_set_live_link_timing(uint8_t fast)
+{
+  uint8_t i;
+  uint8_t queued = 0U;
+  for (i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+  {
+    exo_leaf_slot_t *const slot = &g_leaf_slots[i];
+    if (exo_leaf_slot_node_id(slot) == 0U ||
+        slot->connection_handle == 0xFFFFU)
+    {
+      continue;
+    }
+    const exo::LinkTuneState::Telemetry &t = g_link_tune.telemetry(i);
+    if (fast != 0U)
+    {
+      /* Idempotent: skip a leaf that has already settled at a fast-ish interval
+       * (Ready or Degraded, <= 30 ms). Re-requesting a Degraded link every few
+       * seconds just makes it thrash between NeedInterval/WaitInterval and
+       * never rest - a stable 20 ms Degraded link delivers more than a link
+       * stuck re-negotiating. Only a genuinely slow (>30 ms) or freshly
+       * reconnected leaf is re-armed. */
+      const bool settled_fast =
+          (t.state == exo::LinkTuneState::State::Ready ||
+           t.state == exo::LinkTuneState::State::Degraded) &&
+          t.confirmed_interval != 0U &&
+          t.confirmed_interval <= exo::LinkTuneState::kSlowIntervalMin;
+      if (settled_fast)
+      {
+        continue;
+      }
+    }
+    const bool ok = (fast != 0U)
+        ? g_link_tune.begin_fast_preparation(i, t.generation)
+        : g_link_tune.begin_slow_restore(i, t.generation);
+    if (ok)
+    {
+      ++queued;
+      exo_report_link_tune(i);
+    }
+  }
+  if (queued != 0U)
+  {
+    EXO_LOG("[BLE][HUB][LIVE] link timing fast=%u queued=%u\r\n", (unsigned)fast, (unsigned)queued);
+  }
+  return queued;
+}
+
 uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id)
 {
   uint8_t i;
@@ -1543,6 +1649,71 @@ uint8_t exo_hub_central_client_transfer_preparation_resolved(uint8_t node_id)
         g_link_tune.transfer_preparation_resolved(i, t.generation));
   }
   return 0U;
+}
+
+static const exo::LinkTuneState::Telemetry *exo_leaf_link_telemetry_for(uint8_t node_id)
+{
+  for (uint8_t i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+  {
+    const exo_leaf_slot_t *const slot = &g_leaf_slots[i];
+    if (exo_leaf_slot_node_id(slot) == node_id &&
+        slot->connection_handle != 0xFFFFU)
+    {
+      return &g_link_tune.telemetry(i);
+    }
+  }
+  return nullptr;
+}
+
+/* SWO-free leaf-link telemetry, folded into the Master's live diag log line. */
+uint16_t exo_hub_central_client_leaf_link_interval_raw(uint8_t node_id)
+{
+  const exo::LinkTuneState::Telemetry *const t = exo_leaf_link_telemetry_for(node_id);
+  return t != nullptr ? t->confirmed_interval : 0U;
+}
+
+uint8_t exo_hub_central_client_leaf_link_state(uint8_t node_id)
+{
+  const exo::LinkTuneState::Telemetry *const t = exo_leaf_link_telemetry_for(node_id);
+  return t != nullptr ? (uint8_t)t->state : 0xFFU;
+}
+
+uint8_t exo_hub_central_client_leaf_link_retries(uint8_t node_id)
+{
+  const exo::LinkTuneState::Telemetry *const t = exo_leaf_link_telemetry_for(node_id);
+  return t != nullptr ? t->retries : 0U;
+}
+
+uint8_t exo_hub_central_client_leaf_link_tx_phy(uint8_t node_id)
+{
+  const exo::LinkTuneState::Telemetry *const t = exo_leaf_link_telemetry_for(node_id);
+  return t != nullptr ? t->confirmed_tx_phy : 0U;
+}
+
+/* Live-preview forwarding health last reported by the node (LINK_STATS v2). */
+void exo_hub_central_client_leaf_live_diag(uint8_t node_id, uint32_t *offered,
+    uint32_t *dropped, uint32_t *sent, uint32_t *gate_wdog, uint32_t *gate_bp,
+    uint16_t *dle_tx_octets, uint8_t *stream_on)
+{
+  const exo_leaf_live_diag_t *d = (node_id >= 1U && node_id <= EXO_HUB_LEAF_MAX)
+      ? &g_leaf_live_diag[node_id - 1U] : nullptr;
+  const exo_leaf_live_diag_t zero = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+  if (d == nullptr || d->valid == 0U) { d = &zero; }
+  if (offered) *offered = d->offered;
+  if (dropped) *dropped = d->dropped;
+  if (sent) *sent = d->sent;
+  if (gate_wdog) *gate_wdog = d->gate_wdog;
+  if (gate_bp) *gate_bp = d->gate_bp;
+  if (dle_tx_octets) *dle_tx_octets = d->dle_tx_octets;
+  if (stream_on) *stream_on = d->stream_on;
+}
+
+void exo_hub_central_client_reset_leaf_live_diag(void)
+{
+  for (uint8_t i = 0U; i < EXO_HUB_LEAF_MAX; ++i)
+  {
+    g_leaf_live_diag[i] = exo_leaf_live_diag_t{};
+  }
 }
 
 

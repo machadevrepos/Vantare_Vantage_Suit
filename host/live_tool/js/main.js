@@ -607,8 +607,9 @@ class App {
           continue;
         }
         const rate = health.averageRate();
-        const lossPct = (100 * health.lost) / Math.max(1, health.received + health.lost);
-        const rateLine = `${key}: ${rate.toFixed(2)} Hz avg, ${lossPct.toFixed(2)}% seq loss, max inter-packet ${health.maxGapMs.toFixed(0)} ms`;
+        const lossFraction = health.lossFraction();
+        const lossPct = lossFraction === null ? 100 : 100 * lossFraction;
+        const rateLine = `${key}: ${rate.toFixed(2)} Hz avg, ${lossPct.toFixed(2)}% loss vs contract, max inter-packet ${health.maxGapMs.toFixed(0)} ms`;
         if (rate < 23.75 || lossPct > 1.0 || health.maxGapMs > 3 * periodMs) {
           pass = false;
           lines.push(`FAIL ${rateLine}`);
@@ -652,13 +653,14 @@ class App {
         if (!health) continue;
         seen = true;
         const rate = health.received >= 2 ? health.averageRate() : null;
-        perSensor[sensor] = { rate, staleMs: health.staleMs(now), lost: health.lost };
+        const lossPct = health.lossFraction();
+        perSensor[sensor] = { rate, staleMs: health.staleMs(now), lossPct };
         streamSnapshots.push({
           key,
           label: `${sourceLabel(source)} ${sensorLabel(sensor)}`,
           isModelStream: NODE_IDS.includes(source),
           rate,
-          lost: health.lost,
+          lossPct,
           maxGapMs: health.maxGapMs,
           staleMs: this.transport.connected ? Math.min(health.staleMs(now), 9999) : null,
         });
@@ -667,10 +669,11 @@ class App {
       const bno = perSensor[SENSOR.BNO];
       const icm = perSensor[SENSOR.ICM];
       const ages = [bno, icm].filter(Boolean).map((entry) => entry.staleMs);
+      const lossPcts = [bno, icm].filter(Boolean).map((entry) => entry.lossPct).filter((v) => v !== null);
       healthBySource.set(source, {
         bnoRate: bno ? bno.rate : null,
         icmRate: icm ? icm.rate : null,
-        lost: (bno ? bno.lost : 0) + (icm ? icm.lost : 0),
+        lossPct: lossPcts.length ? Math.max(...lossPcts) : null,
         staleMs: ages.length ? Math.min(...ages) : null,
       });
     }
