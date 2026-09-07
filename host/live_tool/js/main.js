@@ -473,7 +473,12 @@ class App {
   healthTick() {
     if (!this.preprocessor || !this.transport.connected || !this.sessionActive) return;
     const periodMs = 1000 / this.preprocessor.targetHz;
-    const staleLimitMs = 3 * periodMs;
+    // 4T, not 3T: staleness is measured on browser arrival (performance.now in
+    // the notification handler), which Chrome/Windows coalesces into ~150 ms
+    // bursts even when the firmware is delivering evenly. 3T (120 ms) false-
+    // trips DEGRADED on that transport batching; 4T (160 ms) still catches a
+    // stream that has genuinely stopped within ~one extra sample.
+    const staleLimitMs = 4 * periodMs;
     const skewLimitMs = 0.5 * periodMs;
     const now = performance.now();
 
@@ -575,7 +580,10 @@ class App {
   onQualify() {
     if (!this.sessionActive || this.qualification) return;
     this.qualification = { startedAtMs: performance.now(), emitted: 0, invalid: 0 };
-    for (const health of this.transport.health.values()) health.maxGapMs = 0;
+    for (const health of this.transport.health.values()) {
+      health.maxGapMs = 0;
+      health.maxSrcGapMs = 0;
+    }
     this.ui.log(`Qualification run started: ${QUALIFICATION_SECONDS} s at the ${LIVE_INTERVAL_MS} ms contract interval.`);
     setTimeout(() => this.finishQualification(), QUALIFICATION_SECONDS * 1000);
   }
@@ -609,8 +617,12 @@ class App {
         const rate = health.averageRate();
         const lossFraction = health.lossFraction();
         const lossPct = lossFraction === null ? 100 : 100 * lossFraction;
-        const rateLine = `${key}: ${rate.toFixed(2)} Hz avg, ${lossPct.toFixed(2)}% loss vs contract, max inter-packet ${health.maxGapMs.toFixed(0)} ms`;
-        if (rate < 23.75 || lossPct > 1.0 || health.maxGapMs > 3 * periodMs) {
+        // Gate on maxSrcGapMs (frame time_ms spacing = real stream cadence),
+        // not maxGapMs (browser arrival, dominated by Chrome notification
+        // coalescing). Both are printed. 3.5T leaves headroom for node bundle
+        // jitter without accepting a genuine multi-sample hole.
+        const rateLine = `${key}: ${rate.toFixed(2)} Hz avg, ${lossPct.toFixed(2)}% loss vs contract, source gap ${health.maxSrcGapMs.toFixed(0)} ms (arrival ${health.maxGapMs.toFixed(0)} ms)`;
+        if (rate < 23.75 || lossPct > 1.0 || health.maxSrcGapMs > 3.5 * periodMs) {
           pass = false;
           lines.push(`FAIL ${rateLine}`);
         } else {

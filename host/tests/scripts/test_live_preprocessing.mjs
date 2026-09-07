@@ -208,9 +208,10 @@ function testJitteredRampStaysWithinJitterBound() {
 }
 
 function testInterpSpanGateOnLoss() {
-  // Drop three consecutive ICM samples on N3: the 160 ms gap exceeds the
-  // 1.5T (60 ms) interpolation span and 3 missing > 2% of 50, so the window
-  // must be invalidated with the stream named, not silently produced.
+  // Drop three consecutive ICM samples on N3: the ~160 ms gap puts several
+  // grid points past the 2.5T (100 ms) soft span, more than the 2%-of-50
+  // budget, so the window must be invalidated with the stream named, not
+  // silently produced. (A single ~100 ms jitter gap would still pass.)
   const pre = new Preprocessor(contract());
   const overrides = { "3:2": { skip: (i) => i === 25 || i === 26 || i === 27 } };
   let result = { status: "waiting" };

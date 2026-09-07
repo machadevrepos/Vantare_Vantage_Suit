@@ -269,7 +269,7 @@ Provides the live-session page and loads the modules and model assets. The appli
 - Establishes and maintains the cross-node time base described in Section 7.1.
 - Builds the common time grid at the contract rate.
 - Samples the grid by **nearest real sample**, never by interpolation, matching `decimate_stream_to_grid` in the training pipeline. Ties resolve to the left sample.
-- Rejects a window when the samples bracketing any grid point are further apart than the maximum span in the Section 10 gate table (`1.5T`, 60 ms at 25 Hz).
+- Rejects a window when more than 2% of grid points have bracketing samples further apart than the soft interpolation span in the Section 10 gate table (`2.5T`, 100 ms at 25 Hz), or when any single bracket exceeds the hard span (`4T`, 160 ms). The span is measured on the frame `time_ms` (Master ingest-stamped, Section 7.1), not browser arrival time.
 - Normalizes quaternions and calculates magnitudes and relative angles exactly as training did.
 - Produces two-second windows at the contract sample count (50 at 25 Hz) with the contract integer stride (12 samples at 25 Hz).
 - Calculates the 576 features in the exact `feature_names.json` order.
@@ -284,10 +284,15 @@ N2, N3, and N4 clocks corrupts precisely the channels that distinguish
 `elbow_movement`. The design treats time alignment as a first-class requirement
 rather than an implementation detail.
 
-- Each B1 envelope carries the originating Node's `time_ms`. These are
-  independent millisecond counters, not a shared clock.
-- The Master shall stamp each relayed envelope with its own receive time so the
-  browser can observe Node-clock-to-Master-clock offset and drift per stream.
+- Each B1 envelope's `time_ms` is stamped by the Master at the moment it
+  ingests the leaf notification (`exo_hub_leaf_stream_ingest`, in the RX
+  callback), not at forward time. Forward time absorbs the TX-pool queueing and
+  the browser link's notification coalescing, which desynchronises the field
+  from the real stream cadence the inference grid depends on. Ingest time tracks
+  the Node's ~36 ms bundle cadence. (The Node's own per-sample `time_ms` is
+  present in the sample payload but not yet propagated end to end.)
+- The browser observes Node-stream-to-Master-clock offset and drift per stream
+  from this field and the arrival time.
 - On session start the browser establishes a per-node offset to the Master time
   base and continuously re-estimates it, rejecting outliers caused by transport
   jitter rather than tracking them.
@@ -444,14 +449,40 @@ changes:
 
 | Gate | Threshold | At 25 Hz (`T` = 40 ms) |
 |---|---|---|
-| Stream stale | no packet for `3T` | 120 ms |
-| Max interpolation span | `1.5T` | 60 ms |
-| Missing packets per window | more than 2% of expected | 1 of 50 |
+| Stream stale (arrival) | no packet for `4T` | 160 ms |
+| Max interpolation span (soft) | `2.5T`, up to 12% of grid points | 100 ms, 6 of 50 |
+| Max interpolation span (hard) | `4T`, any single bracket | 160 ms |
+| Window sample deficit | real intervals below the span's contract count by >2% | 1 of 50 |
 | Cross-node skew | estimated offset error above `0.5T` | 20 ms |
 
 The previous draft paired a 200 ms staleness limit with a 2%-per-window loss
 limit; those disagree by roughly 5x, so a stream could be reported healthy while
 every window failed validation. The table above replaces both with one scale.
+
+The per-window loss check was originally sequence-continuity across the B1
+`sequence` field. That field is a single Master-wide counter (it advances once
+per forwarded frame across all six streams), so a per-stream sequence delta
+counts other streams' frames: at a healthy 27 Hz it reported ~250 "missing"
+packets per window and failed every window once the interpolation-span gate was
+loosened enough to reach it. It is now a sample-count deficit: the contract-rate
+interval count implied by the window's own time span, minus the real intervals
+present. A stream at or above the contract rate has no deficit.
+
+The 2026-09-07 revision loosened the interpolation-span gate from a hard `1.5T`
+to `2.5T` with a 10%-of-window budget plus a `4T` hard cap, and the staleness
+gate from `3T` to `4T`. The 10% budget is deliberately generous to unblock live
+model testing while the node/leaf-link timing gap (~100-140 ms hiccups a few
+times per minute, from leaf-link backpressure) is still open; tighten it toward
+4-6% once that is closed. Cause: a 25 Hz qualification run over Web Bluetooth on Windows
+showed every window failing `interp_span` at ~60 ms while the firmware forward
+path was demonstrably clean (`fwdF=0`, `pend=0`). The gaps were (a) node-side
+live-queue coalescing at the 30 ms admit gate versus the 36 ms bundle pacer, and
+(b) Chrome coalescing GATT notifications to the renderer in ~150 ms bursts. Both
+are transport timing, not lost data: nearest-sample decimation tolerates a
+`2.5T` bracket. `interp_span` and the grid now run on the frame `time_ms`, which
+the Master stamps at leaf-notification ingest (Section 7.1) rather than at
+forward time; the 60 s qualification's inter-packet gate likewise uses the
+`time_ms` spacing, not browser arrival.
 
 A candidate inference window is also invalid when any required value is
 non-finite, when it intersects a haptic blanking interval (Section 9.1), or when

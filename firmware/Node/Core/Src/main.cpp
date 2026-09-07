@@ -524,8 +524,11 @@ static void node_blepipe_process_live_samples()
 		}
 	}
 	if (!bno_fresh && !icm_fresh) {
-		/* Nothing new from either sensor; don't send a pure repeat. */
-		g_node_live_bundle_next_ms = now_ms + interval_ms;
+		/* Nothing new from either sensor this tick; don't send a pure repeat.
+		 * Re-check in half an interval rather than a full one so the next real
+		 * sample goes out ~one CE sooner - a full-interval wait here turns a
+		 * momentarily empty queue into a ~2T gap in both streams. */
+		g_node_live_bundle_next_ms = now_ms + interval_ms / 2U;
 		return;
 	}
 
@@ -537,7 +540,7 @@ static void node_blepipe_process_live_samples()
 	const bool put_icm = g_node_live_last_icm_valid &&
 			(now_ms - g_node_live_last_icm_ms) < kNodeLiveRepeatMaxAgeMs;
 	if (!put_bno && !put_icm) {
-		g_node_live_bundle_next_ms = now_ms + interval_ms;
+		g_node_live_bundle_next_ms = now_ms + interval_ms / 2U;
 		return;
 	}
 	uint8_t payload[3U + (2U * exo::NodeRecordingApp::kMaxLivePayload)]{};
@@ -565,10 +568,13 @@ static void node_blepipe_process_live_samples()
 	} else if (tx_status == BLE_STATUS_BUSY ||
 			tx_status == BLE_STATUS_INSUFFICIENT_RESOURCES) {
 		/* Bundle dropped (its samples were already the freshest); the next tick
-		 * carries even fresher data. Wait for the controller event / watchdog. */
+		 * carries even fresher data. The gate reopens on the controller event /
+		 * watchdog; retry after half an interval rather than a full one so a
+		 * single backpressure hit on the (often Degraded) leaf link does not
+		 * cost a whole 2T gap in the stream. */
 		g_node_live_tx_gate.on_backpressure(now_ms);
 		++g_node_live_gate_bp_count;
-		g_node_live_bundle_next_ms = now_ms + interval_ms;
+		g_node_live_bundle_next_ms = now_ms + interval_ms / 2U;
 	} else {
 		g_node_live_tx_gate.on_other_failure();
 		g_node_live_bundle_next_ms = now_ms + interval_ms;

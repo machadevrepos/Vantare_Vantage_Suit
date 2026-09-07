@@ -14,6 +14,12 @@ public:
     uint8_t node_id = 0U;
     uint8_t sensor_id = 0U;
     uint8_t payload_len = 0U;
+    /* Master tick (HAL_GetTick) at the moment the leaf notification was
+     * ingested from the node. Carried into the B1 envelope time_ms so the
+     * browser builds its inference grid on the ~node bundle cadence instead of
+     * the Master's bursty forward time (which absorbs TX-pool queueing and the
+     * browser link's coalescing). */
+    uint32_t recv_ms = 0U;
     uint8_t payload[96]{};
   };
 
@@ -67,7 +73,8 @@ public:
   }
 
   bool push_leaf_sample(uint8_t node_id, uint8_t sensor_id,
-                        const uint8_t *payload, uint8_t payload_len) {
+                        const uint8_t *payload, uint8_t payload_len,
+                        uint32_t recv_ms = 0U) {
     if (node_id < 1U || node_id > kMaxLeaves || sensor_id < 1U || sensor_id > 2U ||
         payload == nullptr || payload_len == 0U ||
         payload_len > sizeof(LiveSample::payload)) {
@@ -80,6 +87,7 @@ public:
     sample.node_id = node_id;
     sample.sensor_id = sensor_id;
     sample.payload_len = payload_len;
+    sample.recv_ms = recv_ms;
     memcpy(sample.payload, payload, payload_len);
     if (!slot.push(sample)) {
       return false;

@@ -980,14 +980,21 @@ namespace {
 		}
 	}
 
+	/* time_ms stamps the B1 envelope. For forwarded leaf samples this is the
+	 * Master tick at leaf-notification ingest (LiveSample::recv_ms), NOT the
+	 * forward time: the browser builds its 25 Hz inference grid from this field,
+	 * and forward time carries the TX-pool queueing + browser-link coalescing
+	 * jitter that was blowing the interpolation-span gate. Master's own IMU
+	 * frames are packed and sent in the same pass they are produced, so they
+	 * pass HAL_GetTick() via the send_ble_v2_sample wrapper. */
 	static tBleStatus send_ble_v2_sample_status(uint16_t node_id, uint8_t sensor_id,
-				const uint8_t *payload, uint8_t payload_len)
+				uint32_t time_ms, const uint8_t *payload, uint8_t payload_len)
 			{
 		if (APP_BLE_Get_Server_Connection_Status() != APP_BLE_CONNECTED_SERVER) {
 			return BLE_STATUS_FAILED;
 		}
 		uint8_t packet[244];
-		const uint8_t packed_len = exo::ble_v2_pack(node_id, sensor_id, g_ble_sequence++, HAL_GetTick(),
+		const uint8_t packed_len = exo::ble_v2_pack(node_id, sensor_id, g_ble_sequence++, time_ms,
 				payload, payload_len, packet, static_cast<uint8_t>(sizeof(packet)));
 		if (packed_len == 0U) {
 			return BLE_STATUS_INVALID_PARAMS;
@@ -998,8 +1005,8 @@ namespace {
 	static bool send_ble_v2_sample(uint16_t node_id, uint8_t sensor_id,
 			const uint8_t *payload, uint8_t payload_len)
 	{
-		return send_ble_v2_sample_status(node_id, sensor_id, payload, payload_len) ==
-				BLE_STATUS_SUCCESS;
+		return send_ble_v2_sample_status(node_id, sensor_id, HAL_GetTick(), payload,
+				payload_len) == BLE_STATUS_SUCCESS;
 	}
 
 	/* One superloop pass may push several forwarded notifications into the GATT
@@ -1046,6 +1053,7 @@ namespace {
 			}
 			const tBleStatus send_status = send_ble_v2_sample_status(sample.node_id,
 					sample.sensor_id,
+					sample.recv_ms,
 					sample.payload,
 					sample.payload_len);
 			if (send_status == BLE_STATUS_SUCCESS) {
@@ -2298,9 +2306,11 @@ namespace {
 	static void master_blepipe_send_live_diag()
 	{
 		static uint32_t s_last_ms = 0U;
+		static uint32_t s_diag_forced_ms = 0U;
 		const uint32_t now_ms = HAL_GetTick();
 		if (!g_ble_stream_enabled) {
 			s_last_ms = 0U;
+			s_diag_forced_ms = 0U;
 			return;
 		}
 		if (s_last_ms != 0U && (now_ms - s_last_ms) < 1000U) {
@@ -2316,6 +2326,21 @@ namespace {
 		if (s_link_rearm_ms == 0U || (now_ms - s_link_rearm_ms) >= 4000U) {
 			s_link_rearm_ms = now_ms == 0U ? 1U : now_ms;
 			(void) exo_hub_central_client_set_live_link_timing(1U);
+		}
+
+		/* Yield the browser link to live forwarding: a status-lane MSG_LOG frame
+		 * shares the Master's controller TX pool with PipeDataTx, so emitting one
+		 * while the live forward queue is backed up steals a slot the forwarder
+		 * needs and opens a multi-CE gap in every stream. Skip this tick when
+		 * samples are still queued, but force a line every 5 s so telemetry never
+		 * goes fully dark under sustained load. */
+		const bool diag_force = (s_diag_forced_ms == 0U) ||
+				(now_ms - s_diag_forced_ms) >= 5000U;
+		if (leaf_ble_manager.pending_live_sample_count() != 0U && !diag_force) {
+			return;
+		}
+		if (diag_force) {
+			s_diag_forced_ms = now_ms == 0U ? 1U : now_ms;
 		}
 
 		/* Emit ONE status-lane frame per call, rotating LIVE -> LIVE2 -> LIVE3,
@@ -4447,10 +4472,16 @@ extern "C" uint8_t exo_hub_leaf_stream_ingest(uint8_t node_id,
 		const uint8_t *payload,
 		uint8_t payload_len)
 		{
+	/* Runs in the leaf-RX ACI callback context (MX_APPE_Process), i.e. as close
+	 * to "sample received from the node" as the Master can observe. Stamped here
+	 * so the forwarded B1 time_ms tracks the node's bundle cadence, not the
+	 * Master's bursty forward time. */
+	const uint32_t recv_ms = HAL_GetTick();
 	const uint8_t ok = leaf_ble_manager.push_leaf_sample(node_id,
 			sensor_id,
 			payload,
-			payload_len) ? 1U : 0U;
+			payload_len,
+			recv_ms) ? 1U : 0U;
 	if (ok != 0U) {
 		EXO_LOG("[BLE][HUB][LEAF] sample queued node=%u sensor=%u len=%u\r\n",
 				static_cast<unsigned>(node_id),

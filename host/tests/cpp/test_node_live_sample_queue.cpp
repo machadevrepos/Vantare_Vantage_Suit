@@ -26,8 +26,10 @@ int main()
     assert(queue.discard_front());
 
     // The per-sensor preview interval gate still decimates within a period.
+    // Gate is half the (clamped 40 ms) interval, so a report 19 ms after the
+    // last admit is dropped and one at 40 ms is admitted.
     value = 3U;
-    assert(!queue.offer(1U, &value, 1U, 20U));
+    assert(!queue.offer(1U, &value, 1U, 19U));
     assert(queue.decimated() == 1U);
     assert(queue.offer(1U, &value, 1U, 40U));
 

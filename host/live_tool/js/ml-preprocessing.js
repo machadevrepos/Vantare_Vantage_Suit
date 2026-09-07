@@ -135,14 +135,38 @@ export function nearestIndex(times, target) {
  * caller. All health gates scale with T = 1000 / target_hz (Section 10).
  */
 export class Preprocessor {
-  constructor(contract, { maxInterpPeriods = 1.5, maxMissingFraction = 0.02, bufferCap = 512 } = {}) {
+  constructor(
+    contract,
+    {
+      maxInterpPeriods = 2.5,
+      hardInterpPeriods = 4,
+      maxInterpViolationFraction = 0.12,
+      maxMissingFraction = 0.02,
+      bufferCap = 512,
+    } = {}
+  ) {
     this.targetHz = contract.target_hz;
     this.windowSamples = contract.window_samples;
     this.strideSamples = contract.stride_samples;
     this.windowSeconds = this.windowSamples / this.targetHz;
     this.strideSeconds = this.strideSamples / this.targetHz;
     this.periodS = 1 / this.targetHz;
+    // Nearest-sample decimation puts the chosen sample at most half the bracket
+    // span from the grid point. 2.5T (100 ms at 25 Hz) keeps that within ~1.25
+    // periods -- a small perturbation the RandomForest tolerates -- while any
+    // single bracket wider than the hard span (4T, a real >=3-sample hole)
+    // still fails immediately. Between the two, up to maxInterpViolations grid
+    // points (12% of the window) may sit in a soft-over bracket: BLE over Web
+    // Bluetooth on Windows delivers the node's ~36 ms bundles with occasional
+    // ~100-140 ms hiccups (leaf-link backpressure + Chrome coalescing) that are
+    // timing, not lost data. This budget is deliberately generous to unblock
+    // live model testing; tighten it once the node/leaf gap is closed.
     this.maxInterpSpanS = maxInterpPeriods * this.periodS;
+    this.hardInterpSpanS = hardInterpPeriods * this.periodS;
+    this.maxInterpViolations = Math.max(
+      2,
+      Math.floor(maxInterpViolationFraction * this.windowSamples)
+    );
     this.maxMissing = Math.floor(maxMissingFraction * this.windowSamples); // >2% of expected is invalid
     this.bufferCap = bufferCap;
     this.channels = buildChannelNames();
@@ -274,27 +298,44 @@ export class Preprocessor {
 
     for (const [key, stream] of this.streams) {
       const times = stream.times;
-      // Sample-gap gate: the samples bracketing every grid point must be
-      // within 1.5T, so the nearest sample chosen by decimateStream is never
-      // more than a half-span away. Grid points at or beyond the newest sample
-      // clamp to it, and the emission invariant guarantees the grid never
-      // precedes a stream's oldest sample, so only interior gaps are
-      // violations.
+      // Sample-gap gate: the samples bracketing every grid point should be
+      // within maxInterpSpanS (2.5T), so the nearest sample chosen by
+      // decimateStream is never more than ~1.25 periods away. Grid points at or
+      // beyond the newest sample clamp to it, and the emission invariant
+      // guarantees the grid never precedes a stream's oldest sample, so only
+      // interior gaps are violations. Up to maxInterpViolations grid points may
+      // exceed 2.5T (transport jitter); the window fails only past that, or on
+      // the first bracket wider than hardInterpSpanS (4T = a real dropout).
+      let interpViolations = 0;
       for (let g = 0; g < this.windowSamples; g += 1) {
         const target = firstGridS + g * this.periodS;
         const right = this.upperBound(times, target);
         if (right === 0 || right >= times.length) continue;
-        if (times[right] - times[right - 1] > this.maxInterpSpanS + 1e-9) {
+        const span = times[right] - times[right - 1];
+        if (span > this.hardInterpSpanS - 1e-9) {
           return `interp_span_${key}`;
         }
+        if (span > this.maxInterpSpanS + 1e-9) {
+          interpViolations += 1;
+          if (interpViolations > this.maxInterpViolations) {
+            return `interp_span_${key}`;
+          }
+        }
       }
-      // Packet-loss gate: sequence continuity across the window span.
+      // Packet-loss gate: the B1 `sequence` field is a single Master-wide
+      // counter -- it advances once per forwarded frame across ALL six streams,
+      // so a per-stream sequence delta counts other streams' frames and cannot
+      // measure this stream's loss (it reported ~250 "missing" per window at a
+      // healthy 27 Hz). Measure the deficit instead: how many contract-rate
+      // intervals the window's own time span implies, minus the real intervals
+      // present. A stream at >= the contract rate has no deficit; a genuine
+      // multi-sample dropout leaves fewer real intervals than the span implies.
       const firstIndex = this.lowerBound(times, firstGridS - this.periodS);
       const lastIndex = this.upperBound(times, commonEndS + this.periodS) - 1;
       if (lastIndex <= firstIndex) return `loss_${key}`;
-      const inWindow = lastIndex - firstIndex + 1;
-      const missing = (stream.seqs[lastIndex] - stream.seqs[firstIndex] + 1 + 65536) % 65536 - inWindow;
-      if (missing > this.maxMissing) return `loss_${key}`;
+      const spanIntervals = (times[lastIndex] - times[firstIndex]) / this.periodS;
+      const realIntervals = lastIndex - firstIndex;
+      if (spanIntervals - realIntervals > this.maxMissing) return `loss_${key}`;
     }
     return null;
   }

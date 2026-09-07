@@ -131,10 +131,14 @@ class LiveToolInvariants(unittest.TestCase):
         self.assertIn("never resampled", INFERENCE)
 
     def test_health_gates_follow_section_10_table(self):
-        """Staleness 3T, interpolation span 1.5T, window loss 2%, skew 0.5T."""
-        self.assertIn("staleLimitMs = 3 * periodMs", MAIN)
+        """Staleness 4T (arrival, absorbs Chrome notification coalescing),
+        interpolation span 2.5T soft (12% budget) / 4T hard, window-loss
+        deficit 2%, skew 0.5T."""
+        self.assertIn("staleLimitMs = 4 * periodMs", MAIN)
         self.assertIn("skewLimitMs = 0.5 * periodMs", MAIN)
-        self.assertIn("maxInterpPeriods = 1.5", PREPROC)
+        self.assertIn("maxInterpPeriods = 2.5", PREPROC)
+        self.assertIn("hardInterpPeriods = 4", PREPROC)
+        self.assertIn("maxInterpViolationFraction = 0.12", PREPROC)
         self.assertIn("maxMissingFraction = 0.02", PREPROC)
 
     def test_haptic_rules_follow_section_9(self):

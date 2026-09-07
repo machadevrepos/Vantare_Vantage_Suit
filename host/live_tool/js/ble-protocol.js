@@ -272,7 +272,14 @@ export class StreamHealth {
     this.lastSeq = null;
     this.lastRecvMs = null;
     this.lastNodeTimeMs = null;
+    // maxGapMs is browser arrival jitter (performance.now in the notification
+    // handler) and is dominated by Chrome/Windows notification coalescing, not
+    // by the firmware. maxSrcGapMs is the spacing of the frame time_ms field,
+    // which the Master stamps at leaf-notification ingest -- that is the real
+    // stream cadence the inference grid depends on, so the qualification gate
+    // uses it. maxGapMs stays for the diagnostic line.
     this.maxGapMs = 0;
+    this.maxSrcGapMs = 0;
     this.firstRecvMs = null;
     this.bytes = 0;
   }
@@ -280,6 +287,13 @@ export class StreamHealth {
   observe(sequence, nodeTimeMs, recvMs, bytes) {
     if (this.lastRecvMs !== null) {
       this.maxGapMs = Math.max(this.maxGapMs, recvMs - this.lastRecvMs);
+    }
+    if (this.lastNodeTimeMs !== null) {
+      const srcGap = nodeTimeMs - this.lastNodeTimeMs;
+      // Ignore wrap / non-monotonic re-stamps; a real gap is a small positive.
+      if (srcGap > 0 && srcGap < 60000) {
+        this.maxSrcGapMs = Math.max(this.maxSrcGapMs, srcGap);
+      }
     }
     this.lastSeq = sequence;
     this.lastRecvMs = recvMs;

@@ -41,13 +41,18 @@ public:
             return false;
         }
         const uint8_t index = static_cast<uint8_t>(slot);
-        /* Gate at 3/4 of the interval, not the full interval: a sensor report
-         * that lands a few ms early (the BNO 100 Hz report jitters against a
-         * 40 ms grid) is still admitted, so every bundle tick has a genuinely
-         * fresh sample of each sensor instead of ~1-in-12 falling through. The
-         * bundle sender keeps only the newest of each sensor, so an extra
-         * admit costs nothing. */
-        const uint32_t gate_ms = (interval_ms_ * 3U) / 4U;
+        /* Gate at half the interval, not the full interval: the bundle sender
+         * drains the whole queue every tick and keeps only the newest sample of
+         * each sensor, so admitting at ~2x the bundle rate guarantees every
+         * bundle tick finds a fresh sample of each sensor without letting the
+         * native 100/200 Hz report rate thrash the ring. A tighter gate (the
+         * old 3/4) periodically leaves the queue empty at a bundle tick when a
+         * sensor report lands a few ms after the last admit, which skips that
+         * bundle and opens a ~1.5-2T gap in the stream (this was the dominant
+         * source of inter-packet gaps in the 25 Hz qualification trace). The
+         * extra admits are free - the bundle sender discards all but the
+         * freshest. */
+        const uint32_t gate_ms = interval_ms_ / 2U;
         if (gate_valid_[index] &&
             static_cast<uint32_t>(acquisition_time_ms - gate_time_ms_[index]) <
                 gate_ms) {
