@@ -19,7 +19,9 @@ communication improvements and live model testing**.
 >
 > **Second build (08:34 run):** all six per-stream gates + skew PASS (source gaps 100–140 ms); `valid windows` still 0% but the reason flipped — window 1 `interp_span_n2s1`, then **155/156 `loss_n2s1`**. The per-window loss gate used the B1 `sequence` delta, which is a Master-wide counter (~250 "missing"/window at 27 Hz); it was just masked by `interp_span` failing first. **Fix 6:** loss gate rewritten as a sample-count deficit (`spanIntervals − realIntervals > maxMissing`), not sequence continuity. Interp budget raised to 12%.
 >
-> **Simulation** of the 08:34 gap profile against the new gates: n2/n3 (100 ms gaps) pass cleanly; n4 (140 ms gaps ~1/s) still fails `interp_span_n4s1` ~40% → ~61% valid. **Whether the 3rd build passes hinges on Fix 5 (diag suppression) reducing n4's gap rate.** If n4 still gaps ~1/s afterward it's a real n4 leaf-link problem (`st=7 Degraded`, RF, CE budget) — then either the LinkTune investigation or the principled fix: propagate the node's own per-sample `time_ms` (in the payload as `offset_us`) end to end so late-delivered samples fill their grid slots.
+> **Third build (08:58 run) — qualification PASS: 100% of 121 windows.** All six streams PASS (source gaps 83–100 ms, arrival 130–148 ms), skew 4.0 ms, 8.9 KB/s. Fix 5 worked — n4 source gap dropped 140→83 ms. **Transport is solved.**
+>
+> **Open — model output is constant.** Every one of ~140 predictions across a 73 s run is byte-identical: `classId 1 (incomplete_range)`, probs `[0.214, 0.633, 0.153]`, to 15 decimals. Either the run was performed holding still, or the v1_1 model is degenerate for this mounting (the session==class training confound, §4.2 — fix is more sessions, not code) or the feature vector is constant (preprocessing/decode). Needs: what the wearer was doing during the run, + a feature-vector dump for 3–5 windows to tell "constant features" from "model collapse".
 >
 > Independent of firmware: the Chrome tab must stay foregrounded for the 60 s qualification (early runs had `page was suspended` ×3). Still open: leaf links at `st=7 Degraded`.
 
