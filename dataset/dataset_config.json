@@ -1,32 +1,143 @@
 {
-  "dataset_name": "vantare_bicep_curl_v1",
-  "dataset_version": 1,
-  "task": "personalized_bicep_curl_form_classification",
-  "included_nodes": [2, 3, 4],
-  "excluded_sources": ["MASTER"],
+  "dataset_name": "vantare_bicep_curl_v2",
+  "dataset_version": 2,
+  "phase": 0,
+  "task": "bicep_curl_form_classification",
+  "generated_by": "scripts/build_dataset_config.py",
+  "included_nodes": [
+    2,
+    3,
+    4
+  ],
+  "excluded_sources": [
+    "MASTER"
+  ],
   "node_placements": {
     "2": "wrist_distal_forearm",
     "3": "elbow_region",
     "4": "upper_arm_near_shoulder"
   },
-  "sensors_per_node": ["BNO85", "ICM45686"],
+  "sensors_per_node": [
+    "BNO85",
+    "ICM45686"
+  ],
   "class_mapping": {
     "0": "correct",
     "1": "incomplete_range",
     "2": "elbow_movement"
   },
+  "wearers": [
+    "W0"
+  ],
   "sessions": [
-    {"session": 1, "folder": "correct/session_01", "class_id": 0, "label": "correct"},
-    {"session": 2, "folder": "correct/session_02", "class_id": 0, "label": "correct"},
-    {"session": 3, "folder": "incomplete_range/session_03", "class_id": 1, "label": "incomplete_range"},
-    {"session": 4, "folder": "incomplete_range/session_04", "class_id": 1, "label": "incomplete_range"},
-    {"session": 5, "folder": "elbow_movement/session_05", "class_id": 2, "label": "elbow_movement"},
-    {"session": 6, "folder": "elbow_movement/session_06", "class_id": 2, "label": "elbow_movement"}
+    {
+      "session": 1,
+      "session_id": "S0001",
+      "folder": "correct/session_01",
+      "class_id": 0,
+      "label": "correct",
+      "wearer_id": "W0",
+      "mount_attempt": 0,
+      "date": "",
+      "held_out": false,
+      "video_file": null,
+      "notes": ""
+    },
+    {
+      "session": 2,
+      "session_id": "S0002",
+      "folder": "correct/session_02",
+      "class_id": 0,
+      "label": "correct",
+      "wearer_id": "W0",
+      "mount_attempt": 0,
+      "date": "",
+      "held_out": false,
+      "video_file": null,
+      "notes": ""
+    },
+    {
+      "session": 3,
+      "session_id": "S0003",
+      "folder": "incomplete_range/session_03",
+      "class_id": 1,
+      "label": "incomplete_range",
+      "wearer_id": "W0",
+      "mount_attempt": 0,
+      "date": "",
+      "held_out": false,
+      "video_file": null,
+      "notes": ""
+    },
+    {
+      "session": 4,
+      "session_id": "S0004",
+      "folder": "incomplete_range/session_04",
+      "class_id": 1,
+      "label": "incomplete_range",
+      "wearer_id": "W0",
+      "mount_attempt": 0,
+      "date": "",
+      "held_out": false,
+      "video_file": null,
+      "notes": ""
+    },
+    {
+      "session": 5,
+      "session_id": "S0005",
+      "folder": "elbow_movement/session_05",
+      "class_id": 2,
+      "label": "elbow_movement",
+      "wearer_id": "W0",
+      "mount_attempt": 0,
+      "date": "",
+      "held_out": false,
+      "video_file": null,
+      "notes": ""
+    },
+    {
+      "session": 6,
+      "session_id": "S0006",
+      "folder": "elbow_movement/session_06",
+      "class_id": 2,
+      "label": "elbow_movement",
+      "wearer_id": "W0",
+      "mount_attempt": 0,
+      "date": "",
+      "held_out": false,
+      "video_file": null,
+      "notes": ""
+    }
   ],
   "validation_folds": [
-    {"name": "A", "train_sessions": [1, 3, 5], "test_sessions": [2, 4, 6]},
-    {"name": "B", "train_sessions": [2, 4, 6], "test_sessions": [1, 3, 5]}
+    {
+      "name": "A",
+      "train_sessions": [
+        2,
+        4,
+        6
+      ],
+      "test_sessions": [
+        1,
+        3,
+        5
+      ]
+    },
+    {
+      "name": "B",
+      "train_sessions": [
+        1,
+        3,
+        5
+      ],
+      "test_sessions": [
+        2,
+        4,
+        6
+      ]
+    }
   ],
-  "expected_files_per_session": 9,
-  "expected_data_files": 54
+  "held_out_sessions": [],
+  "lowo_folds": [],
+  "expected_files_per_session": 9
 }
