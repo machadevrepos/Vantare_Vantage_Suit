@@ -1,5 +1,45 @@
 # DATASET_ACQUISITION branch — fresh project context
 
+> **CURRENT STATE — consolidated 2026-09-10.** Read this block first; everything below it
+> (verified 2026-09-07) remains accurate as deep background on firmware/BLE/dataset
+> plumbing, but the *direction* has pivoted since.
+>
+> **Focus: Coach Assist Motion Engine (Milestone 4)** — deterministic host-side kinematics
+> in `host/live_tool/js/motion-engine.js`; contract + scope limits in
+> `docs/architecture/motion-engine-contract.md`. Calibration maps sensors to **body
+> segments** (N4 = upper arm, N2 = forearm, N3 = elbow validation + haptic site; master
+> IMU = torso reference only), never to exercises; bicep curl is only the first
+> validation target. First live validation **PASSED 2026-09-10**: calibration first try,
+> 8 clean curl episodes (elbow 0.3→142.5°), upper-arm deviation ≤8.5°, sync gate fired
+> only on real transport stalls; the motion path runs with no model loaded.
+>
+> **Roadmap from here:** pose battery → re-strap repeatability → yaw-drift logging
+> (`yawDriftHintDeg` still UI-only, not in the NDJSON log) → hand the motion packet
+> contract to the 3D/app team.
+>
+> **Status of older threads:**
+> - Transport: **solved** — 25 Hz qualification PASS, 100% of 121 windows, ~8.9 KB/s
+>   (fix header + §3 below).
+> - AI model: **deprioritized by design.** The constant-output issue (header below) and
+>   the session==class / mounting-leak diagnosis (§4.2) stay open but are off the
+>   critical path. Model V2 + Phase 0 plan parked at
+>   `docs/superpowers/specs/2026-09-07-bicep-curl-model-v2-design.md`.
+> - Throughput: live wall ~9.8 KB/s shared; record upload measured ~7.2 KB/s per node
+>   with root cause diagnosed (§3.6) — fix only if a measured blocker demands it.
+> - P1 (Node notification-completion 0x08) still open; P2/P3 list in §5.
+> - RS485: dormant on the `wt-work` worktree (wire transport HW-proven, ~37 commits, not pushed).
+> - Parallel track, **awaiting user adoption**: 12-node architecture (WB55 hard cap =
+>   6 central + 2 peripheral per radio; recommended WBA65-master PoC gate; node PCBs
+>   orderable now, master choice does not gate them). Mobile app (Flutter) not started —
+>   biggest contract gap; the client timeline has lapsed and a re-baseline conversation
+>   is owed.
+>
+> **How to resume in a new chat:** AGENTS.md loads automatically and points here. Prior
+> sessions do not need reopening — their durable results live in this doc,
+> `docs/architecture/firmware-issues-and-fixes.md`, `docs/architecture/motion-engine-contract.md`,
+> or agent memory. The old Claude-import deep-dive on `exo_hub_central_client.cpp` is
+> fully folded into §3/§5.
+
 Verified 2026-09-07 against `DATASET_ACQUISITION` @ `1820ad0` ("25Hz_with_qualification_fail").
 Originally produced by a four-agent review sweep (project architecture, BLE subsystem,
 dataset/live-model pipeline, firmware risk review); **re-verified 2026-09-07 by a second
@@ -124,6 +164,7 @@ De-facto protocol spec = the headers in `firmware/common/inc/exo/protocol/` + by
 - First central link requests 7.5–10 ms interval (`0x0006/0x0008`, shapes WB scheduler); subsequent links 30–50 ms (`0x0018/0x0028`) — `exo_hub_central_client.cpp:71-75`.
 - `LinkTuneState` (`exo/ble/link_tune_state.h`): one serialized LL procedure across all leaves (`active_` slot, `:189-216`, lowest slot index first); DLE → PHY → interval state machine; **states `0 NeedDle … 6 Ready, 7 Degraded, 8 Failed`** (`:18-28`); fallback ladder on STM32WB rejections 0x84/0x85/0x86 (`:79-81,245-262`), capped at `kMaxTransientAttempts = 4` then parked in `Degraded`; bulk interval 30 ms + parking idle leaves at 180 ms (`kParkedInterval 0x0090`) during transfers; **live CE budget 1.25–5 ms** (`kLiveMinCeLength 0x0002` / `kLiveMaxCeLength 0x0008`, `:66-67`) — without it the WB delivers ~1 packet/event/leaf ≈ 31 samples/s < 50/s produced.
   - Numeric fallback floor at level ≥ 3 is **15–30 ms** (`interval_min()` → 15 ms, `interval_max()` → 30 ms, `:741-778`); the "7.5–30 ms" in the stale narrative comment (`:744-746`) is only reachable if the browser explicitly sets the `0xB5` fast-interval byte to 6.
+- **CPU2 radio firmware upgraded in place (2026-09-08):** FUS 1.2.0.0 → 2.2.0.0 and BLE stack v1.13.3.2 → v1.24-era on all boards; binary from `STM32Cube_FW_WB_V1.24.0\Projects\STM32WB_Copro_Wireless_Binaries\` (note `Projects\`, not `Middlewares\`). `FUS_STATE_ERR_UNKNOWN` after a FUS flash clears on full power-cycle. v1.14+ CPU2 stacks **removed the legacy `hci_le_connection_update` opcode** (returns `0x01` Unknown Command) — interval changes go through vendor cmd `aci_gap_start_connection_update` (OGF 0x3F, OCF 0x009E, same 7 params) with legacy-HCI fallback (`exo_hub_central_client.cpp:538`); one firmware image works across pre/post-v1.14 stacks.
 - Browser link: Master asks the central OS stack for 10–15 ms via `aci_l2cap_connection_parameter_update_req(h, 8, 12, 0, 500)` — **best-effort, can be ignored by Chrome/OS** (`Master/Core/Src/ble/app_ble.cpp:1049-1063`).
 - Upload intent survives reconnect (`TransferLinkRearmState`, `link_tune_state.h:866-923`).
 - Fragility note: never call `hci_le_set_event_mask` on Master — kills advertising (`app_ble.cpp:376-383`).
@@ -131,6 +172,7 @@ De-facto protocol spec = the headers in `firmware/common/inc/exo/protocol/` + by
 ### 3.6 Throughput history / known ceilings
 - Node→Master upload: 1.8 KB/s (pre-fix) → pacing ceiling 22.5 KB/s → burst-4 ~90 KB/s ceiling → today event-driven pump (burst 64). Goal ≥30 KiB/s per node (`docs/superpowers/plans/2026-08-25-node-master-transfer-throughput.md`). **P1 (§5) is the current cap on this path** — the missing per-flush completion wake means the pump cannot top up the TX pool before it drains.
 - Live link budget ~9.8 KB/s shared ⇒ 0xA8 turns off master-own stream (2.6 KB/s) during live inference.
+- **2026-09-08 record-upload measurement: ~4.5 → ~7.2 KB/s per node** after the interval fallback ladder + burst-limit changes (3 nodes, 113 s → 73 s wall). Remaining gap to the ~98 KB/s ST-example ceiling is diagnosed, **not implemented**: (a) node TX pump refills **one** buffer per `ACI_GATT_TX_POOL_AVAILABLE` event — 1-deep pipeline, radio idle ~97% (NODE2 counters: 574 accepted / 637 `INSUFFICIENT_RESOURCES` / 699 pool events); this is P1 (§5) observed directly; (b) connection interval deterministically lands at **20 ms** — the BlueNRG controller only accepts intervals that are integer subdivisions of the current anchor (15 ms requests always `0x84`, ladder lands on 40÷2); (c) CE length min/max = 0 in connect params is an open suspect. Node-side TP flood test mode exists for isolating the radio path (`TP1`/`TP0` raw writes to PipeControlRx, `node_throughput_test_process()` in `Node/Core/Src/main.cpp`).
 - Documented next step if 30 KiB/s unreachable: **capability-negotiated L2CAP CoC bulk lane** (throughput plan :115-117).
 
 ## 4. Dataset acquisition & live model testing
