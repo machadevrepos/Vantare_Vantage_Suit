@@ -11,10 +11,15 @@ It is not a general exercise-assessment or safety system, and the notebook's
 ## Running
 
 ```bash
-cd host/live_tool
-python -m http.server 8080
+python host/live_tool/serve.py
 # open http://localhost:8080 in Chrome/Edge (Web Bluetooth requires a secure context)
 ```
+
+Use `serve.py`, not `python -m http.server`. It disables caching. With plain
+`http.server` the browser will reload `index.html` while still serving `js/*.js`
+from cache, so a newly added control appears but does nothing and no error is
+raised anywhere. Confirm the build by the two startup lines in the page log:
+the `build` string and the `Motion Engine: N log columns` line.
 
 The page must be served over `localhost` (or another secure context); opening
 `index.html` as a raw file is not supported.
