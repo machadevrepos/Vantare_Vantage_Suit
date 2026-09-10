@@ -1,12 +1,21 @@
 # Motion Engine — data contract for the 3D / app team
 
 Status: **validated on hardware 2026-09-10.** Neutral + hinge calibration and
-signed flexion all confirmed on a real arm; see "Field results" below. Remaining
-gap: an isolated yaw-drift measurement.
-Implementation: `host/live_tool/js/motion-engine.js`
-Tests: `host/tests/python/test_motion_engine.py` (19 tests, all passing)
+signed flexion all confirmed on a real arm; see "Field results" below. The
+three-pose anatomical calibration (below) is implemented and host-verified;
+**it has not yet had its physical acceptance run** — that is the documented
+handoff at the end of this document. Remaining gap: an isolated yaw-drift
+measurement.
+Implementation: `host/live_tool/js/motion-engine.js`,
+`host/live_tool/js/anatomical-calibration.js` (pure TRIAD solver),
+`host/live_tool/js/arm-avatar.js` (nested display rig)
+Tests: `host/tests/python/test_motion_engine.py` (32 tests, all passing),
+`host/tests/scripts/test_anatomical_calibration.mjs`,
+`host/tests/scripts/test_arm_avatar.mjs`,
+`host/tests/scripts/replay_arm_avatar.mjs` (session-log replay audit)
 Source requirement: *Coach Assist Requirements, Milestone Alignment & Movement
-Tracking Plan* — sections 6, 7 (step 3/5) and 8.
+Tracking Plan* — sections 6, 7 (step 3/5) and 8. Three-pose design:
+`docs/superpowers/specs/2026-09-10-three-pose-anatomical-arm-calibration-design.md`.
 
 ## Purpose
 
@@ -85,12 +94,14 @@ rotations the engine is never told about and requiring exact recovery.
 These are real and currently unresolved. They are also carried in-band in
 `diagnostics` so they cannot be forgotten.
 
-1. **Axes are in the sensor's neutral frame, not the anatomical frame**
-   (`diagnostics.axisFrame === "sensor_neutral"`). Angle magnitude is correct;
-   the *axis* the avatar rotates about is off by the residual mount rotation.
-   Fix: a two-pose calibration (neutral + full flexion) to observe the flexion
-   axis and populate `MotionEngine.mountCorrection`. The seam exists in the code
-   and is applied automatically once filled. Scheduled after numeric validation.
+1. **~~Axes are in the sensor's neutral frame, not the anatomical frame~~ RESOLVED**
+   by the three-pose anatomical calibration (section below): two held
+   straight-arm directions observe each sensor's mount rotation, and the engine
+   installs per-node corrections so `upper_arm_orientation` /
+   `forearm_orientation` land in the anatomical arm frame
+   (`diagnostics.axisFrame === "anatomical"`). Until that workflow runs, the
+   axis-frame flag honestly reads `sensor_neutral` and only angle *magnitudes*
+   are trustworthy.
 
 2. **No trunk reference** (`diagnostics.trunkReferenced === false`).
    `upper_arm_deviation_deg` is measured from the calibration pose, not from the
@@ -204,11 +215,15 @@ after 1522 ms, hinge axis accepted from 40 samples at **3.13° mean spread**
 
 ### Recommendation for the 3D team
 
-**Drive the elbow bone with the scalar `elbow_flexion_deg` about the rig's own
-elbow axis — do not apply `forearm_orientation` as a raw quaternion.** Limit 1
-below (axes in the sensor's neutral frame) then does not affect the elbow at
-all, because a scalar angle carries no frame. The shoulder still needs the full
-mount correction, so treat upper-arm orientation as provisional until then.
+**After the three-pose workflow** (`diagnostics.axisFrame === "anatomical"`):
+consume `upper_arm_orientation` and `forearm_orientation` directly and nest the
+forearm as `conjugate(upper) * forearm` at the elbow pivot, exactly as
+`arm-avatar.js` does — the mount rotation is already removed and the axes are
+anatomical. **Before it** (`sensor_neutral`): fall back to the previous
+guidance — drive the elbow bone with the scalar `elbow_flexion_deg` about the
+rig's own elbow axis, and treat upper-arm orientation as provisional, because a
+scalar angle carries no frame and survives the unknown mount. Check the flag
+per session; it changes with calibration state, not with the binary.
 
 ## Field results — 2026-09-10 drift and random-movement tests
 
@@ -264,6 +279,103 @@ Fixed with two guards, validated by replaying both sessions:
 When flexion is withheld, `diagnostics.flexionValid` is `false` — distinct from
 `null` meaning no hinge calibration has run. The unsigned angle, off-axis term
 and segment quaternions continue to be reported.
+
+## Three-pose anatomical calibration
+
+The neutral pose removes each sensor's *reference* but not its *mount*: a
+sensor strapped 30° about the arm still reads 30°-off axes. One more held pose
+cannot separate mount rotation from movement, but two non-collinear directions
+can — a pure TRIAD solver turns the two observed rotation axes into a per-node
+mount correction.
+
+**Axis convention (right arm only):** `+X` wearer-right, `+Y` down the neutral
+arm, `+Z` forward. Directional targets: side axis `[0, 0, -1]`, forward axis
+`[1, 0, 0]`. N4 is the upper arm, N2 the forearm; N3 stays auxiliary.
+
+**Workflow (ordered UI steps):**
+
+1. **Neutral** — as before (~1.5 s of stillness). Starting a new neutral
+   calibration invalidates every later stage.
+2. **Right-side raise** — straight arm held ~90° out to the right, still, for
+   the 1 s capture window.
+3. **Forward raise** — straight arm held ~90° forward. After this capture both
+   mount corrections are solved and installed atomically: a failure on either
+   node leaves `mountCorrection` empty and preserves the last completed stage.
+4. **Elbow hinge** — unchanged; still required for signed flexion and rep
+   verdicts, no longer required for the avatar.
+
+**Capture validation thresholds** (a pose outside any of these is rejected
+with a specific reason; the window restarts or the attempt fails after 15 s):
+
+| Check | Threshold |
+|---|---|
+| Stillness | gyro < 0.2 rad/s, orientation spread ≤ 3° |
+| Raise magnitude (per node) | 60–120° from neutral |
+| Segment mismatch (straight elbow) | \|N4 angle − N2 angle\| ≤ 15° |
+| Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms |
+| Solver | axes 60–120° apart, mount matrix finite, orthonormal, det ≈ +1 |
+
+**Diagnostics added:** `anatomicalState`
+(`none / side_capturing / side_ready / forward_capturing / calibrated / failed`),
+`anatomicalMessage` (next instruction or rejection reason), `anatomicalQuality`
+(per-node capture angles, spreads, solver determinant/orthogonality), and
+`axisFrame`: `"anatomical"` only when both corrections are installed. Events
+`anatomical_side_started / _side_complete / _forward_started / anatomical_complete /
+anatomical_failed` go to the session log as Tier 1 `motion_anatomical_*` events
+carrying the accepted axes, mount quaternions, capture angles and solver
+quality.
+
+### Display kinematics (arm-avatar.js)
+
+The rig renders the nested transform, not a scalar elbow:
+
+```text
+q_forearm_relative = conjugate(q_upper_anatomical) * q_forearm_anatomical
+```
+
+`q_upper_anatomical` drives the upper arm at the shoulder pivot,
+`q_forearm_relative` the forearm at the elbow pivot, and the hand stays a child
+of the forearm — so a 90° elbow bend looks identical in every shoulder
+direction, and a rigid straight-arm raise leaves the elbow at identity. While
+`axisFrame !== "anatomical"` the rig shows
+`anatomical_calibration_required` and renders no directional pose. Scalar
+`elbow_flexion_deg` remains in numeric diagnostics and rep analysis only.
+
+**Latency policy:** the 540°/s display rate cap is gone. Adaptive
+interpolation uses a ~15 ms time constant during deliberate movement, relaxing
+up to 60 ms only for sub-degree stationary jitter; shortest-hemisphere
+interpolation is mandatory. A missed or unsynchronized frame holds the last
+valid pose for **120 ms**, then the rig reports `tracking_unavailable` while
+*retaining* the last transform — dropout never writes identity or zero.
+
+### Replay audit
+
+`node host/tests/scripts/replay_arm_avatar.mjs <session.ndjson>` replays a
+recorded session through the production avatar path at 60 Hz and prints JSON
+metrics: cadence, invalid/dropout frames, per-tick visual-step distribution,
+added display lag, `axisFrame`, and — when `motion_anatomical_*` events are
+present — the calibrated side/forward direction errors against the anatomical
+targets. A legacy log without directional events reports
+`axisFrame: "sensor_neutral"` and `directionValidation: "unavailable"`;
+missing calibration is reported, never repaired.
+
+### Physical acceptance run (handoff)
+
+After a fresh four-step calibration, record the wearer and screen together and
+perform, slowly first, then at normal speed:
+
+1. neutral hold;
+2. right-side raise to ~90° and return;
+3. forward raise to ~90° and return;
+4. elbow curl with the upper arm still;
+5. side raise with elbow flexion;
+6. one slow circular shoulder movement.
+
+Acceptance: held side/forward display directions within 10° of the instructed
+plane; no zero-angle snap on an isolated dropped frame; added display latency
+≤ 40 ms median / 80 ms p95; shoulder and elbow pivots stay connected with no
+transform flips. A failed criterion is reported as a prototype limitation, not
+smoothed away. Do not claim client-demo readiness before this run.
 
 ## Calibration behaviour
 

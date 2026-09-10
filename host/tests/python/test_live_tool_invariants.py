@@ -3,8 +3,11 @@
 Source-level contracts are checked directly; the node fixture suite
 (host/tests/scripts/test_live_preprocessing.mjs) runs when node is available.
 """
+import json
 import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -274,6 +277,121 @@ class LiveToolInvariants(unittest.TestCase):
         """A stale cached module graph silently runs the old two-pose UI; the
         visible build string must move with this workflow change."""
         self.assertIn('LIVE_TOOL_BUILD = "2026-09-10.17"', INFERENCE)
+
+    # --------------------------------------------------- anatomical replay
+
+    @staticmethod
+    def _replay_anatomical(builder):
+        """Run a fixture scenario through the real MotionEngine, serialize the
+        result as a session NDJSON log, and replay it through the avatar
+        replay CLI. Returns the CLI's JSON metrics."""
+        sys.path.insert(0, str(ROOT / "host" / "tests" / "python"))
+        try:
+            from test_motion_engine import MotionEngineTest  # noqa: E402
+        finally:
+            sys.path.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scenario_path = Path(tmp) / "scenario.json"
+            scenario_path.write_text(
+                json.dumps({"scenarios": [builder.build()]}), encoding="utf-8"
+            )
+            runner = ROOT / "host" / "tests" / "scripts" / "run_motion_fixture.mjs"
+            completed = subprocess.run(
+                ["node", str(runner), str(scenario_path)],
+                check=True, capture_output=True, text=True, timeout=120,
+            )
+            result = json.loads(completed.stdout)["scenarios"][0]
+
+            lines = [json.dumps({"type": "meta", "recordedAt": "fixture", "generator": "test"})]
+            for event in result["events"]:
+                lines.append(json.dumps(
+                    {"type": "event", "tMs": 0, **event, "kind": f"motion_{event['kind']}"}
+                ))
+            frames = result["frames"]
+            lines.append(json.dumps({
+                "type": "stream_decl", "stream": "motion",
+                "width": len(frames[0]["logRow"]), "capacity": len(frames),
+            }))
+            for frame in frames:
+                lines.append(json.dumps({"type": "sample", "stream": "motion", "data": frame["logRow"]}))
+            ndjson_path = Path(tmp) / "session.ndjson"
+            ndjson_path.write_text("\n".join(lines), encoding="utf-8")
+
+            replay = ROOT / "host" / "tests" / "scripts" / "replay_arm_avatar.mjs"
+            completed = subprocess.run(
+                ["node", str(replay), str(ndjson_path)],
+                check=True, capture_output=True, text=True, timeout=120,
+            )
+            return json.loads(completed.stdout)
+
+    def test_anatomical_avatar_replay_reports_direction_and_latency(self):
+        """The replay CLI must audit a session through the production avatar
+        path: anatomical frames drive the rig, calibrated direction errors are
+        small for a correct three-pose capture, and display smoothing adds
+        well under two motion ticks of latency."""
+        if shutil.which("node") is None:
+            self.skipTest("node not available")
+        sys.path.insert(0, str(ROOT / "host" / "tests" / "python"))
+        try:
+            import test_motion_engine as motion_fixtures
+        finally:
+            sys.path.pop(0)
+        MotionEngineTest = motion_fixtures.MotionEngineTest
+        builder = MotionEngineTest.calibrated_builder("replay_anatomical")
+        MotionEngineTest.capture_anatomical(builder)
+
+        # Post-calibration validation segment, mirroring the acceptance run:
+        # repeat the two calibrated directions, then move freely.
+        def hold_frames(pose, ticks):
+            for _ in range(ticks):
+                builder.push_pose(pose)
+                builder.auto_frame()
+
+        hold_frames(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 10)
+        hold_frames(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 10)
+        combined = MotionEngineTest.rigid_arm_pose((0.31, -0.52, 0.79), 73.0)
+        hold_frames(combined, 10)
+        builder.frame("combined")
+        # Dropout: only N4 keeps reporting, so the pair reads unsynchronized.
+        hold_frames({motion_fixtures.UPPER_ARM: combined[motion_fixtures.UPPER_ARM]}, 5)
+        builder.frame("dropout")
+        hold_frames(combined, 10)
+        builder.frame("recovery")
+
+        metrics = self._replay_anatomical(builder)
+
+        self.assertEqual(metrics["axisFrame"], "anatomical")
+        self.assertEqual(metrics["directionValidation"], "available")
+        self.assertLessEqual(metrics["sideDirectionErrorDeg"], 10.0)
+        self.assertLessEqual(metrics["forwardDirectionErrorDeg"], 10.0)
+        self.assertLessEqual(metrics["medianAddedLatencyMs"], 40.0)
+        self.assertGreater(metrics["replayedSamples"], 40)
+        self.assertGreater(metrics["dropoutFrames"], 0, "dropout segment must be visible")
+        self.assertIn("p50", metrics["visualStepDistribution"])
+
+    def test_replay_reports_legacy_sensor_neutral_logs_honestly(self):
+        """A log from before the three-pose workflow has no directional
+        calibration events; the CLI must report sensor_neutral and decline
+        direction validation instead of inventing numbers."""
+        if shutil.which("node") is None:
+            self.skipTest("node not available")
+        sys.path.insert(0, str(ROOT / "host" / "tests" / "python"))
+        try:
+            import test_motion_engine as motion_fixtures
+        finally:
+            sys.path.pop(0)
+        builder = motion_fixtures.MotionEngineTest.calibrated_builder("replay_legacy")
+        combined = motion_fixtures.MotionEngineTest.rigid_arm_pose((0.31, -0.52, 0.79), 73.0)
+        for _ in range(15):
+            builder.push_pose(combined)
+            builder.auto_frame()
+        builder.frame("pose")
+
+        metrics = self._replay_anatomical(builder)
+
+        self.assertEqual(metrics["axisFrame"], "sensor_neutral")
+        self.assertEqual(metrics["directionValidation"], "unavailable")
 
 
 if __name__ == "__main__":
