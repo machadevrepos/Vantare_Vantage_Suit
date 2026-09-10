@@ -31,6 +31,7 @@ import {
   validateContract,
 } from "./live-inference.js";
 import { HapticController, HAPTIC_DEFAULTS } from "./haptic-controller.js";
+import { MotionEngine } from "./motion-engine.js";
 import { SessionLog } from "./session-log.js";
 import { Ui } from "./ui.js";
 
@@ -41,6 +42,10 @@ const LIVE_INTERVAL_MS = 40; // qualified live contract (Section 11)
 const HEALTH_TICK_MS = 200;
 const RENDER_TICK_MS = 250;
 const QUALIFICATION_SECONDS = 60;
+/** Tier-2 log stream carrying one Motion Engine frame per motion tick. */
+const MOTION_LOG_STREAM = "motion";
+/** Motion frames are computed and logged at the live stream rate. */
+const MOTION_TICK_MS = 40;
 
 function sensorLabel(sensorId) {
   return sensorId === SENSOR.BNO ? "BNO85" : "ICM45686";
@@ -69,8 +74,18 @@ class App {
 
     this.preprocessor = null; // constructed once the contract validates
     this.haptics = null;
-    this.sessionLog = new SessionLog();
+    // Six sensor streams plus the motion stream share the byte budget.
+    this.sessionLog = new SessionLog({ streamShares: 7 });
     this.channelNames = buildChannelNames();
+
+    // The Motion Engine is constructed unconditionally and never gated on the
+    // model contract, the session state or the inference path. Coach Assist
+    // depends on it, so a missing/failed model must not take motion output down
+    // with it (movement tracking plan, section 8).
+    this.motion = new MotionEngine({
+      onEvent: (event) => this.onMotionEvent(event),
+    });
+    this.lastMotionFrame = null;
 
     this.inferBusy = false;
     this.lastPrediction = null;
@@ -87,6 +102,7 @@ class App {
     this.bindUi();
     setInterval(() => this.healthTick(), HEALTH_TICK_MS);
     setInterval(() => this.renderTick(), RENDER_TICK_MS);
+    setInterval(() => this.motionTick(), MOTION_TICK_MS);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         this.hiddenAtMs = performance.now();
@@ -111,8 +127,49 @@ class App {
     });
     this.ui.disarmBtn.addEventListener("click", () => this.haptics.disarm("user disarmed"));
     this.ui.downloadBtn.addEventListener("click", () => this.onDownload());
+    this.ui.calibrateBtn.addEventListener("click", () => this.motion.beginCalibration());
+    this.ui.hingeBtn.addEventListener("click", () => this.motion.beginHingeCalibration());
+    this.ui.clearCalibrationBtn.addEventListener("click", () => this.motion.clearCalibration());
     this.bindFirmwareControls();
     this.refreshButtons();
+  }
+
+  /**
+   * Motion has its own fixed-rate tick, deliberately NOT renderTick.
+   * renderTick is also invoked on haptic state changes, which made motion
+   * frames land at an average 9 Hz with intervals from 2 ms to 258 ms - fine
+   * for painting a panel, useless as a signal to measure rep tempo from.
+   * Running at the live stream rate gives a regular grid to analyze.
+   */
+  motionTick() {
+    const now = performance.now();
+    this.motion.updateCalibration(now);
+    const frame = this.motion.computeFrame(now);
+    this.lastMotionFrame = frame;
+    if (!this.sessionActive) return;
+    const row = this.motion.toLogRow(frame);
+    if (row) this.sessionLog.logSample(MOTION_LOG_STREAM, row[0], row.slice(1));
+  }
+
+  /** Calibration transitions are session-log Tier 1 events and user-visible. */
+  onMotionEvent(event) {
+    // Spread FIRST: `...event` carries its own `kind`, so spreading it after
+    // the prefixed key silently threw the prefix away.
+    this.sessionLog.event({ ...event, kind: `motion_${event.kind}` });
+    if (event.kind === "calibration_complete") {
+      this.ui.log(
+        `Motion calibrated on nodes ${event.nodes.join(", ")} after ${event.heldMs} ms hold.`
+      );
+    } else if (event.kind === "calibration_failed") {
+      this.ui.log(`Motion calibration failed: ${event.reason}`, "warn");
+    } else if (event.kind === "hinge_complete") {
+      this.ui.log(
+        `Hinge axis measured from ${event.samples} samples `
+          + `(mean spread ${event.meanSpreadDeg.toFixed(1)} deg, max ${event.maxSpreadDeg.toFixed(1)} deg).`
+      );
+    } else if (event.kind === "hinge_failed") {
+      this.ui.log(`Hinge calibration failed: ${event.reason}`, "warn");
+    }
   }
 
   /**
@@ -223,6 +280,13 @@ class App {
 
   async init() {
     this.ui.log(`Vantare live inference tool — build ${LIVE_TOOL_BUILD}, model V1, experimental (Section 15). ORT pinned ${ORT_VERSION_PINNED}.`);
+    // Module-level identity, logged separately from the build string: index.html
+    // can reload while the ES modules are still served from cache, and the
+    // symptom of that (a button that does nothing) is otherwise silent.
+    this.ui.log(
+      `Motion Engine: ${MotionEngine.LOG_COLUMNS.length} log columns, `
+        + `hinge calibration ${typeof this.motion.beginHingeCalibration === "function" ? "available" : "MISSING (stale cache — hard-reload)"}.`
+    );
     try {
       const [contract, featureNames] = await Promise.all([
         fetchJson(CONTRACT_URL),
@@ -238,12 +302,6 @@ class App {
         window_samples: windowSamples,
         stride_samples: contract.preprocessing.stride_samples,
       });
-      this.sessionLog.registerStream("n2s1", BNO_COLUMNS.length + 1);
-      this.sessionLog.registerStream("n2s2", ICM_COLUMNS.length + 1);
-      this.sessionLog.registerStream("n3s1", BNO_COLUMNS.length + 1);
-      this.sessionLog.registerStream("n3s2", ICM_COLUMNS.length + 1);
-      this.sessionLog.registerStream("n4s1", BNO_COLUMNS.length + 1);
-      this.sessionLog.registerStream("n4s2", ICM_COLUMNS.length + 1);
       this.haptics = new HapticController(this.transport, this.preprocessor, {
         onEvent: (event) => this.onHapticEvent(event),
         onStateChange: () => this.renderTick(),
@@ -318,11 +376,25 @@ class App {
     this.setState("disconnected");
   }
 
+  /**
+   * Tier-2 ring registration. Done at session start rather than at page init so
+   * a reload of the model contract cannot leave the log unregistered, and so
+   * the motion stream is registered even when the model path never loads.
+   */
+  registerLogStreams() {
+    for (const node of NODE_IDS) {
+      this.sessionLog.registerStream(`n${node}s${SENSOR.BNO}`, BNO_COLUMNS.length + 1);
+      this.sessionLog.registerStream(`n${node}s${SENSOR.ICM}`, ICM_COLUMNS.length + 1);
+    }
+    this.sessionLog.registerStream(MOTION_LOG_STREAM, MotionEngine.LOG_COLUMNS.length);
+  }
+
   async onStartSession() {
     if (!this.engine || !this.preprocessor) return;
     this.transport.resetSessionState();
     this.preprocessor.resetSession();
     this.haptics.resetSession();
+    this.registerLogStreams();
     this.sessionLog.startSession();
     this.predictionTimes = [];
     this.lastPrediction = null;
@@ -377,6 +449,12 @@ class App {
       sample.mappedMs / 1000,
       values
     );
+    // Motion feed sits above every gate below it, for the same reason charting
+    // does: the coach can calibrate and read live joint angles from raw
+    // streaming alone, with no inference session and no model loaded.
+    if (sample.sensorId === SENSOR.BNO) {
+      this.motion.pushSample(sample.nodeId, values, sample.mappedMs / 1000);
+    }
     if (!sample.isModelStream) return;
     if (!this.sessionActive || !this.preprocessor) return;
     if (this.firstSampleAtMs === null) this.firstSampleAtMs = performance.now();
@@ -689,6 +767,7 @@ class App {
         staleMs: ages.length ? Math.min(...ages) : null,
       });
     }
+    this.ui.renderMotion(this.lastMotionFrame);
     this.ui.renderStreams(streamSnapshots);
     this.ui.drawCharts(now / 1000, healthBySource);
     this.ui.renderSkew(

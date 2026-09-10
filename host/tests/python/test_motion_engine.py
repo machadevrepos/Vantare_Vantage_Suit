@@ -1,0 +1,529 @@
+"""Motion Engine correctness tests (Coach Assist Milestone 4).
+
+These tests exist to prove the one property the whole calibration approach
+rests on: the reported joint and segment angles must NOT depend on how the PCBs
+happen to be rotated on their straps. Every scenario below builds the sensor
+readings from a known-true body pose composed with an arbitrary, deliberately
+awkward mount rotation the engine is never told about, then requires the engine
+to recover the true angle.
+
+Construction (mirrors the argument in motion-engine.js):
+    true segment orientation  S_n(t)          (world <- segment)
+    constant mount rotation   M_n             (segment <- sensor), unknown
+    reported quaternion       q_n(t) = S_n(t) * conj(M_n)
+
+so that q_n * M_n == S_n. The engine only ever sees q_n.
+
+Scenarios cover the plan's "First Acceptance Checks" table: calibration
+stability and motion rejection, elbow separation at straight / 45 / 90 / 120,
+remount repeatability, and exercise independence (a shoulder-press-like motion
+still moves the segment state with no classifier involved).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+RUNNER = ROOT / "host" / "tests" / "scripts" / "run_motion_fixture.mjs"
+
+UPPER_ARM = 4
+FOREARM = 2
+AUX = 3
+
+SAMPLE_PERIOD_MS = 40.0  # the qualified 25 Hz live grid
+ANGLE_TOLERANCE_DEG = 1e-6
+
+
+# --------------------------------------------------------------- quaternion ref
+# Independent of the JS implementation on purpose: if both were the same code a
+# sign error would cancel out and the test would pass on wrong math.
+
+
+def q_mul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def q_conj(q):
+    return (q[0], -q[1], -q[2], -q[3])
+
+
+def q_norm(q):
+    n = math.sqrt(sum(c * c for c in q))
+    return tuple(c / n for c in q)
+
+
+def q_axis_angle(axis, degrees):
+    ax, ay, az = axis
+    n = math.sqrt(ax * ax + ay * ay + az * az)
+    ax, ay, az = ax / n, ay / n, az / n
+    half = math.radians(degrees) / 2.0
+    s = math.sin(half)
+    return (math.cos(half), ax * s, ay * s, az * s)
+
+
+def q_angle_deg(q):
+    q = q_norm(q)
+    return 2.0 * math.degrees(math.acos(min(abs(q[0]), 1.0)))
+
+
+def to_values(q, gyro=(0.0, 0.0, 0.0)):
+    """The subset of BNO columns the Motion Engine reads."""
+    w, x, y, z = q
+    return {
+        "quat_i": x,
+        "quat_j": y,
+        "quat_k": z,
+        "quat_real": w,
+        "gyro_x_radps": gyro[0],
+        "gyro_y_radps": gyro[1],
+        "gyro_z_radps": gyro[2],
+    }
+
+
+# Deliberately ugly mount rotations: no axis-aligned, no small-angle case, and
+# a different one per node. Nothing in the engine is told about these.
+MOUNTS = {
+    UPPER_ARM: q_axis_angle((0.31, -0.77, 0.55), 137.0),
+    FOREARM: q_axis_angle((-0.62, 0.19, 0.76), 84.0),
+    AUX: q_axis_angle((0.44, 0.44, -0.78), 21.0),
+}
+
+# Arbitrary neutral body pose, and an arbitrary world yaw offset per sensor to
+# stand in for the Game Rotation Vector's unreferenced heading.
+NEUTRAL = {
+    UPPER_ARM: q_axis_angle((0.0, 0.0, 1.0), 23.0),
+    FOREARM: q_axis_angle((0.1, 0.2, 0.97), 41.0),
+    AUX: q_axis_angle((0.3, 0.5, 0.81), 12.0),
+}
+
+
+def reported(node, segment_orientation):
+    """q_n = S_n * conj(M_n) - what the BNO would report for this true pose."""
+    return q_norm(q_mul(segment_orientation, q_conj(MOUNTS[node])))
+
+
+class MotionFixtureBuilder:
+    """Accumulates fixture steps with a monotonically advancing fake clock."""
+
+    def __init__(self, name, options=None):
+        self.name = name
+        self.options = options or {}
+        self.steps = []
+        self.now_ms = 1000.0
+        self.auto = 0
+
+    def advance(self, ms):
+        self.now_ms += ms
+
+    def begin_calibration(self):
+        self.steps.append({"op": "beginCalibration", "nowMs": self.now_ms})
+
+    def begin_hinge(self):
+        self.steps.append({"op": "beginHinge", "nowMs": self.now_ms})
+
+    def rep(self, axis=(0.0, 1.0, 0.0), angles=(50, 80, 110, 130, 110, 80, 50), holds=2):
+        """One flexion rep about `axis`.
+
+        A frame is emitted after every pose because the hinge capture consumes
+        elbow rotations from computeFrame, exactly as the app's motion tick does.
+        """
+        for degrees in angles:
+            for _ in range(holds):
+                self.push_pose(MotionEngineTest.flexed_poses(degrees, axis))
+                self.auto_frame()
+
+    def auto_frame(self):
+        self.auto += 1
+        self.frame(f"_tick{self.auto}")
+
+    def clear_calibration(self):
+        self.steps.append({"op": "clearCalibration"})
+
+    def push_pose(self, poses, gyro=(0.0, 0.0, 0.0), skew_ms=0.0):
+        """One 25 Hz tick: every node reports its pose, then the clock advances.
+
+        `skew_ms` offsets the forearm's device timestamp only, which is what the
+        engine's synchronization check looks at.
+        """
+        for node, segment in poses.items():
+            device_s = self.now_ms / 1000.0
+            if node == FOREARM:
+                device_s += skew_ms / 1000.0
+            self.steps.append(
+                {
+                    "op": "sample",
+                    "node": node,
+                    "values": to_values(reported(node, segment), gyro),
+                    "deviceS": device_s,
+                    "nowMs": self.now_ms,
+                }
+            )
+        self.advance(SAMPLE_PERIOD_MS)
+
+    def hold(self, poses, seconds, gyro=(0.0, 0.0, 0.0)):
+        for _ in range(int(seconds * 1000 / SAMPLE_PERIOD_MS)):
+            self.push_pose(poses, gyro)
+
+    def frame(self, label):
+        self.steps.append({"op": "frame", "label": label, "nowMs": self.now_ms})
+
+    def build(self):
+        return {"name": self.name, "options": self.options, "steps": self.steps}
+
+
+def run_scenarios(scenarios):
+    fixture = {"scenarios": scenarios}
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "motion_fixture.json"
+        path.write_text(json.dumps(fixture), encoding="utf-8")
+        completed = subprocess.run(
+            ["node", str(RUNNER), str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if completed.returncode != 0:
+        raise AssertionError(f"runner failed ({completed.returncode}): {completed.stderr}")
+    parsed = json.loads(completed.stdout)
+    return {scenario["name"]: scenario for scenario in parsed["scenarios"]}, parsed
+
+
+@unittest.skipUnless(shutil.which("node"), "node is required for the Motion Engine tests")
+class MotionEngineTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.results, cls.raw = run_scenarios(cls.build_all())
+
+    # ------------------------------------------------------------- scenarios
+
+    @staticmethod
+    def build_all():
+        return [
+            MotionEngineTest.scenario_elbow_sweep(),
+            MotionEngineTest.scenario_remount(),
+            MotionEngineTest.scenario_upper_arm_only(),
+            MotionEngineTest.scenario_motion_rejects_calibration(),
+            MotionEngineTest.scenario_common_mode_yaw_drift(),
+            MotionEngineTest.scenario_uncalibrated_and_stale(),
+            MotionEngineTest.scenario_hinge_calibration(),
+            MotionEngineTest.scenario_hinge_rejects_compound_motion(),
+        ]
+
+    @staticmethod
+    def calibrated_builder(name, options=None):
+        """Common opening: neutral pose held still long enough to calibrate."""
+        builder = MotionFixtureBuilder(name, options)
+        builder.hold(NEUTRAL, 0.4)
+        builder.begin_calibration()
+        builder.hold(NEUTRAL, 2.0)
+        return builder
+
+    @staticmethod
+    def flexed_poses(degrees, axis=(0.0, 1.0, 0.0)):
+        """Neutral upper arm; forearm flexed by `degrees` about a segment axis."""
+        return {
+            UPPER_ARM: NEUTRAL[UPPER_ARM],
+            FOREARM: q_mul(NEUTRAL[FOREARM], q_axis_angle(axis, degrees)),
+            AUX: NEUTRAL[AUX],
+        }
+
+    @staticmethod
+    def scenario_elbow_sweep():
+        # Plan acceptance check: straight / ~45 / ~90 / ~120 must be clearly
+        # separated, and the engine must read them back exactly.
+        builder = MotionEngineTest.calibrated_builder("elbow_sweep")
+        for degrees in (0.0, 45.0, 90.0, 120.0, 150.0):
+            builder.hold(MotionEngineTest.flexed_poses(degrees), 0.2)
+            builder.frame(f"elbow_{int(degrees)}")
+        return builder.build()
+
+    @staticmethod
+    def scenario_remount():
+        # Remount repeatability: same physical pose, recalibrated, must give the
+        # same answer. Handled here by recalibrating at a DIFFERENT neutral and
+        # then reproducing the same relative flexion.
+        builder = MotionFixtureBuilder("remount")
+        shifted = {
+            UPPER_ARM: q_mul(NEUTRAL[UPPER_ARM], q_axis_angle((0.2, 0.9, 0.3), 65.0)),
+            FOREARM: q_mul(NEUTRAL[FOREARM], q_axis_angle((0.7, -0.4, 0.6), 110.0)),
+            AUX: NEUTRAL[AUX],
+        }
+        builder.hold(shifted, 0.4)
+        builder.begin_calibration()
+        builder.hold(shifted, 2.0)
+        for degrees in (0.0, 90.0):
+            poses = {
+                UPPER_ARM: shifted[UPPER_ARM],
+                FOREARM: q_mul(shifted[FOREARM], q_axis_angle((0.0, 1.0, 0.0), degrees)),
+                AUX: shifted[AUX],
+            }
+            builder.hold(poses, 0.2)
+            builder.frame(f"remount_elbow_{int(degrees)}")
+        return builder.build()
+
+    @staticmethod
+    def scenario_upper_arm_only():
+        # Exercise independence: a shoulder-press-like motion rotates the upper
+        # arm with the elbow locked. upper_arm_deviation must track it and the
+        # elbow must stay at zero - no classifier anywhere in the path.
+        builder = MotionEngineTest.calibrated_builder("upper_arm_only")
+        for degrees in (0.0, 30.0, 75.0):
+            lift = q_axis_angle((1.0, 0.0, 0.0), degrees)
+            poses = {
+                # Elbow locked: the whole arm turns as one rigid body about a
+                # world-fixed axis, so `lift` is applied on the LEFT. Composing
+                # on the right would instead rotate each segment about its own
+                # body axis, which is a different (and non-rigid) motion.
+                UPPER_ARM: q_mul(lift, NEUTRAL[UPPER_ARM]),
+                FOREARM: q_mul(lift, NEUTRAL[FOREARM]),
+                AUX: NEUTRAL[AUX],
+            }
+            builder.hold(poses, 0.2)
+            builder.frame(f"press_{int(degrees)}")
+        return builder.build()
+
+    @staticmethod
+    def scenario_motion_rejects_calibration():
+        # Calibration must reject a pose captured while the wearer is moving.
+        builder = MotionFixtureBuilder("motion_rejects", {"calibrationTimeoutMs": 4000})
+        builder.hold(NEUTRAL, 0.4)
+        builder.begin_calibration()
+        builder.hold(NEUTRAL, 5.0, gyro=(0.5, 0.0, 0.0))
+        builder.frame("after_motion")
+        return builder.build()
+
+    @staticmethod
+    def scenario_common_mode_yaw_drift():
+        # Game Rotation Vector drift that is common to both sensors must cancel
+        # out of the elbow angle. This locks in the property that protects the
+        # joint measurement even though absolute heading is unreliable.
+        builder = MotionEngineTest.calibrated_builder("common_mode_drift")
+        drift = q_axis_angle((0.0, 0.0, 1.0), 12.0)
+        poses = MotionEngineTest.flexed_poses(90.0)
+        drifted = {node: q_mul(drift, q) for node, q in poses.items()}
+        builder.hold(drifted, 0.2)
+        builder.frame("drifted_elbow_90")
+        return builder.build()
+
+    @staticmethod
+    def scenario_uncalibrated_and_stale():
+        # Before calibration the packet must still be emitted, with health
+        # telling the consumer why the values are null. Then a large device-time
+        # skew must clear `synchronized` without killing the frame.
+        builder = MotionFixtureBuilder("uncalibrated_and_stale")
+        builder.hold(NEUTRAL, 0.4)
+        builder.frame("uncalibrated")
+        builder.begin_calibration()
+        builder.hold(NEUTRAL, 2.0)
+        builder.push_pose(NEUTRAL, skew_ms=250.0)
+        builder.frame("skewed")
+        return builder.build()
+
+    @staticmethod
+    def scenario_hinge_calibration():
+        """Range calibration: a few reps must recover the true hinge axis.
+
+        The whole point is that the unsigned composite angle saturates on
+        compound motion (session 2026-09-10T04:31 read 179.9 deg, at the fold
+        limit). Projecting onto a measured axis must give a signed joint angle
+        instead, and must flag off-axis motion separately.
+        """
+        builder = MotionEngineTest.calibrated_builder("hinge")
+        builder.begin_hinge()
+        for _ in range(4):
+            builder.rep()
+        # Signed readback at known flexions, plus a negative (hyperextension).
+        for degrees in (45.0, 90.0, 130.0, -25.0):
+            for _ in range(3):
+                builder.push_pose(MotionEngineTest.flexed_poses(degrees))
+            builder.frame(f"flex_{int(degrees)}")
+        # Motion about an axis perpendicular to the hinge: flexion should stay
+        # near zero while the off-axis term carries the whole rotation.
+        for _ in range(3):
+            builder.push_pose(MotionEngineTest.flexed_poses(60.0, axis=(1.0, 0.0, 0.0)))
+        builder.frame("off_axis_60")
+        return builder.build()
+
+    @staticmethod
+    def scenario_hinge_rejects_compound_motion():
+        """Incoherent motion must NOT yield a hinge axis."""
+        # Timeout sized so the capture runs past the sample minimum first: the
+        # rejection must come from axis spread, not from too little data.
+        builder = MotionEngineTest.calibrated_builder(
+            "hinge_incoherent", {"hingeTimeoutMs": 2000}
+        )
+        builder.begin_hinge()
+        # Each rep rotates about a different axis, so no consistent hinge exists.
+        for axis in ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0)):
+            builder.rep(axis=axis)
+        builder.frame("after_incoherent")
+        return builder.build()
+
+    # ----------------------------------------------------------------- tests
+
+    def frames(self, scenario):
+        return {entry["label"]: entry for entry in self.results[scenario]["frames"]}
+
+    def test_calibration_completes_on_a_still_neutral_pose(self):
+        self.assertEqual(self.results["elbow_sweep"]["calibrationState"], "calibrated")
+        kinds = [event["kind"] for event in self.results["elbow_sweep"]["events"]]
+        self.assertIn("calibration_complete", kinds)
+
+    def test_neutral_pose_reads_zero(self):
+        frame = self.frames("elbow_sweep")["elbow_0"]["frame"]
+        self.assertAlmostEqual(frame["elbow_relative_rotation_deg"], 0.0, places=6)
+        self.assertAlmostEqual(frame["upper_arm_deviation_deg"], 0.0, places=6)
+        self.assertTrue(frame["health"]["calibrated"])
+        self.assertTrue(frame["health"]["synchronized"])
+
+    def test_elbow_angles_recovered_exactly_despite_unknown_mounts(self):
+        """The core claim: mount rotations cancel, so the true angle comes back."""
+        frames = self.frames("elbow_sweep")
+        for degrees in (45.0, 90.0, 120.0, 150.0):
+            with self.subTest(degrees=degrees):
+                measured = frames[f"elbow_{int(degrees)}"]["frame"][
+                    "elbow_relative_rotation_deg"
+                ]
+                self.assertAlmostEqual(measured, degrees, delta=1e-4)
+
+    def test_elbow_positions_are_clearly_separated(self):
+        """Plan acceptance check: straight / 45 / 90 / 120 must not overlap."""
+        frames = self.frames("elbow_sweep")
+        values = [
+            frames[f"elbow_{d}"]["frame"]["elbow_relative_rotation_deg"]
+            for d in (0, 45, 90, 120)
+        ]
+        gaps = [b - a for a, b in zip(values, values[1:])]
+        # The tightest true gap in this sweep is 90 -> 120, so the bar is set
+        # below that: what is being asserted is that no two coaching-relevant
+        # positions collapse together, not the sweep's own spacing.
+        self.assertTrue(all(gap > 20.0 for gap in gaps), f"gaps too small: {gaps}")
+
+    def test_flexion_does_not_leak_into_upper_arm_deviation(self):
+        frame = self.frames("elbow_sweep")["elbow_90"]["frame"]
+        self.assertAlmostEqual(frame["upper_arm_deviation_deg"], 0.0, places=6)
+
+    def test_remount_reproduces_the_same_angle(self):
+        """A different strap position + fresh calibration -> same 90 deg."""
+        frames = self.frames("remount")
+        self.assertAlmostEqual(
+            frames["remount_elbow_0"]["frame"]["elbow_relative_rotation_deg"], 0.0, places=6
+        )
+        self.assertAlmostEqual(
+            frames["remount_elbow_90"]["frame"]["elbow_relative_rotation_deg"], 90.0, delta=1e-4
+        )
+
+    def test_upper_arm_motion_tracks_with_elbow_locked(self):
+        """Exercise independence: no classifier, the segment state just moves."""
+        frames = self.frames("upper_arm_only")
+        for degrees in (30.0, 75.0):
+            with self.subTest(degrees=degrees):
+                frame = frames[f"press_{int(degrees)}"]["frame"]
+                self.assertAlmostEqual(
+                    frame["upper_arm_deviation_deg"], degrees, delta=1e-4
+                )
+                self.assertAlmostEqual(
+                    frame["elbow_relative_rotation_deg"], 0.0, delta=1e-4
+                )
+
+    def test_calibration_rejects_a_moving_pose(self):
+        scenario = self.results["motion_rejects"]
+        self.assertEqual(scenario["calibrationState"], "failed")
+        frame = self.frames("motion_rejects")["after_motion"]["frame"]
+        self.assertFalse(frame["health"]["calibrated"])
+        self.assertIsNone(frame["elbow_relative_rotation_deg"])
+
+    def test_common_mode_yaw_drift_cancels_from_the_elbow_angle(self):
+        frame = self.frames("common_mode_drift")["drifted_elbow_90"]["frame"]
+        self.assertAlmostEqual(frame["elbow_relative_rotation_deg"], 90.0, delta=1e-4)
+
+    def test_uncalibrated_frame_is_emitted_with_honest_health(self):
+        frame = self.frames("uncalibrated_and_stale")["uncalibrated"]["frame"]
+        self.assertFalse(frame["health"]["calibrated"])
+        self.assertIsNone(frame["upper_arm_orientation"])
+        self.assertIsNone(frame["elbow_relative_rotation_deg"])
+        # Nodes are streaming even though calibration has not happened.
+        self.assertTrue(frame["health"]["n2"])
+        self.assertTrue(frame["health"]["n4"])
+
+    def test_device_time_skew_clears_synchronized_without_dropping_the_frame(self):
+        frame = self.frames("uncalibrated_and_stale")["skewed"]["frame"]
+        self.assertFalse(frame["health"]["synchronized"])
+        self.assertGreater(abs(frame["diagnostics"]["skewMs"]), 60.0)
+        # The packet is still produced; degraded, not frozen.
+        self.assertIsNotNone(frame["elbow_relative_rotation_deg"])
+
+    def test_scope_limits_are_carried_in_band(self):
+        """The 3D team must not be able to mistake this for trunk-relative data."""
+        frame = self.frames("elbow_sweep")["elbow_90"]["frame"]
+        self.assertFalse(frame["diagnostics"]["trunkReferenced"])
+        self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
+
+    def test_hinge_calibration_finds_a_consistent_axis(self):
+        scenario = self.results["hinge"]
+        self.assertEqual(scenario["hingeState"], "ready", scenario["hingeMessage"])
+        quality = scenario["hingeQuality"]
+        self.assertLess(quality["meanSpreadDeg"], 1.0)
+        self.assertIn("hinge_complete", [e["kind"] for e in scenario["events"]])
+
+    def test_signed_flexion_recovers_the_true_angle(self):
+        frames = self.frames("hinge")
+        for degrees in (45.0, 90.0, 130.0, -25.0):
+            with self.subTest(degrees=degrees):
+                frame = frames[f"flex_{int(degrees)}"]["frame"]
+                self.assertAlmostEqual(frame["elbow_flexion_deg"], degrees, delta=1e-3)
+                # A pure hinge rotation has nothing left over.
+                self.assertLess(frame["elbow_off_axis_deg"], 1e-3)
+
+    def test_signed_flexion_distinguishes_direction(self):
+        """The unsigned angle cannot tell -25 from +25; the signed one must."""
+        frames = self.frames("hinge")
+        negative = frames["flex_-25"]["frame"]
+        self.assertLess(negative["elbow_flexion_deg"], 0)
+        self.assertAlmostEqual(negative["elbow_relative_rotation_deg"], 25.0, delta=1e-3)
+
+    def test_off_axis_motion_is_reported_separately(self):
+        """Compound motion must not be laundered into the flexion number."""
+        frame = self.frames("hinge")["off_axis_60"]["frame"]
+        self.assertLess(abs(frame["elbow_flexion_deg"]), 1.0)
+        self.assertAlmostEqual(frame["elbow_off_axis_deg"], 60.0, delta=1e-3)
+
+    def test_incoherent_motion_yields_no_hinge_axis(self):
+        scenario = self.results["hinge_incoherent"]
+        self.assertEqual(scenario["hingeState"], "failed")
+        frame = self.frames("hinge_incoherent")["after_incoherent"]["frame"]
+        self.assertIsNone(frame["elbow_flexion_deg"])
+        # The unsigned angle still works; only the signed one is withheld.
+        self.assertIsNotNone(frame["elbow_relative_rotation_deg"])
+
+    def test_flexion_is_unavailable_before_a_hinge_calibration(self):
+        frame = self.frames("elbow_sweep")["elbow_90"]["frame"]
+        self.assertIsNone(frame["elbow_flexion_deg"])
+        self.assertIsNone(frame["elbow_off_axis_deg"])
+        self.assertEqual(frame["diagnostics"]["hingeState"], "none")
+
+    def test_log_row_matches_the_declared_columns(self):
+        entry = self.frames("elbow_sweep")["elbow_90"]
+        self.assertEqual(len(entry["logRow"]), len(self.raw["logColumns"]))
+        columns = self.raw["logColumns"]
+        self.assertAlmostEqual(
+            entry["logRow"][columns.index("elbow_deg")], 90.0, delta=1e-4
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

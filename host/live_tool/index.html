@@ -373,6 +373,36 @@
       </section>
 
       <section class="panel">
+        <h2>Motion Engine <span class="hint">Coach Assist · deterministic · no model</span></h2>
+        <div class="body">
+          <div class="row" style="margin-bottom:10px">
+            <button id="calibrateBtn" class="sm">Calibrate Neutral Pose</button>
+            <button id="hingeBtn" class="sm">Calibrate Hinge</button>
+            <button id="clearCalibrationBtn" class="sm">Clear</button>
+            <span class="spacer" style="flex:1"></span>
+            <span id="calibrationBadge" class="badge idle">Not calibrated</span>
+          </div>
+          <div id="calibrationNote" class="note"></div>
+          <div id="hingeNote" class="note"></div>
+          <dl class="kv">
+            <dt>Elbow flexion</dt><dd id="flexionValue">—</dd>
+            <dt>Off-axis</dt><dd id="offAxisValue">—</dd>
+            <dt>Elbow rotation (unsigned)</dt><dd id="elbowValue">—</dd>
+            <dt>Upper-arm deviation</dt><dd id="upperDevValue">—</dd>
+            <dt>Forearm deviation</dt><dd id="foreDevValue">—</dd>
+            <dt>Node health</dt><dd id="motionHealthValue">—</dd>
+            <dt>Sync skew</dt><dd id="motionSkewValue">—</dd>
+            <dt>Yaw-drift hint</dt><dd id="yawDriftValue">—</dd>
+          </dl>
+          <div class="note">
+            Calibration-pose relative, not trunk relative: no torso reference in the
+            arm-only rig. Axes are in each sensor's neutral frame until a two-pose
+            mount calibration is added.
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Live Signals <span class="hint">30 Hz render, decoupled from BLE</span></h2>
         <div class="body tight">
           <div class="row" style="margin-bottom:10px">
@@ -455,6 +485,38 @@
        app module: live-inference.js reads window.ort. No CDN: the pinned
        runtime and its WASM flags are part of the Section 12 parity claim. -->
   <script src="./vendor/ort/ort.min.js"></script>
+  <!--
+    Stale-module guard. index.html is the navigation request and is effectively
+    always fresh, but the ES modules it pulls in can still come from the browser
+    cache (or simply from a tab that was never reloaded). When that happens a
+    newly added control renders and does nothing, with no error raised anywhere
+    - which silently cost two recording sessions on 2026-09-10.
+
+    This imports the same URL main.js does, so it sees exactly the same module
+    instance, and shouts if the API it expects is not there.
+  -->
+  <script type="module">
+    import { MotionEngine } from "./js/motion-engine.js";
+
+    const EXPECTED_LOG_COLUMNS = 16;
+    const engineOk =
+      typeof MotionEngine.prototype.beginHingeCalibration === "function" &&
+      MotionEngine.LOG_COLUMNS.length === EXPECTED_LOG_COLUMNS;
+
+    if (!engineOk) {
+      const banner = document.createElement("div");
+      banner.style.cssText =
+        "position:fixed;inset:0 0 auto 0;z-index:9999;padding:14px 22px;" +
+        "background:#7a1d1d;color:#ffe8e8;font:600 13.5px/1.5 Inter,system-ui,sans-serif;" +
+        "border-bottom:2px solid #e05555;box-shadow:0 6px 24px rgba(0,0,0,.5)";
+      banner.textContent =
+        "STALE BUILD: the browser is running cached JavaScript. " +
+        `Motion Engine reports ${MotionEngine.LOG_COLUMNS.length} log columns, expected ${EXPECTED_LOG_COLUMNS}. ` +
+        "Hinge calibration will not work. Fix: serve with `python host/live_tool/serve.py` " +
+        "and hard-reload (Ctrl+Shift+R), or open DevTools > Network > Disable cache and reload.";
+      document.body.prepend(banner);
+    }
+  </script>
   <script type="module" src="./js/main.js"></script>
 </body>
 </html>

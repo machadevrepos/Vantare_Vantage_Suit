@@ -101,6 +101,22 @@ export class Ui {
     this.warmupBar = el("warmupFill");
     this.throughputLine = el("throughputLine");
 
+    // motion engine
+    this.calibrateBtn = el("calibrateBtn");
+    this.hingeBtn = el("hingeBtn");
+    this.clearCalibrationBtn = el("clearCalibrationBtn");
+    this.hingeNote = el("hingeNote");
+    this.flexionValue = el("flexionValue");
+    this.offAxisValue = el("offAxisValue");
+    this.calibrationBadge = el("calibrationBadge");
+    this.calibrationNote = el("calibrationNote");
+    this.elbowValue = el("elbowValue");
+    this.upperDevValue = el("upperDevValue");
+    this.foreDevValue = el("foreDevValue");
+    this.motionHealthValue = el("motionHealthValue");
+    this.motionSkewValue = el("motionSkewValue");
+    this.yawDriftValue = el("yawDriftValue");
+
     // streams / log
     this.streamTable = el("streamTable").getElementsByTagName("tbody")[0];
     this.hapticStatus = el("hapticStatus");
@@ -179,6 +195,66 @@ export class Ui {
       this.rediscoverBtn, this.nodeReportBtn, this.resetRetainedBtn,
     ];
     for (const control of controls) this.setEnabled(control, connected);
+  }
+
+  // --------------------------------------------------------- motion engine
+
+  /**
+   * Render one motion frame. Values are shown as em-dash rather than a stale
+   * number whenever the frame says they are untrustworthy: a frozen angle that
+   * looks live is the failure mode this panel exists to make impossible.
+   */
+  renderMotion(frame) {
+    if (!frame) return;
+    const deg = (value) => (value === null || value === undefined ? "—" : `${value.toFixed(1)}°`);
+    const diagnostics = frame.diagnostics;
+
+    const badges = {
+      uncalibrated: { text: "Not calibrated", cls: "idle" },
+      capturing: { text: "Hold still…", cls: "busy" },
+      calibrated: { text: "Calibrated", cls: "ok" },
+      failed: { text: "Calibration failed", cls: "bad" },
+    };
+    const badge = badges[diagnostics.calibrationState] || badges.uncalibrated;
+    this.calibrationBadge.textContent = badge.text;
+    this.calibrationBadge.className = `badge ${badge.cls}`;
+    this.calibrationNote.textContent = diagnostics.calibrationMessage || "";
+
+    const hingeBadges = {
+      none: "Hinge axis not calibrated — flexion unavailable.",
+      capturing: "Measuring the hinge axis: perform a few slow full reps.",
+      ready: diagnostics.hingeMessage,
+      failed: diagnostics.hingeMessage,
+    };
+    this.hingeNote.textContent = hingeBadges[diagnostics.hingeState] || "";
+
+    // Signed flexion carries a sign, so it gets an explicit + for positive
+    // values: "-25" next to "25" must not be readable as a typo.
+    this.flexionValue.textContent = (() => {
+      const value = frame.elbow_flexion_deg;
+      if (value === null || value === undefined) return "—";
+      // toFixed keeps the sign of a negative zero, which renders as "-0.0".
+      const fixed = value.toFixed(1);
+      if (fixed === "-0.0") return "0.0°";
+      return `${value > 0 ? "+" : ""}${fixed}°`;
+    })();
+    this.offAxisValue.textContent = deg(frame.elbow_off_axis_deg);
+    this.elbowValue.textContent = deg(frame.elbow_relative_rotation_deg);
+    this.upperDevValue.textContent = deg(frame.upper_arm_deviation_deg);
+    this.foreDevValue.textContent = deg(diagnostics.forearmDeviationDeg);
+
+    const health = frame.health;
+    const flag = (name, ok) => `${name}${ok ? "✓" : "✗"}`;
+    this.motionHealthValue.textContent = [
+      flag("N2", health.n2),
+      flag("N3", health.n3),
+      flag("N4", health.n4),
+      flag(" sync", health.synchronized),
+    ].join(" ");
+
+    this.motionSkewValue.textContent =
+      diagnostics.skewMs === null ? "—" : `${diagnostics.skewMs.toFixed(0)} ms`;
+    this.yawDriftValue.textContent = deg(diagnostics.yawDriftHintDeg);
   }
 
   // ---------------------------------------------------------------- charts

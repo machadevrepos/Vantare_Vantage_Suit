@@ -15,18 +15,35 @@
 const TIER1_CAP = 100_000;
 
 export class SessionLog {
-  constructor({ byteBudget = 64 * 1024 * 1024 } = {}) {
+  /**
+   * `streamShares` is how many equal slices the byte budget is cut into. It is
+   * explicit because registerStream has to size a ring before it knows how many
+   * streams will follow; the caller knows the total up front.
+   */
+  constructor({ byteBudget = 64 * 1024 * 1024, streamShares = 6, nominalHz = 25 } = {}) {
     this.byteBudget = byteBudget;
+    this.streamShares = streamShares;
+    this.nominalHz = nominalHz;
     this.events = [];
     this.sessionStartedAtMs = null;
     this.rings = new Map(); // key -> { width, capacity, cursor, wrapped, buffer: Float32Array }
     this.sampleCounts = new Map();
   }
 
+  /**
+   * Reset for a new session. Ring REGISTRATIONS are kept and their contents
+   * emptied, rather than dropped: clearing the map here used to discard the
+   * registrations made at page init, after which logSample silently no-opped
+   * and every downloaded log contained events but zero samples.
+   */
   startSession() {
     this.events.length = 0;
-    this.rings.clear();
-    this.sampleCounts.clear();
+    for (const [key, ring] of this.rings) {
+      ring.cursor = 0;
+      ring.wrapped = false;
+      ring.buffer.fill(0);
+      this.sampleCounts.set(key, 0);
+    }
     this.sessionStartedAtMs = performance.now();
     this.event({ kind: "session_start" });
   }
@@ -37,10 +54,12 @@ export class SessionLog {
     }
   }
 
-  /** Register a stream's ring before the session starts. */
+  /** Register a stream's ring. Idempotent, so re-registering keeps the ring. */
   registerStream(key, floatsPerRow) {
+    const existing = this.rings.get(key);
+    if (existing && existing.width === floatsPerRow) return;
     const rowBytes = floatsPerRow * 4;
-    const capacity = Math.max(16, Math.floor(this.byteBudget / 6 / rowBytes)); // 6 streams share the budget
+    const capacity = Math.max(16, Math.floor(this.byteBudget / this.streamShares / rowBytes));
     this.rings.set(key, {
       width: floatsPerRow,
       capacity,
@@ -72,8 +91,9 @@ export class SessionLog {
   retentionSeconds() {
     let totalCapacity = 0;
     for (const ring of this.rings.values()) totalCapacity += ring.capacity;
-    // Samples arrive across six streams; capacity above is per stream.
-    return totalCapacity / (6 * 25);
+    // Capacity above is per stream, so divide by the share count to get the
+    // duration a single stream can hold at its nominal rate.
+    return totalCapacity / (this.streamShares * this.nominalHz);
   }
 
   wrappedStreams() {
