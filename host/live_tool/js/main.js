@@ -32,6 +32,7 @@ import {
 } from "./live-inference.js";
 import { HapticController, HAPTIC_DEFAULTS } from "./haptic-controller.js";
 import { MotionEngine } from "./motion-engine.js";
+import { RepAnalyzer } from "./rep-analyzer.js";
 import { SessionLog } from "./session-log.js";
 import { Ui } from "./ui.js";
 
@@ -87,6 +88,10 @@ class App {
     });
     this.lastMotionFrame = null;
 
+    // The rep analyzer consumes motion packets, so it inherits the same
+    // independence from the model path.
+    this.repAnalyzer = new RepAnalyzer({ onRep: (rep) => this.onRep(rep) });
+
     this.inferBusy = false;
     this.lastPrediction = null;
     this.predictionTimes = [];
@@ -129,6 +134,20 @@ class App {
     this.ui.downloadBtn.addEventListener("click", () => this.onDownload());
     this.ui.calibrateBtn.addEventListener("click", () => this.motion.beginCalibration());
     this.ui.hingeBtn.addEventListener("click", () => this.motion.beginHingeCalibration());
+    this.ui.resetRepsBtn.addEventListener("click", () => {
+      this.repAnalyzer.reset();
+      this.ui.clearReps();
+      this.ui.log("Rep count reset.");
+    });
+    const applyTarget = () => {
+      this.repAnalyzer.setTarget({
+        romTargetDeg: Number(this.ui.romTargetInput.value),
+        upperArmToleranceDeg: Number(this.ui.upperArmTolInput.value),
+      });
+      this.sessionLog.event({ kind: "coach_target", ...this.repAnalyzer.target });
+    };
+    this.ui.romTargetInput.addEventListener("change", applyTarget);
+    this.ui.upperArmTolInput.addEventListener("change", applyTarget);
     this.ui.clearCalibrationBtn.addEventListener("click", () => this.motion.clearCalibration());
     this.bindFirmwareControls();
     this.refreshButtons();
@@ -146,9 +165,26 @@ class App {
     this.motion.updateCalibration(now);
     const frame = this.motion.computeFrame(now);
     this.lastMotionFrame = frame;
+    this.repAnalyzer.pushFrame(frame);
     if (!this.sessionActive) return;
     const row = this.motion.toLogRow(frame);
     if (row) this.sessionLog.logSample(MOTION_LOG_STREAM, row[0], row.slice(1));
+  }
+
+  /**
+   * A completed rep. Logged as a Tier 1 event so a session can be reviewed or
+   * re-scored later against a different target.
+   */
+  onRep(rep) {
+    this.sessionLog.event({ kind: "rep", ...rep, target: { ...this.repAnalyzer.target } });
+    this.ui.addRep(rep);
+    if (rep.index === null) return;
+    const verdict = rep.faults.length === 0 ? "correct" : rep.faults.join(", ");
+    this.ui.log(
+      `Rep ${rep.index}: peak ${rep.peakFlexionDeg.toFixed(0)} deg, `
+        + `upper arm ${rep.maxUpperArmDevDeg.toFixed(0)} deg — ${verdict}`,
+      rep.faults.length === 0 ? "info" : "warn"
+    );
   }
 
   /** Calibration transitions are session-log Tier 1 events and user-visible. */
@@ -768,6 +804,7 @@ class App {
       });
     }
     this.ui.renderMotion(this.lastMotionFrame);
+    this.ui.renderReps(this.repAnalyzer.summary, this.repAnalyzer.current);
     this.ui.renderStreams(streamSnapshots);
     this.ui.drawCharts(now / 1000, healthBySource);
     this.ui.renderSkew(

@@ -28,7 +28,11 @@ packet for the 3D/app team. Calibration maps each sensor to a **body segment**,
 never to an exercise; bicep curl is only the first validation target.
 
 - `host/live_tool/js/motion-engine.js` — deterministic kinematics, independent of
-  the model path by design. Contract + scope limits: `docs/architecture/motion-engine-contract.md`.
+  the model path by design. `host/live_tool/js/rep-analyzer.js` — per-rep verdicts
+  against a coach target. Contract, scope limits, measured thresholds and field
+  results: `docs/architecture/motion-engine-contract.md`.
+- Serve the live tool with `python host/live_tool/serve.py` (caching disabled);
+  a red STALE BUILD banner means the browser is running cached modules.
 - Explicitly out of scope now: model retraining, AI-selected haptics, a polished
   full-body avatar, MCU/radio redesign (the 12-node master study is a separate,
   later timeline and must not reopen firmware work without a measured blocker).

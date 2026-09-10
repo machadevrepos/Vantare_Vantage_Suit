@@ -7,6 +7,7 @@
  */
 
 import { SourceChart, SIGNAL_GROUPS } from "./charts.js";
+import { FAULT_LABELS } from "./rep-analyzer.js";
 import { MASTER_ID, sourceLabel } from "./ble-protocol.js";
 
 const STATE_LABELS = {
@@ -117,6 +118,15 @@ export class Ui {
     this.motionHealthValue = el("motionHealthValue");
     this.motionSkewValue = el("motionSkewValue");
     this.yawDriftValue = el("yawDriftValue");
+
+    // reps / coach target
+    this.romTargetInput = el("romTargetInput");
+    this.upperArmTolInput = el("upperArmTolInput");
+    this.resetRepsBtn = el("resetRepsBtn");
+    this.repTally = el("repTally");
+    this.repCurrent = el("repCurrent");
+    this.repTableBody = el("repTable").getElementsByTagName("tbody")[0];
+    this.repSummary = el("repSummary");
 
     // streams / log
     this.streamTable = el("streamTable").getElementsByTagName("tbody")[0];
@@ -263,6 +273,66 @@ export class Ui {
     this.motionSkewValue.textContent =
       diagnostics.skewMs === null ? "—" : `${diagnostics.skewMs.toFixed(0)} ms`;
     this.yawDriftValue.textContent = deg(diagnostics.yawDriftHintDeg);
+  }
+
+  // ------------------------------------------------------------------ reps
+
+  /** Append one completed rep to the table. Uncountable segments are skipped. */
+  addRep(rep) {
+    if (rep.index === null) return;
+    const tr = this.repTableBody.insertRow(0);
+    const cells = [
+      String(rep.index),
+      `${rep.peakFlexionDeg.toFixed(0)}°`,
+      `${rep.maxUpperArmDevDeg.toFixed(0)}°`,
+      `${rep.durationS.toFixed(1)}s`,
+    ];
+    for (const text of cells) {
+      const td = tr.insertCell();
+      td.textContent = text;
+      td.style.textAlign = cells.indexOf(text) === 0 ? "left" : "right";
+    }
+    const verdict = tr.insertCell();
+    verdict.style.paddingLeft = "10px";
+    if (rep.faults.length === 0) {
+      verdict.textContent = "correct";
+      verdict.style.color = "var(--ok)";
+    } else {
+      // Faults are listed rather than reduced to one label: a rep can be both
+      // short and swung, and the coach needs to correct both.
+      verdict.textContent = rep.faults.map((f) => FAULT_LABELS[f] || f).join(" + ");
+      verdict.style.color = "var(--warn)";
+    }
+    while (this.repTableBody.rows.length > 12) {
+      this.repTableBody.deleteRow(this.repTableBody.rows.length - 1);
+    }
+  }
+
+  clearReps() {
+    this.repTableBody.innerHTML = "";
+    this.repTally.textContent = "—";
+    this.repCurrent.textContent = "";
+    this.repSummary.textContent = "";
+  }
+
+  renderReps(summary, current) {
+    this.repTally.textContent =
+      summary.total === 0 ? "no reps yet" : `${summary.correct} / ${summary.total} correct`;
+    this.repCurrent.textContent = current
+      ? `rep in progress — peak so far ${current.peakFlexionDeg.toFixed(0)}°`
+      : "";
+    if (summary.total < 2) {
+      this.repSummary.textContent = "";
+      return;
+    }
+    const parts = [
+      `mean peak ${summary.meanPeakDeg.toFixed(0)}° (sd ${summary.sdPeakDeg.toFixed(1)}°)`,
+      summary.consistent ? "consistent" : "inconsistent",
+    ];
+    for (const [fault, count] of Object.entries(summary.faults)) {
+      parts.push(`${FAULT_LABELS[fault] || fault}: ${count}`);
+    }
+    this.repSummary.textContent = parts.join(" · ");
   }
 
   // ---------------------------------------------------------------- charts

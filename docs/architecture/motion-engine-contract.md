@@ -286,6 +286,43 @@ how the PCB sits. Incoherent motion is rejected rather than averaged into a
 meaningless axis. Clearing the neutral calibration also clears the hinge axis,
 because the axis is expressed relative to that neutral reference.
 
+## Rep layer (Coach Assist correction loop)
+
+`host/live_tool/js/rep-analyzer.js` consumes these packets and produces per-rep
+verdicts. It inherits the Motion Engine's independence from the model path.
+
+Segmentation is hysteresis on `elbow_flexion_deg` (open above 30°, close below
+20°), with segments shorter than 0.4 s or longer than 6.0 s rejected as *not a
+rep* — they never reach the coach's rep count.
+
+Coach-adjustable target, with defaults measured on this rig:
+
+| Check | Default | Basis |
+|---|---|---|
+| `romTargetDeg` | 120° | clean sets peaked 131.6° ± 4.0° |
+| `upperArmToleranceDeg` | 15° | clean 6.4–9.8°, bad 18.9–103.5° |
+| `maxOffHingeFraction` | 0.10 | clean 0%, gross swinging 25–90% |
+
+**Which metric carries the judgement.** From the bad-form set (2026-09-10T06:43):
+
+| Metric | Clean reps | Bad reps | Verdict |
+|---|---|---|---|
+| Upper-arm deviation | 6.4–9.8° | 18.9–103.5° | **clean split** |
+| Off-axis excess | 6.1–23.8° | 17.2–91.7° | overlaps |
+| Peak flexion | 132.8–137.6° | 96.2–149.3° | overlaps |
+
+Upper-arm deviation is the discriminator, with a 15° threshold in the middle of
+a wide empty gap. Peak flexion catches short reps but cannot stand alone — a
+swung rep often reaches *full* range precisely because it was swung. Off-axis
+excess is deliberately **not** used as a form grade despite being the obvious
+candidate: its clean and bad ranges overlap, so thresholding it would both
+false-alarm on good reps and miss real faults. It serves as a validity signal
+instead, through the off-hinge fraction.
+
+Replaying the recorded bad-form session through the analyzer reproduces the
+manual per-rep analysis: 3/10 correct, `upper_arm_movement` on all seven
+faulted reps, and the two prolonged flailing segments rejected as uncountable.
+
 ## Logging
 
 Each frame is written to the session log as the `motion` stream, columns in

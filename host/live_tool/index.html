@@ -404,6 +404,33 @@
       </section>
 
       <section class="panel">
+        <h2>Reps &amp; Coach Target <span class="hint">deterministic verdicts &middot; no model</span></h2>
+        <div class="body">
+          <div class="row" style="margin-bottom:10px">
+            <label class="field">ROM target
+              <input id="romTargetInput" type="number" min="30" max="150" step="5" value="120" style="width:64px">&deg;
+            </label>
+            <label class="field">Upper-arm tol.
+              <input id="upperArmTolInput" type="number" min="5" max="60" step="1" value="15" style="width:64px">&deg;
+            </label>
+            <span class="spacer" style="flex:1"></span>
+            <button id="resetRepsBtn" class="sm">Reset Count</button>
+          </div>
+          <div id="repTally" class="class-sub" style="text-align:center;font-size:15px;margin:6px 0">&mdash;</div>
+          <div id="repCurrent" class="note" style="text-align:center"></div>
+          <table id="repTable" style="width:100%;border-collapse:collapse;margin-top:10px;font-size:12px">
+            <thead><tr>
+              <th style="text-align:left">#</th><th style="text-align:right">Peak</th>
+              <th style="text-align:right">Upper arm</th><th style="text-align:right">Dur</th>
+              <th style="text-align:left;padding-left:10px">Verdict</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="repSummary" class="note"></div>
+        </div>
+      </section>
+
+      <section class="panel">
         <h2>Live Signals <span class="hint">30 Hz render, decoupled from BLE</span></h2>
         <div class="body tight">
           <div class="row" style="margin-bottom:10px">
