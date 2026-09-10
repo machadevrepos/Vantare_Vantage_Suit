@@ -3708,16 +3708,16 @@
     "semantic_hash": "96c676c6159d5204f2cc734f2b1f7458"
   },
   "host/live_tool/js/live-inference.js": {
-    "mtime": 1789017974.3359745,
-    "seen": 1789027234.2703004,
-    "ast_hash": "072898d1b8488bf3960c20c603bd24a0",
-    "semantic_hash": "072898d1b8488bf3960c20c603bd24a0"
+    "mtime": 1789041725.0921848,
+    "seen": 1789042765.4612648,
+    "ast_hash": "723dea26ebea646ea23fe642eed70b5a",
+    "semantic_hash": ""
   },
   "host/live_tool/js/main.js": {
-    "mtime": 1789023153.375614,
-    "seen": 1789027234.270301,
-    "ast_hash": "8fb6422f88c170c10c43acde2a94b175",
-    "semantic_hash": "8fb6422f88c170c10c43acde2a94b175"
+    "mtime": 1789041716.3045292,
+    "seen": 1789042765.461267,
+    "ast_hash": "c41d4af239e91b64bab834c616961662",
+    "semantic_hash": ""
   },
   "host/live_tool/js/ml-preprocessing.js": {
     "mtime": 1788770694.196511,
@@ -3726,10 +3726,10 @@
     "semantic_hash": "9aeeaaede294841007026969e625151d"
   },
   "host/live_tool/js/motion-engine.js": {
-    "mtime": 1789020631.3806994,
-    "seen": 1789027234.2703032,
-    "ast_hash": "e0ed5d7f5e4dfd45d0e90b0d9e826fe0",
-    "semantic_hash": "e0ed5d7f5e4dfd45d0e90b0d9e826fe0"
+    "mtime": 1789040362.2841783,
+    "seen": 1789042765.4612722,
+    "ast_hash": "4a954dd8a3856be8954a9645d098bed3",
+    "semantic_hash": ""
   },
   "host/live_tool/js/rep-analyzer.js": {
     "mtime": 1789023071.9447308,
@@ -3744,10 +3744,10 @@
     "semantic_hash": "30cfcda7e9e7de380723325c010f6685"
   },
   "host/live_tool/js/ui.js": {
-    "mtime": 1789023153.3744898,
-    "seen": 1789027234.270306,
-    "ast_hash": "853492affbde8e63b26fded61a12df24",
-    "semantic_hash": "853492affbde8e63b26fded61a12df24"
+    "mtime": 1789041695.756899,
+    "seen": 1789042765.4612792,
+    "ast_hash": "0953c9ff9a0894a52e580af9c5cbc5af",
+    "semantic_hash": ""
   },
   "host/live_tool/model/feature_names.json": {
     "mtime": 1788331477.5409422,
@@ -4002,16 +4002,16 @@
     "semantic_hash": "dca9d1186264ef3c6bb83d40e3086fc1"
   },
   "host/tests/python/test_live_tool_invariants.py": {
-    "mtime": 1788770683.9603405,
-    "seen": 1789027234.2703478,
-    "ast_hash": "a9a8a4facd3f15e32a6f4b2c8d2c5fb8",
-    "semantic_hash": "a9a8a4facd3f15e32a6f4b2c8d2c5fb8"
+    "mtime": 1789042326.286342,
+    "seen": 1789042765.4613807,
+    "ast_hash": "ce309f9c1435fcd782bdbf4c7e2b23a9",
+    "semantic_hash": ""
   },
   "host/tests/python/test_motion_engine.py": {
-    "mtime": 1789020610.7187333,
-    "seen": 1789027234.2703488,
-    "ast_hash": "b1fd49f8f543f526a56eb641627b12f8",
-    "semantic_hash": "b1fd49f8f543f526a56eb641627b12f8"
+    "mtime": 1789040362.282397,
+    "seen": 1789042765.4613826,
+    "ast_hash": "28a8de30d239044f7f3da4fd84a8e601",
+    "semantic_hash": ""
   },
   "host/tests/python/test_remote_transfer_lifecycle_source.py": {
     "mtime": 1788165387.393339,
@@ -4074,10 +4074,10 @@
     "semantic_hash": "1f4a47d4397ab53428f8a2b07ff71d73"
   },
   "host/tests/scripts/run_motion_fixture.mjs": {
-    "mtime": 1789020470.8666651,
-    "seen": 1789027234.2703595,
-    "ast_hash": "b8f415df8e5e9617739f8cccc71f9fa3",
-    "semantic_hash": "b8f415df8e5e9617739f8cccc71f9fa3"
+    "mtime": 1789040063.0526807,
+    "seen": 1789042765.4614108,
+    "ast_hash": "8c6dfca2d77ddb072621b82a25b8919c",
+    "semantic_hash": ""
   },
   "host/tests/scripts/run_preprocessing_fixture.mjs": {
     "mtime": 1788335102.9335976,
@@ -4096,5 +4096,563 @@
     "seen": 1789027234.2703624,
     "ast_hash": "2641d30425240712a93cb99a60ead850",
     "semantic_hash": "2641d30425240712a93cb99a60ead850"
+  },
+  "dataset/correct/session_01/R0001N2_metadata.json": {
+    "mtime": 1788254536.3408568,
+    "seen": 1789042765.459723,
+    "ast_hash": "f9afb0ffca3470bfd4beb2c2910fd4d5",
+    "semantic_hash": ""
+  },
+  "dataset/correct/session_01/R0001N3_metadata.json": {
+    "mtime": 1788254536.4609737,
+    "seen": 1789042765.459734,
+    "ast_hash": "cdefef36b5f63ad22deda50365ba17fa",
+    "semantic_hash": ""
+  },
+  "dataset/correct/session_01/R0001N4_metadata.json": {
+    "mtime": 1788254536.587932,
+    "seen": 1789042765.4597383,
+    "ast_hash": "82c545ca0ded7e24ded88de78669f29b",
+    "semantic_hash": ""
+  },
+  "dataset/correct/session_02/R0002N2_metadata.json": {
+    "mtime": 1788254536.8611887,
+    "seen": 1789042765.4597414,
+    "ast_hash": "7a10efe69ada26fee816aff1a2f1d83c",
+    "semantic_hash": ""
+  },
+  "dataset/correct/session_02/R0002N3_metadata.json": {
+    "mtime": 1788254537.0047095,
+    "seen": 1789042765.459745,
+    "ast_hash": "4574a92f0c439e2c340a0ffa0b81966d",
+    "semantic_hash": ""
+  },
+  "dataset/correct/session_02/R0002N4_metadata.json": {
+    "mtime": 1788254537.1716642,
+    "seen": 1789042765.4597476,
+    "ast_hash": "52ceba71da33d9d2ea584745f4d02b4a",
+    "semantic_hash": ""
+  },
+  "dataset/dataset_config.json": {
+    "mtime": 1788774662.7056582,
+    "seen": 1789042765.45975,
+    "ast_hash": "c1202287c09a9d993c069c83d0675e1f",
+    "semantic_hash": ""
+  },
+  "dataset/elbow_movement/session_05/R0005N2_metadata.json": {
+    "mtime": 1788254539.6084182,
+    "seen": 1789042765.459752,
+    "ast_hash": "1ce98436e2591c2a0d19bfe4cfa63cc1",
+    "semantic_hash": ""
+  },
+  "dataset/elbow_movement/session_05/R0005N3_metadata.json": {
+    "mtime": 1788254539.8157399,
+    "seen": 1789042765.4597547,
+    "ast_hash": "054b514fd2153123f5022149f74ed9cc",
+    "semantic_hash": ""
+  },
+  "dataset/elbow_movement/session_05/R0005N4_metadata.json": {
+    "mtime": 1788254540.062933,
+    "seen": 1789042765.459757,
+    "ast_hash": "228417e9e14e25f5d5cc1355274e4971",
+    "semantic_hash": ""
+  },
+  "dataset/elbow_movement/session_06/R0006N2_metadata.json": {
+    "mtime": 1788254540.573243,
+    "seen": 1789042765.4597595,
+    "ast_hash": "a687ff1f40277c84e7dc1bd172306d31",
+    "semantic_hash": ""
+  },
+  "dataset/elbow_movement/session_06/R0006N3_metadata.json": {
+    "mtime": 1788254540.7736974,
+    "seen": 1789042765.4597614,
+    "ast_hash": "361b061f3721b0616cf2b9c98e6a047a",
+    "semantic_hash": ""
+  },
+  "dataset/elbow_movement/session_06/R0006N4_metadata.json": {
+    "mtime": 1788254540.9406822,
+    "seen": 1789042765.4597638,
+    "ast_hash": "e03a68075fd3119413705f9bdd6e5c94",
+    "semantic_hash": ""
+  },
+  "dataset/incomplete_range/session_03/R0003N2_metadata.json": {
+    "mtime": 1788254537.7578032,
+    "seen": 1789042765.4597657,
+    "ast_hash": "4c905575adfd6f56600afc45051ec922",
+    "semantic_hash": ""
+  },
+  "dataset/incomplete_range/session_03/R0003N3_metadata.json": {
+    "mtime": 1788254538.0704484,
+    "seen": 1789042765.4597678,
+    "ast_hash": "823adac3f25ca239d6f254e93713ea19",
+    "semantic_hash": ""
+  },
+  "dataset/incomplete_range/session_03/R0003N4_metadata.json": {
+    "mtime": 1788254538.3090782,
+    "seen": 1789042765.4597704,
+    "ast_hash": "01439294f76a39263d2cb8048005ad16",
+    "semantic_hash": ""
+  },
+  "dataset/incomplete_range/session_04/R0004N2_metadata.json": {
+    "mtime": 1788254538.7298648,
+    "seen": 1789042765.4597733,
+    "ast_hash": "eb15b3922800e87039f50d3c2fcc0fb9",
+    "semantic_hash": ""
+  },
+  "dataset/incomplete_range/session_04/R0004N3_metadata.json": {
+    "mtime": 1788254538.9972072,
+    "seen": 1789042765.4597752,
+    "ast_hash": "eef5e728fa5ed4673ba2e547e1c1977d",
+    "semantic_hash": ""
+  },
+  "dataset/incomplete_range/session_04/R0004N4_metadata.json": {
+    "mtime": 1788254539.21769,
+    "seen": 1789042765.4597776,
+    "ast_hash": "a7568fa72262a06a94e73a4d3a76873d",
+    "semantic_hash": ""
+  },
+  "host/live_tool/js/anatomical-calibration.js": {
+    "mtime": 1789039826.684532,
+    "seen": 1789042765.4612522,
+    "ast_hash": "bfcdb52277e5c1f03d35f56f7fa5a14d",
+    "semantic_hash": ""
+  },
+  "host/live_tool/js/arm-avatar.js": {
+    "mtime": 1789041402.6248717,
+    "seen": 1789042765.4612548,
+    "ast_hash": "d77ab2f6477a2edfe462fd9edcae4b97",
+    "semantic_hash": ""
+  },
+  "host/tests/scripts/replay_arm_avatar.mjs": {
+    "mtime": 1789042309.715063,
+    "seen": 1789042765.461404,
+    "ast_hash": "63ebcc76ae0f2a7333dc2a4a561bf215",
+    "semantic_hash": ""
+  },
+  "host/tests/scripts/test_anatomical_calibration.mjs": {
+    "mtime": 1789039743.2240307,
+    "seen": 1789042765.4614172,
+    "ast_hash": "6cb84a8a6191dc9740c79b1e9b777105",
+    "semantic_hash": ""
+  },
+  "host/tests/scripts/test_arm_avatar.mjs": {
+    "mtime": 1789041479.4673262,
+    "seen": 1789042765.461419,
+    "ast_hash": "29dcbee127334c2da9297e84eb600ca0",
+    "semantic_hash": ""
+  },
+  "scripts/audit_includes.py": {
+    "mtime": 1788165389.0115294,
+    "seen": 1789042765.461424,
+    "ast_hash": "7a8460a744fe77fe276f447b8368e0e0",
+    "semantic_hash": ""
+  },
+  "scripts/build_dataset_config.py": {
+    "mtime": 1788774654.9725995,
+    "seen": 1789042765.4614265,
+    "ast_hash": "d6f5a9bf2217a803c8712ccbbe9ccd2b",
+    "semantic_hash": ""
+  },
+  "scripts/format.ps1": {
+    "mtime": 1788165389.1806297,
+    "seen": 1789042765.4614284,
+    "ast_hash": "040a369f19632554a02ba66776bcea99",
+    "semantic_hash": ""
+  },
+  "scripts/format.sh": {
+    "mtime": 1788165389.1967797,
+    "seen": 1789042765.4614303,
+    "ast_hash": "b21198c04e9cb11e36fd1cfdc03b044f",
+    "semantic_hash": ""
+  },
+  "scripts/lint.ps1": {
+    "mtime": 1788165389.1978073,
+    "seen": 1789042765.4614322,
+    "ast_hash": "30d1f77ed2452f97a02bd59965942eb1",
+    "semantic_hash": ""
+  },
+  "scripts/lint.sh": {
+    "mtime": 1788165389.1999867,
+    "seen": 1789042765.4614341,
+    "ast_hash": "9abbe25cd993f43dac5162cd39d49dc4",
+    "semantic_hash": ""
+  },
+  "scripts/qa_session.py": {
+    "mtime": 1788774882.6654599,
+    "seen": 1789042765.4614358,
+    "ast_hash": "dbf0293247221fc45e8a8117bfdede2d",
+    "semantic_hash": ""
+  },
+  "scripts/setup.ps1": {
+    "mtime": 1788165389.2034543,
+    "seen": 1789042765.461438,
+    "ast_hash": "61fb49a5ffe333f71dfbb272757bef89",
+    "semantic_hash": ""
+  },
+  "scripts/setup.sh": {
+    "mtime": 1788165389.2064533,
+    "seen": 1789042765.4614398,
+    "ast_hash": "cd416c084936a2ab5d45ad8a2aed37db",
+    "semantic_hash": ""
+  },
+  ".github/workflows/docs.yml": {
+    "mtime": 1788165354.4884775,
+    "seen": 1789042765.4614418,
+    "ast_hash": "56ed8076a97ae07819b4c4bffbd318e2",
+    "semantic_hash": ""
+  },
+  ".github/workflows/firmware-build.yml": {
+    "mtime": 1788165354.499333,
+    "seen": 1789042765.4614437,
+    "ast_hash": "71358b3023b6cb2b3829cd5ceb50826d",
+    "semantic_hash": ""
+  },
+  ".github/workflows/host-tests.yml": {
+    "mtime": 1788165354.550783,
+    "seen": 1789042765.4614453,
+    "ast_hash": "0b9e081a113a5fb6e798f93f2975de6e",
+    "semantic_hash": ""
+  },
+  ".zcode/plans/plan-sess_cfe75341-d976-4cc1-a97a-1fa8ecf90d24.md": {
+    "mtime": 1788165354.6215177,
+    "seen": 1789042765.4614472,
+    "ast_hash": "399f14ed7861a3c6ad4ab0edeb0e2cb8",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1789023373.6850655,
+    "seen": 1789042765.461449,
+    "ast_hash": "c4d2dbded309e1289399e642c914fafe",
+    "semantic_hash": ""
+  },
+  "CMakeLists.txt": {
+    "mtime": 1788165354.638151,
+    "seen": 1789042765.4614506,
+    "ast_hash": "fd6d529e09c176a71a2741e6cdb80770",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1788165354.655141,
+    "seen": 1789042765.4614525,
+    "ast_hash": "dfffc1a4cb37bd6f148d912734ab637f",
+    "semantic_hash": ""
+  },
+  "dataset/README.md": {
+    "mtime": 1788774906.0245686,
+    "seen": 1789042765.4614544,
+    "ast_hash": "4ff0477e032783f49862817622856ed5",
+    "semantic_hash": ""
+  },
+  "docs/README.md": {
+    "mtime": 1788165354.7002459,
+    "seen": 1789042765.461456,
+    "ast_hash": "c13c5d8b1b565407b30ddf8c48e15738",
+    "semantic_hash": ""
+  },
+  "docs/api/README.md": {
+    "mtime": 1788165354.7369854,
+    "seen": 1789042765.4614582,
+    "ast_hash": "ec71ea3ae0af2c5b7331fe0e61c4501a",
+    "semantic_hash": ""
+  },
+  "docs/architecture/ble-only-firmware-cleanup-design.md": {
+    "mtime": 1788165354.9365005,
+    "seen": 1789042765.46146,
+    "ast_hash": "3d3340f79991beb0a28ba20070b39008",
+    "semantic_hash": ""
+  },
+  "docs/architecture/dataset-acquisition-branch-context.md": {
+    "mtime": 1789021150.8239639,
+    "seen": 1789042765.4614623,
+    "ast_hash": "136cc28b58fc95e8a10500011602bd5a",
+    "semantic_hash": ""
+  },
+  "docs/architecture/firmware-architecture.md": {
+    "mtime": 1788165355.054839,
+    "seen": 1789042765.4614642,
+    "ast_hash": "47c8cf57d6c312dc0e9dce92233d4f08",
+    "semantic_hash": ""
+  },
+  "docs/architecture/firmware-issues-and-fixes.md": {
+    "mtime": 1788165355.3667395,
+    "seen": 1789042765.4614656,
+    "ast_hash": "96590057683f2b5055196623429fb19d",
+    "semantic_hash": ""
+  },
+  "docs/architecture/four-node-live-preview-training-csv-design.md": {
+    "mtime": 1788165355.5205393,
+    "seen": 1789042765.4614677,
+    "ast_hash": "45beb45bcfa04075606e1f4b73310e41",
+    "semantic_hash": ""
+  },
+  "docs/architecture/linux-ble-stop-gatt-response-design.md": {
+    "mtime": 1788165355.585547,
+    "seen": 1789042765.4614694,
+    "ast_hash": "f969da6a650dbeb924809a8c95369acd",
+    "semantic_hash": ""
+  },
+  "docs/architecture/motion-engine-contract.md": {
+    "mtime": 1789042466.2708526,
+    "seen": 1789042765.4614713,
+    "ast_hash": "5b8ee5a1e056aec62ca492e9704675b1",
+    "semantic_hash": ""
+  },
+  "docs/architecture/project-details.html": {
+    "mtime": 1788165356.824645,
+    "seen": 1789042765.461473,
+    "ast_hash": "4cb413cef546587e320cf70abf6ced34",
+    "semantic_hash": ""
+  },
+  "docs/guides/ble-only-firmware-cleanup.md": {
+    "mtime": 1788165357.0096536,
+    "seen": 1789042765.461475,
+    "ast_hash": "014e6890a4060b3fd6ec431d5b4b681e",
+    "semantic_hash": ""
+  },
+  "docs/guides/four-node-live-csv-validation.md": {
+    "mtime": 1788165357.0587559,
+    "seen": 1789042765.461477,
+    "ast_hash": "a00c2e211b4026af766ee912bd59a693",
+    "semantic_hash": ""
+  },
+  "docs/guides/four-node-live-preview-training-csv-implementation.md": {
+    "mtime": 1788165357.1085074,
+    "seen": 1789042765.461479,
+    "ast_hash": "1311c041255b57e2edf0b0259d3d658a",
+    "semantic_hash": ""
+  },
+  "docs/guides/multi-node-integration-test-plan.md": {
+    "mtime": 1788165357.1409717,
+    "seen": 1789042765.4614806,
+    "ast_hash": "d9f9aed022b3076a791a26a18821dd4c",
+    "semantic_hash": ""
+  },
+  "docs/guides/two-node-live-csv-fix.md": {
+    "mtime": 1788165357.143481,
+    "seen": 1789042765.4614825,
+    "ast_hash": "eb7e70e49655d1dbc9fe02be534a9e8c",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-08-25-node-master-transfer-throughput.md": {
+    "mtime": 1788165364.9072273,
+    "seen": 1789042765.461484,
+    "ast_hash": "e9d53cd3725ca63ffb87b09d25fefc5b",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-09-10-three-pose-anatomical-arm-calibration.md": {
+    "mtime": 1789039575.7642672,
+    "seen": 1789042765.4614859,
+    "ast_hash": "da847de9532275d49b8c9a11179f7d6d",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/specs/2026-09-01-live-bicep-curl-inference-design.md": {
+    "mtime": 1788770706.0561237,
+    "seen": 1789042765.4614875,
+    "ast_hash": "bbbb7ec19d718d388825bb5c4cbd59a0",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/specs/2026-09-07-bicep-curl-model-v2-design.md": {
+    "mtime": 1788774916.2960403,
+    "seen": 1789042765.4614894,
+    "ast_hash": "7990fd5b0373f465f0ccb77361be5525",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/specs/2026-09-10-three-pose-anatomical-arm-calibration-design.md": {
+    "mtime": 1789039247.80261,
+    "seen": 1789042765.461491,
+    "ast_hash": "e2d676e934aba7525bc108291e01aef0",
+    "semantic_hash": ""
+  },
+  "firmware/Master/Drivers/CMSIS/Device/ST/STM32WBxx/LICENSE.txt": {
+    "mtime": 1788165365.4230292,
+    "seen": 1789042765.461493,
+    "ast_hash": "a2d6a600020f0de40643c5722607e504",
+    "semantic_hash": ""
+  },
+  "firmware/Master/Drivers/CMSIS/LICENSE.txt": {
+    "mtime": 1788165365.604052,
+    "seen": 1789042765.4614947,
+    "ast_hash": "c4082b6c254c9fb71136710391d9728b",
+    "semantic_hash": ""
+  },
+  "firmware/Master/Drivers/STM32WBxx_HAL_Driver/LICENSE.txt": {
+    "mtime": 1788165366.0139613,
+    "seen": 1789042765.4614966,
+    "ast_hash": "8f0c510f852957f5da06e2a3bc6b67bb",
+    "semantic_hash": ""
+  },
+  "firmware/Node/Drivers/CMSIS/Device/ST/STM32WBxx/LICENSE.txt": {
+    "mtime": 1788165369.3825088,
+    "seen": 1789042765.4614987,
+    "ast_hash": "a2d6a600020f0de40643c5722607e504",
+    "semantic_hash": ""
+  },
+  "firmware/Node/Drivers/CMSIS/LICENSE.txt": {
+    "mtime": 1788165369.8220057,
+    "seen": 1789042765.4615004,
+    "ast_hash": "c4082b6c254c9fb71136710391d9728b",
+    "semantic_hash": ""
+  },
+  "firmware/Node/Drivers/STM32WBxx_HAL_Driver/LICENSE.txt": {
+    "mtime": 1788165370.3465524,
+    "seen": 1789042765.4615026,
+    "ast_hash": "8f0c510f852957f5da06e2a3bc6b67bb",
+    "semantic_hash": ""
+  },
+  "firmware/Node/size_budget.md": {
+    "mtime": 1788165371.9038892,
+    "seen": 1789042765.4615042,
+    "ast_hash": "b57a5fb3ca8b9993aa0df6552b88e7fc",
+    "semantic_hash": ""
+  },
+  "firmware/third_party/icm45686-driver/README.md": {
+    "mtime": 1788165373.1291683,
+    "seen": 1789042765.461506,
+    "ast_hash": "a0865f877d8404e9f820695266543af3",
+    "semantic_hash": ""
+  },
+  "firmware/third_party/sh2/NOTICE.txt": {
+    "mtime": 1788165373.4642053,
+    "seen": 1789042765.4615076,
+    "ast_hash": "47109103691760ba475797c88f717a84",
+    "semantic_hash": ""
+  },
+  "firmware/third_party/sh2/README.md": {
+    "mtime": 1788165373.4652061,
+    "seen": 1789042765.4615095,
+    "ast_hash": "96424687cd719fc787ff595947c90bd7",
+    "semantic_hash": ""
+  },
+  "firmware/third_party/w25qxx/README.md": {
+    "mtime": 1788165373.8157496,
+    "seen": 1789042765.4615111,
+    "ast_hash": "6db57b4e60cef24c4fdd6f83e1f95468",
+    "semantic_hash": ""
+  },
+  "host/desktop_tool/Exoskeleton.html": {
+    "mtime": 1788198221.2876537,
+    "seen": 1789042765.4615128,
+    "ast_hash": "877bb8e292f89feaf590c108be14b92b",
+    "semantic_hash": ""
+  },
+  "host/desktop_tool/README_BINARY_RECORDING.md": {
+    "mtime": 1788165386.937786,
+    "seen": 1789042765.4615145,
+    "ast_hash": "b00cf7f3ed6d992810dab5190eee1b01",
+    "semantic_hash": ""
+  },
+  "host/live_tool/README.md": {
+    "mtime": 1789017996.1856563,
+    "seen": 1789042765.4615164,
+    "ast_hash": "b2e3f1c874becfc390ca7adb039652df",
+    "semantic_hash": ""
+  },
+  "host/live_tool/index.html": {
+    "mtime": 1789041676.5833433,
+    "seen": 1789042765.461518,
+    "ast_hash": "12909d168dd6be267f7f63a6faf7fc7d",
+    "semantic_hash": ""
+  },
+  "host/live_tool/model/README.txt": {
+    "mtime": 1788327858.671295,
+    "seen": 1789042765.4615204,
+    "ast_hash": "e20b2bd101796e7bca0525d6b269436d",
+    "semantic_hash": ""
+  },
+  "host/tests/cpp/CMakeLists.txt": {
+    "mtime": 1788422625.7793245,
+    "seen": 1789042765.461522,
+    "ast_hash": "b26c1b5fe221e16e823dbf21bc3afb31",
+    "semantic_hash": ""
+  },
+  "docs/architecture/pitch-deck.pdf": {
+    "mtime": 1788165356.6696918,
+    "seen": 1789042765.4615245,
+    "ast_hash": "417a549de5edb975e300035efc7bfb0e",
+    "semantic_hash": ""
+  },
+  "docs/architecture/project-conversation.pdf": {
+    "mtime": 1788165356.7260647,
+    "seen": 1789042765.461526,
+    "ast_hash": "b9c977abc840c1131b68750f63562a32",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Exo-Skeleton Master PCB Schematics Release 1_1.22.26.pdf": {
+    "mtime": 1788165357.94352,
+    "seen": 1789042765.461528,
+    "ast_hash": "c66f1505dec53d1383bc170830fa53e8",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Exo-Skeleton Sensor Node PCB Schematics Release 1_1.22.26.pdf": {
+    "mtime": 1788165358.573426,
+    "seen": 1789042765.46153,
+    "ast_hash": "988ad12c3d6250ed2fd096db59df76ca",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Exoskeleton - Power Architecture Testing and Sensor Validation Report_1.20.26.pdf": {
+    "mtime": 1788165358.864184,
+    "seen": 1789042765.4615316,
+    "ast_hash": "c9e50689bd2d1ac2f1b863ce2f22d8dd",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Exoskeleton - Sensor Enclosure Placement Explorations Report II_ 2.25.26.pdf": {
+    "mtime": 1788165360.7403388,
+    "seen": 1789042765.4615335,
+    "ast_hash": "e82ddee106f9f2b0a35110b2daa4b387",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Exoskeleton - Sensor Enclosure Placement Explorations Report I_ 2.25.26.pdf": {
+    "mtime": 1788165360.970693,
+    "seen": 1789042765.4615352,
+    "ast_hash": "dcc60fb0a6193fca3c4e84f32af2469f",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/MASTER Assembly DI3.pdf": {
+    "mtime": 1788165360.9929225,
+    "seen": 1789042765.4615371,
+    "ast_hash": "bd3f1aa6abe224351a522f7c1302a6ec",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Master PCB Enclosure Bottom DI3.pdf": {
+    "mtime": 1788165360.9994063,
+    "seen": 1789042765.4615388,
+    "ast_hash": "e6c080b473dbc73cc578608247dfa3cb",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Master PCB Enclosure Top Part.pdf": {
+    "mtime": 1788165361.0088725,
+    "seen": 1789042765.4615407,
+    "ast_hash": "df08ce0e1a1424f2eaa2bc088502387c",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/NODE Assembly DI3.pdf": {
+    "mtime": 1788165361.0283074,
+    "seen": 1789042765.4615426,
+    "ast_hash": "674723c69f1b20f651a9d1419df7d6e7",
+    "semantic_hash": ""
+  },
+  "docs/hardware/client-files/Node PCB Enclosure Bottom DI4.pdf": {
+    "mtime": 1788165361.063925,
+    "seen": 1789042765.4615445,
+    "ast_hash": "f5ae5df16940d263fdf8edb2ff6dd0cc",
+    "semantic_hash": ""
+  },
+  "docs/hardware/feasibility-report.pdf": {
+    "mtime": 1788165364.895174,
+    "seen": 1789042765.4615464,
+    "ast_hash": "bae44cf9c808b90609d9e378e5033aae",
+    "semantic_hash": ""
+  },
+  "docs/hardware/milestones.pdf": {
+    "mtime": 1788165364.9041648,
+    "seen": 1789042765.4615483,
+    "ast_hash": "aaeceea117d4f9442ca55e3904ea8e9b",
+    "semantic_hash": ""
+  },
+  "host/notebooks/Vantage_Suit_Bicep_Curl.ipynb - Colab.pdf": {
+    "mtime": 1788261481.9447231,
+    "seen": 1789042765.46155,
+    "ast_hash": "ce191bf62617d9b3451b80045b84727e",
+    "semantic_hash": ""
   }
 }
