@@ -39,6 +39,10 @@ for (const scenario of fixture.scenarios) {
       engine.clearCalibration();
     } else if (step.op === "beginHinge") {
       engine.beginHingeCalibration(step.nowMs);
+    } else if (step.op === "beginSide") {
+      engine.beginSideCalibration(step.nowMs);
+    } else if (step.op === "beginForward") {
+      engine.beginForwardCalibration(step.nowMs);
     } else if (step.op === "rezero") {
       engine.rezeroFromRest();
     } else if (step.op === "sample") {
@@ -46,6 +50,7 @@ for (const scenario of fixture.scenarios) {
       // main.js drives updateCalibration from the render tick; the harness
       // pumps it after every sample so a hold can complete mid-stream.
       engine.updateCalibration(step.nowMs);
+      engine.updateAnatomicalCalibration(step.nowMs);
     } else if (step.op === "frame") {
       const frame = engine.computeFrame(step.nowMs);
       frames.push({ label: step.label, frame, logRow: engine.toLogRow(frame) });
@@ -61,6 +66,10 @@ for (const scenario of fixture.scenarios) {
     events,
     calibrationState: engine.state,
     calibrationMessage: engine.calibrationMessage,
+    anatomicalState: engine.anatomicalState,
+    anatomicalMessage: engine.anatomicalMessage,
+    anatomicalQuality: engine.anatomicalQuality,
+    mountCorrections: Object.fromEntries(engine.mountCorrection),
     hingeState: engine.hingeState,
     hingeMessage: engine.hingeMessage,
     hingeQuality: engine.hingeQuality,

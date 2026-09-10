@@ -1,3 +1,5 @@
+import { solveMountCorrection } from "./anatomical-calibration.js";
+
 /**
  * Motion Engine: deterministic body-segment kinematics for Coach Assist.
  *
@@ -82,6 +84,13 @@ export const MOTION_DEFAULTS = {
   syncSkewMaxMs: 60,
   /** Calibration aborts if stillness cannot be achieved within this. */
   calibrationTimeoutMs: 15000,
+
+  // --- anatomical frame calibration: two held straight-arm directions ---
+  anatomicalHoldSeconds: 1.0,
+  anatomicalMinAngleDeg: 60,
+  anatomicalMaxAngleDeg: 120,
+  anatomicalMaxSegmentMismatchDeg: 15,
+  anatomicalTimeoutMs: 15000,
 
   // --- hinge (range) calibration: a few slow reps to find the joint axis ---
   /** Only frames past this flexion contribute; small rotations have noisy axes. */
@@ -296,6 +305,15 @@ export const HINGE_STATE = {
   FAILED: "failed",
 };
 
+export const ANATOMICAL_STATE = {
+  NONE: "none",
+  SIDE_CAPTURING: "side_capturing",
+  SIDE_READY: "side_ready",
+  FORWARD_CAPTURING: "forward_capturing",
+  CALIBRATED: "calibrated",
+  FAILED: "failed",
+};
+
 export class MotionEngine {
   constructor(options = {}) {
     this.options = { ...MOTION_DEFAULTS, ...options };
@@ -316,6 +334,11 @@ export class MotionEngine {
      * exported axes land in the anatomical frame. Empty until then.
      */
     this.mountCorrection = new Map();
+    this.anatomicalState = ANATOMICAL_STATE.NONE;
+    this.anatomicalMessage = "Capture a neutral pose first.";
+    this.anatomicalQuality = null;
+    this.anatomicalCapture = null;
+    this.anatomicalSide = null;
 
     this.state = CAL_STATE.UNCALIBRATED;
     this.calibrationMessage = "Not calibrated.";
@@ -371,6 +394,9 @@ export class MotionEngine {
     );
     this.latest.set(nodeId, { quat, gyroMag, deviceS, receivedAtMs: nowMs });
     if (this.state === CAL_STATE.CAPTURING) this.accumulateCalibration(nodeId, quat, gyroMag, nowMs);
+    if (this.anatomicalCapture && this.requiredNodes.includes(nodeId)) {
+      this.accumulateAnatomicalCalibration(nodeId, quat, gyroMag, nowMs);
+    }
     return true;
   }
 
@@ -381,6 +407,11 @@ export class MotionEngine {
    * the gate below decides when enough still data has accumulated.
    */
   beginCalibration(nowMs = performance.now()) {
+    this.clearAnatomicalCalibration();
+    this.clearHinge();
+    this.restElbow = null;
+    this.driftDeg = 0;
+    this.stillSinceMs = null;
     this.state = CAL_STATE.CAPTURING;
     this.calibrationMessage = "Hold the neutral pose still.";
     this.capture = {
@@ -410,6 +441,7 @@ export class MotionEngine {
     this.capture = null;
     this.state = CAL_STATE.UNCALIBRATED;
     this.calibrationMessage = "Not calibrated.";
+    this.clearAnatomicalCalibration();
     // The hinge axis is expressed relative to the neutral reference, so a new
     // neutral pose invalidates it. Keeping it would silently report flexion
     // about a stale axis.
@@ -516,10 +548,220 @@ export class MotionEngine {
     this.calibratedAtMs = nowMs;
     this.capture = null;
     this.calibrationMessage = "Calibrated.";
+    this.anatomicalMessage = "Next: hold a straight-arm raise to your right side.";
     this.onEvent({
       kind: "calibration_complete",
       nodes: [...reference.keys()],
       heldMs: Math.round(heldMs),
+    });
+  }
+
+  // ------------------------------------------------ anatomical calibration
+
+  clearAnatomicalCalibration() {
+    this.mountCorrection.clear();
+    this.anatomicalState = ANATOMICAL_STATE.NONE;
+    this.anatomicalMessage =
+      this.state === CAL_STATE.CALIBRATED
+        ? "Next: hold a straight-arm raise to your right side."
+        : "Capture a neutral pose first.";
+    this.anatomicalQuality = null;
+    this.anatomicalCapture = null;
+    this.anatomicalSide = null;
+  }
+
+  beginSideCalibration(nowMs = performance.now()) {
+    if (this.state !== CAL_STATE.CALIBRATED) {
+      this.anatomicalState = ANATOMICAL_STATE.FAILED;
+      this.anatomicalMessage = "Capture a neutral pose first.";
+      return false;
+    }
+    this.mountCorrection.clear();
+    this.anatomicalSide = null;
+    this.anatomicalQuality = null;
+    this.startAnatomicalCapture("side", nowMs);
+    this.onEvent({ kind: "anatomical_side_started" });
+    return true;
+  }
+
+  beginForwardCalibration(nowMs = performance.now()) {
+    if (this.state !== CAL_STATE.CALIBRATED) {
+      this.anatomicalState = ANATOMICAL_STATE.FAILED;
+      this.anatomicalMessage = "Capture a neutral pose first.";
+      return false;
+    }
+    if (!this.anatomicalSide) {
+      this.anatomicalState = ANATOMICAL_STATE.FAILED;
+      this.anatomicalMessage = "Capture the right-side raise first.";
+      return false;
+    }
+    this.startAnatomicalCapture("forward", nowMs);
+    this.onEvent({ kind: "anatomical_forward_started" });
+    return true;
+  }
+
+  startAnatomicalCapture(kind, nowMs) {
+    this.anatomicalState =
+      kind === "side" ? ANATOMICAL_STATE.SIDE_CAPTURING : ANATOMICAL_STATE.FORWARD_CAPTURING;
+    this.anatomicalMessage =
+      kind === "side"
+        ? "Hold your straight arm 90 degrees to your right side."
+        : "Hold your straight arm 90 degrees forward.";
+    this.anatomicalCapture = {
+      kind,
+      startedAtMs: nowMs,
+      windowStartedAtMs: nowMs,
+      samples: new Map(this.requiredNodes.map((id) => [id, []])),
+      lastRejectReason: null,
+    };
+  }
+
+  restartAnatomicalHold(nowMs, message, reason = null) {
+    const capture = this.anatomicalCapture;
+    if (!capture) return;
+    for (const samples of capture.samples.values()) samples.length = 0;
+    capture.windowStartedAtMs = nowMs;
+    capture.lastRejectReason = reason;
+    this.anatomicalMessage = message;
+  }
+
+  accumulateAnatomicalCalibration(nodeId, quat, gyroMag, nowMs) {
+    const capture = this.anatomicalCapture;
+    const reference = this.reference.get(nodeId);
+    if (!capture || !reference) return;
+    if (gyroMag > this.options.stillGyroMaxRadps) {
+      this.restartAnatomicalHold(
+        nowMs,
+        "Settle into the pose and hold still.",
+        `motion on N${nodeId} (${gyroMag.toFixed(2)} rad/s)`
+      );
+      return;
+    }
+    capture.samples.get(nodeId).push(quatMultiply(quatConjugate(reference), quat));
+  }
+
+  failAnatomicalCalibration(message) {
+    this.anatomicalState = ANATOMICAL_STATE.FAILED;
+    this.anatomicalMessage = message;
+    this.anatomicalCapture = null;
+    this.mountCorrection.clear();
+    this.anatomicalQuality = null;
+    this.onEvent({ kind: "anatomical_failed", reason: message });
+  }
+
+  updateAnatomicalCalibration(nowMs = performance.now()) {
+    const capture = this.anatomicalCapture;
+    if (!capture) return;
+    if (nowMs - capture.startedAtMs > this.options.anatomicalTimeoutMs) {
+      this.failAnatomicalCalibration(
+        capture.lastRejectReason
+          ? `Timed out: ${capture.lastRejectReason}.`
+          : `Timed out waiting for the ${capture.kind} pose.`
+      );
+      return;
+    }
+    if (nowMs - capture.windowStartedAtMs < this.options.anatomicalHoldSeconds * 1000) return;
+
+    const deviceTimes = [];
+    for (const nodeId of this.requiredNodes) {
+      const entry = this.latest.get(nodeId);
+      if (!entry || nowMs - entry.receivedAtMs > this.options.staleMaxMs) {
+        this.restartAnatomicalHold(nowMs, `Waiting for N${nodeId} data.`);
+        return;
+      }
+      deviceTimes.push(entry.deviceS);
+      if (capture.samples.get(nodeId).length < 4) {
+        this.anatomicalMessage = `Waiting for N${nodeId} samples.`;
+        return;
+      }
+    }
+    const skewMs = (Math.max(...deviceTimes) - Math.min(...deviceTimes)) * 1000;
+    if (Math.abs(skewMs) > this.options.syncSkewMaxMs) {
+      this.restartAnatomicalHold(nowMs, "Sensor samples are not synchronized.", "sample skew");
+      return;
+    }
+
+    const captured = new Map();
+    for (const nodeId of this.requiredNodes) {
+      const samples = capture.samples.get(nodeId);
+      const mean = quatAverage(samples);
+      const spreadDeg = mean ? quatSpreadDeg(samples, mean) : Infinity;
+      const angleDeg = mean ? quatAngleDeg(mean) : null;
+      const axis = mean ? quatAxis(mean) : null;
+      if (!mean || spreadDeg > this.options.stillSpreadMaxDeg) {
+        this.restartAnatomicalHold(
+          nowMs,
+          "Pose was not steady - keep holding.",
+          `N${nodeId} spread ${spreadDeg.toFixed(1)} deg`
+        );
+        return;
+      }
+      if (
+        angleDeg === null ||
+        angleDeg < this.options.anatomicalMinAngleDeg ||
+        angleDeg > this.options.anatomicalMaxAngleDeg ||
+        !axis
+      ) {
+        this.failAnatomicalCalibration(
+          `N${nodeId} raise must be ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees.`
+        );
+        return;
+      }
+      captured.set(nodeId, { mean, axis, angleDeg, spreadDeg });
+    }
+
+    const angles = this.requiredNodes.map((id) => captured.get(id).angleDeg);
+    const mismatchDeg = Math.abs(angles[0] - angles[1]);
+    if (mismatchDeg > this.options.anatomicalMaxSegmentMismatchDeg) {
+      this.failAnatomicalCalibration(
+        `Keep the elbow straight; segment raises differed by ${mismatchDeg.toFixed(1)} degrees.`
+      );
+      return;
+    }
+
+    if (capture.kind === "side") {
+      this.anatomicalSide = captured;
+      this.anatomicalCapture = null;
+      this.anatomicalState = ANATOMICAL_STATE.SIDE_READY;
+      this.anatomicalMessage = "Side pose captured. Next: hold a straight-arm forward raise.";
+      this.onEvent({
+        kind: "anatomical_side_complete",
+        anglesDeg: Object.fromEntries([...captured].map(([id, value]) => [id, value.angleDeg])),
+      });
+      return;
+    }
+
+    const solved = new Map();
+    const quality = {};
+    for (const nodeId of this.requiredNodes) {
+      const result = solveMountCorrection(this.anatomicalSide.get(nodeId).axis, captured.get(nodeId).axis);
+      if (!result.ok) {
+        const message =
+          result.reason === "axes_not_independent"
+            ? "Side and forward poses were not independent; repeat the directional captures."
+            : `Could not solve anatomical mapping for N${nodeId} (${result.reason}).`;
+        this.failAnatomicalCalibration(message);
+        return;
+      }
+      solved.set(nodeId, result.mount);
+      quality[nodeId] = {
+        ...result.quality,
+        sideAngleDeg: this.anatomicalSide.get(nodeId).angleDeg,
+        forwardAngleDeg: captured.get(nodeId).angleDeg,
+        sideSpreadDeg: this.anatomicalSide.get(nodeId).spreadDeg,
+        forwardSpreadDeg: captured.get(nodeId).spreadDeg,
+      };
+    }
+
+    this.mountCorrection = solved;
+    this.anatomicalQuality = { nodes: quality, segmentMismatchDeg: mismatchDeg };
+    this.anatomicalCapture = null;
+    this.anatomicalState = ANATOMICAL_STATE.CALIBRATED;
+    this.anatomicalMessage = "Anatomical axes calibrated.";
+    this.onEvent({
+      kind: "anatomical_complete",
+      mounts: Object.fromEntries(solved),
+      quality: this.anatomicalQuality,
     });
   }
 
@@ -822,7 +1064,12 @@ export class MotionEngine {
         // The plan's stated scope limits, carried in-band so a consumer cannot
         // mistake this for trunk-relative or anatomically-aligned data.
         trunkReferenced: false,
-        axisFrame: this.mountCorrection.size > 0 ? "anatomical" : "sensor_neutral",
+        anatomicalState: this.anatomicalState,
+        anatomicalMessage: this.anatomicalMessage,
+        anatomicalQuality: this.anatomicalQuality,
+        axisFrame: this.requiredNodes.every((id) => this.mountCorrection.has(id))
+          ? "anatomical"
+          : "sensor_neutral",
       },
     };
     this.lastFrame = frame;

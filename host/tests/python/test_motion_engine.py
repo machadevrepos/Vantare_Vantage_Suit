@@ -80,6 +80,10 @@ def q_angle_deg(q):
     return 2.0 * math.degrees(math.acos(min(abs(q[0]), 1.0)))
 
 
+def packet_to_q(packet):
+    return (packet["qw"], packet["qx"], packet["qy"], packet["qz"])
+
+
 def to_values(q, gyro=(0.0, 0.0, 0.0)):
     """The subset of BNO columns the Motion Engine reads."""
     w, x, y, z = q
@@ -134,6 +138,12 @@ class MotionFixtureBuilder:
 
     def begin_hinge(self):
         self.steps.append({"op": "beginHinge", "nowMs": self.now_ms})
+
+    def begin_side(self):
+        self.steps.append({"op": "beginSide", "nowMs": self.now_ms})
+
+    def begin_forward(self):
+        self.steps.append({"op": "beginForward", "nowMs": self.now_ms})
 
     def rezero(self):
         self.steps.append({"op": "rezero"})
@@ -225,6 +235,13 @@ class MotionEngineTest(unittest.TestCase):
             MotionEngineTest.scenario_hinge_calibration(),
             MotionEngineTest.scenario_hinge_rejects_compound_motion(),
             MotionEngineTest.scenario_flexion_gate_and_drift(),
+            MotionEngineTest.scenario_anatomical_calibration(),
+            MotionEngineTest.scenario_anatomical_rejects_collinear_poses(),
+            MotionEngineTest.scenario_anatomical_rejects_motion(),
+            MotionEngineTest.scenario_anatomical_rejects_under_raise(),
+            MotionEngineTest.scenario_anatomical_rejects_bent_elbow(),
+            MotionEngineTest.scenario_anatomical_rejects_sync_loss(),
+            MotionEngineTest.scenario_anatomical_reset(),
         ]
 
     @staticmethod
@@ -244,6 +261,23 @@ class MotionEngineTest(unittest.TestCase):
             FOREARM: q_mul(NEUTRAL[FOREARM], q_axis_angle(axis, degrees)),
             AUX: NEUTRAL[AUX],
         }
+
+    @staticmethod
+    def rigid_arm_pose(axis, degrees):
+        """Both tracked segments rotate together in their anatomical frame."""
+        delta = q_axis_angle(axis, degrees)
+        return {
+            UPPER_ARM: q_mul(NEUTRAL[UPPER_ARM], delta),
+            FOREARM: q_mul(NEUTRAL[FOREARM], delta),
+            AUX: NEUTRAL[AUX],
+        }
+
+    @staticmethod
+    def capture_anatomical(builder):
+        builder.begin_side()
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.begin_forward()
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
 
     @staticmethod
     def scenario_elbow_sweep():
@@ -427,6 +461,81 @@ class MotionEngineTest(unittest.TestCase):
         builder.frame("after_rezero")
         return builder.build()
 
+    @staticmethod
+    def scenario_anatomical_calibration():
+        builder = MotionEngineTest.calibrated_builder("anatomical")
+        MotionEngineTest.capture_anatomical(builder)
+        test_axis = (0.31, -0.52, 0.79)
+        builder.hold(MotionEngineTest.rigid_arm_pose(test_axis, 73.0), 0.2)
+        builder.frame("corrected_pose")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_rejects_collinear_poses():
+        builder = MotionEngineTest.calibrated_builder("anatomical_collinear")
+        side = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
+        builder.begin_side()
+        builder.hold(side, 1.2)
+        builder.begin_forward()
+        builder.hold(side, 1.2)
+        builder.frame("after_rejection")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_rejects_motion():
+        builder = MotionEngineTest.calibrated_builder(
+            "anatomical_motion", {"anatomicalTimeoutMs": 1800}
+        )
+        builder.begin_side()
+        builder.hold(
+            MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0),
+            2.2,
+            gyro=(0.4, 0.0, 0.0),
+        )
+        builder.frame("after_rejection")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_rejects_under_raise():
+        builder = MotionEngineTest.calibrated_builder("anatomical_under_raise")
+        builder.begin_side()
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 45.0), 1.2)
+        builder.frame("after_rejection")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_rejects_bent_elbow():
+        builder = MotionEngineTest.calibrated_builder("anatomical_bent")
+        poses = {
+            UPPER_ARM: q_mul(NEUTRAL[UPPER_ARM], q_axis_angle((0.0, 0.0, -1.0), 90.0)),
+            FOREARM: q_mul(NEUTRAL[FOREARM], q_axis_angle((0.0, 0.0, -1.0), 65.0)),
+            AUX: NEUTRAL[AUX],
+        }
+        builder.begin_side()
+        builder.hold(poses, 1.2)
+        builder.frame("after_rejection")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_rejects_sync_loss():
+        builder = MotionEngineTest.calibrated_builder(
+            "anatomical_sync", {"anatomicalTimeoutMs": 1800}
+        )
+        builder.begin_side()
+        pose = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
+        for _ in range(55):
+            builder.push_pose(pose, skew_ms=150.0)
+        builder.frame("after_rejection")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_reset():
+        builder = MotionEngineTest.calibrated_builder("anatomical_reset")
+        MotionEngineTest.capture_anatomical(builder)
+        builder.clear_calibration()
+        builder.frame("after_clear")
+        return builder.build()
+
     # ----------------------------------------------------------------- tests
 
     def frames(self, scenario):
@@ -526,6 +635,53 @@ class MotionEngineTest(unittest.TestCase):
         frame = self.frames("elbow_sweep")["elbow_90"]["frame"]
         self.assertFalse(frame["diagnostics"]["trunkReferenced"])
         self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
+
+    def test_directional_poses_recover_anatomical_segment_axes(self):
+        scenario = self.results["anatomical"]
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        frame = self.frames("anatomical")["corrected_pose"]["frame"]
+        expected = q_axis_angle((0.31, -0.52, 0.79), 73.0)
+        for field in ("upper_arm_orientation", "forearm_orientation"):
+            measured = packet_to_q(frame[field])
+            error = q_angle_deg(q_mul(q_conj(expected), measured))
+            self.assertLess(error, 1e-4, f"{field} anatomical error {error}")
+        self.assertEqual(frame["diagnostics"]["axisFrame"], "anatomical")
+        self.assertEqual(set(scenario["mountCorrections"]), {"2", "4"})
+
+    def test_collinear_directional_poses_are_rejected_atomically(self):
+        scenario = self.results["anatomical_collinear"]
+        self.assertEqual(scenario["anatomicalState"], "failed")
+        self.assertEqual(scenario["mountCorrections"], {})
+        frame = self.frames("anatomical_collinear")["after_rejection"]["frame"]
+        self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
+        self.assertIn("independent", scenario["anatomicalMessage"].lower())
+
+    def test_clear_calibration_removes_anatomical_mounts(self):
+        scenario = self.results["anatomical_reset"]
+        self.assertEqual(scenario["mountCorrections"], {})
+        self.assertEqual(scenario["anatomicalState"], "none")
+        frame = self.frames("anatomical_reset")["after_clear"]["frame"]
+        self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
+
+    def test_directional_capture_rejects_continuous_motion(self):
+        scenario = self.results["anatomical_motion"]
+        self.assertEqual(scenario["anatomicalState"], "failed")
+        self.assertIn("motion", scenario["anatomicalMessage"].lower())
+
+    def test_directional_capture_rejects_under_raise(self):
+        scenario = self.results["anatomical_under_raise"]
+        self.assertEqual(scenario["anatomicalState"], "failed")
+        self.assertIn("60-120", scenario["anatomicalMessage"])
+
+    def test_directional_capture_rejects_bent_elbow(self):
+        scenario = self.results["anatomical_bent"]
+        self.assertEqual(scenario["anatomicalState"], "failed")
+        self.assertIn("elbow straight", scenario["anatomicalMessage"].lower())
+
+    def test_directional_capture_rejects_unsynchronized_nodes(self):
+        scenario = self.results["anatomical_sync"]
+        self.assertEqual(scenario["anatomicalState"], "failed")
+        self.assertIn("skew", scenario["anatomicalMessage"].lower())
 
     def test_hinge_calibration_finds_a_consistent_axis(self):
         scenario = self.results["hinge"]
