@@ -104,9 +104,13 @@ export class Ui {
 
     // motion engine
     this.calibrateBtn = el("calibrateBtn");
+    this.sideCalibrateBtn = el("sideCalibrateBtn");
+    this.forwardCalibrateBtn = el("forwardCalibrateBtn");
     this.hingeBtn = el("hingeBtn");
     this.clearCalibrationBtn = el("clearCalibrationBtn");
+    this.anatomicalNote = el("anatomicalNote");
     this.hingeNote = el("hingeNote");
+    this.axisFrameValue = el("axisFrameValue");
     this.flexionValue = el("flexionValue");
     this.offAxisValue = el("offAxisValue");
     this.driftValue = el("driftValue");
@@ -231,6 +235,16 @@ export class Ui {
     this.calibrationBadge.className = `badge ${badge.cls}`;
     this.calibrationNote.textContent = diagnostics.calibrationMessage || "";
 
+    // Ordered workflow: step 2 needs a neutral, step 3 needs the side capture,
+    // step 4 needs the full anatomical solve. Enablement follows the pose the
+    // wearer must hold next, not the click order.
+    this.setEnabled(this.sideCalibrateBtn, diagnostics.calibrationState === "calibrated");
+    this.setEnabled(this.forwardCalibrateBtn, diagnostics.anatomicalState === "side_ready");
+    this.setEnabled(this.hingeBtn, diagnostics.anatomicalState === "calibrated");
+    this.anatomicalNote.textContent = this.anatomicalSummary(diagnostics);
+    this.axisFrameValue.textContent =
+      diagnostics.axisFrame === "anatomical" ? "anatomical" : "sensor-neutral";
+
     const hingeBadges = {
       none: "Hinge axis not calibrated — flexion unavailable.",
       capturing: "Measuring the hinge axis: perform a few slow full reps.",
@@ -273,6 +287,19 @@ export class Ui {
     this.motionSkewValue.textContent =
       diagnostics.skewMs === null ? "—" : `${diagnostics.skewMs.toFixed(0)} ms`;
     this.yawDriftValue.textContent = deg(diagnostics.yawDriftHintDeg);
+  }
+
+  /** Instruction line plus the measured three-pose quality, when solved. */
+  anatomicalSummary(diagnostics) {
+    const message = diagnostics.anatomicalMessage || "";
+    const quality = diagnostics.anatomicalQuality;
+    if (!quality || !quality.nodes) return message;
+    const parts = Object.entries(quality.nodes)
+      .map(([id, q]) => `N${id} side ${q.sideAngleDeg.toFixed(0)}° / fwd ${q.forwardAngleDeg.toFixed(0)}°`);
+    if (typeof quality.segmentMismatchDeg === "number") {
+      parts.push(`mismatch ${quality.segmentMismatchDeg.toFixed(1)}°`);
+    }
+    return `${message} (${parts.join(" · ")})`;
   }
 
   // ------------------------------------------------------------------ reps

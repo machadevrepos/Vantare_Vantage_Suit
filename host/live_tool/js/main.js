@@ -135,6 +135,8 @@ class App {
     this.ui.disarmBtn.addEventListener("click", () => this.haptics.disarm("user disarmed"));
     this.ui.downloadBtn.addEventListener("click", () => this.onDownload());
     this.ui.calibrateBtn.addEventListener("click", () => this.motion.beginCalibration());
+    this.ui.sideCalibrateBtn.addEventListener("click", () => this.motion.beginSideCalibration());
+    this.ui.forwardCalibrateBtn.addEventListener("click", () => this.motion.beginForwardCalibration());
     this.ui.hingeBtn.addEventListener("click", () => this.motion.beginHingeCalibration());
     this.ui.resetRepsBtn.addEventListener("click", () => {
       this.repAnalyzer.reset();
@@ -165,6 +167,7 @@ class App {
   motionTick() {
     const now = performance.now();
     this.motion.updateCalibration(now);
+    this.motion.updateAnatomicalCalibration(now);
     const frame = this.motion.computeFrame(now);
     this.lastMotionFrame = frame;
     this.armAvatar.render(frame);
@@ -208,6 +211,19 @@ class App {
       );
     } else if (event.kind === "hinge_failed") {
       this.ui.log(`Hinge calibration failed: ${event.reason}`, "warn");
+    } else if (event.kind === "anatomical_side_started") {
+      this.ui.log("Anatomical step 2: hold your straight arm 90 degrees to the right, still.");
+    } else if (event.kind === "anatomical_side_complete") {
+      const angles = Object.entries(event.anglesDeg || {})
+        .map(([id, deg]) => `N${id} ${deg.toFixed(0)} deg`)
+        .join(", ");
+      this.ui.log(`Side raise captured (${angles}). Step 3: hold the straight-arm forward raise.`);
+    } else if (event.kind === "anatomical_forward_started") {
+      this.ui.log("Anatomical step 3: hold your straight arm 90 degrees forward, still.");
+    } else if (event.kind === "anatomical_complete") {
+      this.ui.log("Anatomical arm axes calibrated — directional tracking is live.");
+    } else if (event.kind === "anatomical_failed") {
+      this.ui.log(`Anatomical calibration failed: ${event.reason}`, "warn");
     }
   }
 

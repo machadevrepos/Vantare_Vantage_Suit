@@ -427,15 +427,19 @@
         <h2>Motion Engine <span class="hint">Coach Assist · deterministic · no model</span></h2>
         <div class="body">
           <div class="row" style="margin-bottom:10px">
-            <button id="calibrateBtn" class="sm">Calibrate Neutral Pose</button>
-            <button id="hingeBtn" class="sm">Calibrate Hinge</button>
+            <button id="calibrateBtn" class="sm">1. Calibrate Neutral</button>
+            <button id="sideCalibrateBtn" class="sm" disabled>2. Capture Right-Side Raise</button>
+            <button id="forwardCalibrateBtn" class="sm" disabled>3. Capture Forward Raise</button>
+            <button id="hingeBtn" class="sm" disabled>4. Calibrate Elbow Hinge</button>
             <button id="clearCalibrationBtn" class="sm">Clear</button>
             <span class="spacer" style="flex:1"></span>
             <span id="calibrationBadge" class="badge idle">Not calibrated</span>
           </div>
           <div id="calibrationNote" class="note"></div>
+          <div id="anatomicalNote" class="note"></div>
           <div id="hingeNote" class="note"></div>
           <dl class="kv">
+            <dt>Axis frame</dt><dd id="axisFrameValue">sensor-neutral</dd>
             <dt>Elbow flexion</dt><dd id="flexionValue">—</dd>
             <dt>Off-axis (excess)</dt><dd id="offAxisValue">—</dd>
             <dt>Drift estimate</dt><dd id="driftValue">—</dd>
@@ -448,17 +452,18 @@
           </dl>
           <div class="note">
             Calibration-pose relative, not trunk relative: no torso reference in the
-            arm-only rig. Axes are in each sensor's neutral frame until a two-pose
-            mount calibration is added.
+            arm-only rig. Axes stay in each sensor's neutral frame until the
+            three-pose workflow (neutral, right-side raise, forward raise) maps
+            them into the anatomical arm frame.
           </div>
         </div>
       </section>
 
       <section class="panel">
-        <h2>3D Arm <span class="hint">60 Hz smoothed upper arm + elbow · mount-relative</span></h2>
+        <h2>3D Arm <span class="hint">60 Hz smoothed upper arm + forearm · anatomical</span></h2>
         <div class="body tight">
           <div id="armAvatar" class="arm-avatar" data-state="anatomical_calibration_required"></div>
-          <div class="note">N4 drives the mount-relative upper-arm view; N2-vs-N4 drives elbow flexion. Adaptive 60 Hz interpolation suppresses jitter and holds brief sync dropouts without changing the recorded motion data.</div>
+          <div class="note">Directional segment tracking starts only after the three-pose workflow (steps 1&ndash;3 above): N4 and N2 mount corrections are solved from the side and forward raises, then the upper arm and the elbow-relative forearm render at 60&nbsp;Hz. Adaptive interpolation suppresses jitter and holds brief sync dropouts without changing the recorded motion data.</div>
         </div>
       </section>
 

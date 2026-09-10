@@ -15,6 +15,8 @@ PREPROC = (TOOL / "js" / "ml-preprocessing.js").read_text(encoding="utf-8")
 INFERENCE = (TOOL / "js" / "live-inference.js").read_text(encoding="utf-8")
 HAPTIC = (TOOL / "js" / "haptic-controller.js").read_text(encoding="utf-8")
 MAIN = (TOOL / "js" / "main.js").read_text(encoding="utf-8")
+UI = (TOOL / "js" / "ui.js").read_text(encoding="utf-8")
+INDEX = (TOOL / "index.html").read_text(encoding="utf-8")
 CONVERTER = (ROOT / "host" / "desktop_tool" / "vantage_bin_to_csv.py").read_text(encoding="utf-8")
 
 
@@ -223,6 +225,55 @@ class LiveToolInvariants(unittest.TestCase):
             f"fixture suite failed:\n{result.stdout}\n{result.stderr}",
         )
         self.assertRegex(result.stdout, r"All \d+ preprocessing fixture tests passed")
+
+
+    def test_anatomical_workflow_controls_are_ordered_and_bound(self):
+        """The three-pose workflow must read as numbered steps in DOM order:
+        neutral, side raise, forward raise, elbow hinge. Each step binds to its
+        MotionEngine method, the app pumps the directional capture, and the UI
+        enables a step only after its prerequisite."""
+        for button in ("calibrateBtn", "sideCalibrateBtn", "forwardCalibrateBtn", "hingeBtn"):
+            self.assertIn(f'id="{button}"', INDEX)
+        self.assertIn(">1. Calibrate Neutral</button>", INDEX)
+        self.assertIn(">2. Capture Right-Side Raise</button>", INDEX)
+        self.assertIn(">3. Capture Forward Raise</button>", INDEX)
+        self.assertIn(">4. Calibrate Elbow Hinge</button>", INDEX)
+        side_at = INDEX.find('id="sideCalibrateBtn"')
+        forward_at = INDEX.find('id="forwardCalibrateBtn"')
+        hinge_at = INDEX.find('id="hingeBtn"')
+        self.assertLess(side_at, forward_at, "side capture must precede forward capture")
+        self.assertLess(forward_at, hinge_at, "forward capture must precede the hinge")
+
+        # App bindings: each button drives the matching MotionEngine entry point.
+        self.assertIn(
+            'this.ui.sideCalibrateBtn.addEventListener("click", () => this.motion.beginSideCalibration());',
+            MAIN,
+        )
+        self.assertIn(
+            'this.ui.forwardCalibrateBtn.addEventListener("click", () => this.motion.beginForwardCalibration());',
+            MAIN,
+        )
+        self.assertIn("this.motion.updateAnatomicalCalibration(now);", MAIN)
+
+        # Anatomical transitions stay audible in the NDJSON audit trail.
+        self.assertIn('event.kind === "anatomical_complete"', MAIN)
+        self.assertIn('event.kind === "anatomical_failed"', MAIN)
+
+        # UI renders the ordered enablement and the honest axis frame.
+        self.assertIn('anatomicalState === "side_ready"', UI)
+        self.assertIn('anatomicalState === "calibrated"', UI)
+        self.assertIn("axisFrame", UI)
+        self.assertIn("anatomicalMessage", UI)
+
+    def test_avatar_note_requires_the_three_pose_workflow(self):
+        """Directional tracking claims must be gated on the workflow in the
+        panel the user actually reads, not just in code comments."""
+        self.assertIn("three-pose", INDEX)
+
+    def test_live_tool_build_bumped_for_anatomical_workflow(self):
+        """A stale cached module graph silently runs the old two-pose UI; the
+        visible build string must move with this workflow change."""
+        self.assertIn('LIVE_TOOL_BUILD = "2026-09-10.17"', INFERENCE)
 
 
 if __name__ == "__main__":
