@@ -135,6 +135,9 @@ class MotionFixtureBuilder:
     def begin_hinge(self):
         self.steps.append({"op": "beginHinge", "nowMs": self.now_ms})
 
+    def rezero(self):
+        self.steps.append({"op": "rezero"})
+
     def rep(self, axis=(0.0, 1.0, 0.0), angles=(50, 80, 110, 130, 110, 80, 50), holds=2):
         """One flexion rep about `axis`.
 
@@ -221,6 +224,7 @@ class MotionEngineTest(unittest.TestCase):
             MotionEngineTest.scenario_uncalibrated_and_stale(),
             MotionEngineTest.scenario_hinge_calibration(),
             MotionEngineTest.scenario_hinge_rejects_compound_motion(),
+            MotionEngineTest.scenario_flexion_gate_and_drift(),
         ]
 
     @staticmethod
@@ -351,11 +355,13 @@ class MotionEngineTest(unittest.TestCase):
             for _ in range(3):
                 builder.push_pose(MotionEngineTest.flexed_poses(degrees))
             builder.frame(f"flex_{int(degrees)}")
-        # Motion about an axis perpendicular to the hinge: flexion should stay
-        # near zero while the off-axis term carries the whole rotation.
+        # Motion about an axis perpendicular to the hinge, kept below the
+        # validity gate: flexion stays near zero while the off-axis term carries
+        # the whole rotation. The gate's own behaviour is covered separately by
+        # scenario_flexion_gate_and_drift.
         for _ in range(3):
-            builder.push_pose(MotionEngineTest.flexed_poses(60.0, axis=(1.0, 0.0, 0.0)))
-        builder.frame("off_axis_60")
+            builder.push_pose(MotionEngineTest.flexed_poses(25.0, axis=(1.0, 0.0, 0.0)))
+        builder.frame("off_axis_25")
         return builder.build()
 
     @staticmethod
@@ -371,6 +377,54 @@ class MotionEngineTest(unittest.TestCase):
         for axis in ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0), (1.0, 1.0, 0.0)):
             builder.rep(axis=axis)
         builder.frame("after_incoherent")
+        return builder.build()
+
+    @staticmethod
+    def scenario_flexion_gate_and_drift():
+        """Validity gate on off-axis motion, plus the drift monitor.
+
+        Both come straight from hardware sessions on 2026-09-10: the random
+        movement set showed 26% of frames reporting an impossible |flexion| >
+        150 deg, and the 60 s stillness hold showed the relative rotation
+        growing +9.9 deg/min almost entirely off-hinge.
+        """
+        builder = MotionEngineTest.calibrated_builder("gate_and_drift")
+        builder.begin_hinge()
+        for _ in range(4):
+            builder.rep()
+
+        # A large rotation about an axis perpendicular to the hinge: the signed
+        # angle must be withheld rather than reported as a confident number.
+        for _ in range(3):
+            builder.push_pose(MotionEngineTest.flexed_poses(120.0, axis=(1.0, 0.0, 0.0)))
+        builder.frame("far_off_axis")
+
+        # Back near neutral and held still: this is a rest observation, and with
+        # no simulated drift the estimate must stay at zero.
+        builder.hold(MotionEngineTest.flexed_poses(0.0), 1.0)
+        builder.frame("rest_no_drift")
+
+        # Now simulate drift: rotate only the FOREARM sensor's reference, which
+        # is what independent yaw drift between two sensors looks like.
+        drift = q_axis_angle((0.2, 0.3, 0.93), 12.0)
+        drifted = {
+            UPPER_ARM: NEUTRAL[UPPER_ARM],
+            FOREARM: q_mul(drift, NEUTRAL[FOREARM]),
+            AUX: NEUTRAL[AUX],
+        }
+        builder.hold(drifted, 1.2)
+        builder.frame("rest_with_drift")
+        # An implausible flexion at modest off-axis: the twist term can run to
+        # +/-180 when the quaternion scalar nears zero, which the off-axis gate
+        # alone does not catch. 41 real frames did exactly this on 2026-09-10.
+        for _ in range(3):
+            builder.push_pose(MotionEngineTest.flexed_poses(172.0))
+        builder.frame("implausible_flexion")
+
+        builder.rezero()
+        for _ in range(3):
+            builder.push_pose(drifted)
+        builder.frame("after_rezero")
         return builder.build()
 
     # ----------------------------------------------------------------- tests
@@ -498,9 +552,10 @@ class MotionEngineTest(unittest.TestCase):
 
     def test_off_axis_motion_is_reported_separately(self):
         """Compound motion must not be laundered into the flexion number."""
-        frame = self.frames("hinge")["off_axis_60"]["frame"]
+        frame = self.frames("hinge")["off_axis_25"]["frame"]
         self.assertLess(abs(frame["elbow_flexion_deg"]), 1.0)
-        self.assertAlmostEqual(frame["elbow_off_axis_deg"], 60.0, delta=1e-3)
+        self.assertAlmostEqual(frame["elbow_off_axis_deg"], 25.0, delta=1e-3)
+        self.assertTrue(frame["diagnostics"]["flexionValid"])
 
     def test_incoherent_motion_yields_no_hinge_axis(self):
         scenario = self.results["hinge_incoherent"]
@@ -515,6 +570,43 @@ class MotionEngineTest(unittest.TestCase):
         self.assertIsNone(frame["elbow_flexion_deg"])
         self.assertIsNone(frame["elbow_off_axis_deg"])
         self.assertEqual(frame["diagnostics"]["hingeState"], "none")
+
+    def test_flexion_is_withheld_when_motion_leaves_the_hinge(self):
+        frame = self.frames("gate_and_drift")["far_off_axis"]["frame"]
+        self.assertIsNone(frame["elbow_flexion_deg"])
+        self.assertFalse(frame["diagnostics"]["flexionValid"])
+        # The unsigned angle and the off-axis term are still reported.
+        self.assertIsNotNone(frame["elbow_relative_rotation_deg"])
+        self.assertGreater(frame["elbow_off_axis_deg"], 35.0)
+
+    def test_implausible_flexion_is_withheld(self):
+        frame = self.frames("gate_and_drift")["implausible_flexion"]["frame"]
+        self.assertIsNone(frame["elbow_flexion_deg"])
+        self.assertFalse(frame["diagnostics"]["flexionValid"])
+
+    def test_rest_without_drift_reports_no_drift(self):
+        frame = self.frames("gate_and_drift")["rest_no_drift"]["frame"]
+        self.assertTrue(frame["diagnostics"]["restObserved"])
+        self.assertLess(frame["diagnostics"]["driftDeg"], 1e-3)
+        self.assertFalse(frame["diagnostics"]["recalibrationRecommended"])
+
+    def test_drift_is_measured_from_a_rest_observation(self):
+        frame = self.frames("gate_and_drift")["rest_with_drift"]["frame"]
+        self.assertAlmostEqual(frame["diagnostics"]["driftDeg"], 12.0, delta=0.5)
+
+    def test_rezero_clears_the_drift(self):
+        frame = self.frames("gate_and_drift")["after_rezero"]["frame"]
+        self.assertLess(frame["diagnostics"]["driftDeg"], 1e-3)
+        self.assertAlmostEqual(frame["elbow_flexion_deg"], 0.0, delta=0.5)
+        kinds = [e["kind"] for e in self.results["gate_and_drift"]["events"]]
+        self.assertIn("drift_rezeroed", kinds)
+
+    def test_off_axis_excess_removes_the_drift_estimate(self):
+        """The gate must threshold on excess, or drift would gate normal reps."""
+        frame = self.frames("gate_and_drift")["rest_with_drift"]["frame"]
+        raw = frame["elbow_off_axis_deg"]
+        excess = frame["elbow_off_axis_excess_deg"]
+        self.assertLess(excess, raw)
 
     def test_log_row_matches_the_declared_columns(self):
         entry = self.frames("elbow_sweep")["elbow_90"]

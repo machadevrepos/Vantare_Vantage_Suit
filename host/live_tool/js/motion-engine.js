@@ -92,6 +92,33 @@ export const MOTION_DEFAULTS = {
   hingeMaxSpreadDeg: 15,
   /** Hinge capture aborts if it cannot be satisfied within this. */
   hingeTimeoutMs: 30000,
+
+  // --- validity gate and drift monitor ---
+  /**
+   * Withhold signed flexion once the motion departs this far from the hinge.
+   * Swing-twist about a fixed axis is only meaningful while the movement is
+   * roughly about that axis; past that the twist term becomes unstable. In the
+   * 2026-09-10T06:02 random-movement session, 26% of frames reported
+   * |flexion| > 150 deg — impossible for an elbow — at a median off-axis of
+   * 74 deg. A withheld value is far better than a confident wrong one.
+   */
+  flexionMaxOffAxisDeg: 35,
+  /**
+   * Anatomical plausibility limit on flexion magnitude. The off-axis gate alone
+   * is not sufficient: replaying the 06:02 session, 41 frames still reported
+   * |flexion| > 150 deg while sitting at only 25-34 deg off-axis, because the
+   * twist term can approach +/-180 whenever the quaternion's scalar part nears
+   * zero. A human elbow tops out near 145-150 deg; the clean sets peaked at
+   * 137-140 deg, so this rejects every impossible frame while keeping all real
+   * ones.
+   */
+  flexionMaxPlausibleDeg: 150,
+  /** Continuous stillness needed before a frame counts as a rest observation. */
+  restStillMs: 400,
+  /** A rest only informs drift when the arm is back near the calibration pose. */
+  restMaxFlexionDeg: 20,
+  /** Recommend recalibration once the drift estimate passes this. */
+  driftWarnDeg: 15,
 };
 
 // ------------------------------------------------------------------ quaternion
@@ -308,6 +335,19 @@ export class MotionEngine {
     this.hingeQuality = null;
     this.hingeCapture = null;
 
+    /**
+     * Drift monitor. The BNO085's magnetometer-free heading means N2 and N4
+     * drift apart over a session. Measured on 2026-09-10T05:59 (60 s of held
+     * stillness): the relative rotation grew +9.9 deg/min, almost all of it
+     * perpendicular to the hinge, while each segment's own deviation stayed
+     * flat at +0.03 deg/min. So the hinge projection protects flexion
+     * (-4.1 deg/min) but the off-axis term absorbs the drift, and any fixed
+     * off-axis threshold would decay over a session if left uncorrected.
+     */
+    this.restElbow = null;
+    this.driftDeg = 0;
+    this.stillSinceMs = null;
+
     this.onEvent = options.onEvent || (() => {});
   }
 
@@ -374,6 +414,9 @@ export class MotionEngine {
     // neutral pose invalidates it. Keeping it would silently report flexion
     // about a stale axis.
     this.clearHinge();
+    this.restElbow = null;
+    this.driftDeg = 0;
+    this.stillSinceMs = null;
     this.onEvent({ kind: "calibration_cleared" });
   }
 
@@ -589,6 +632,67 @@ export class MotionEngine {
     return quatMultiply(quatMultiply(quatConjugate(mount), delta), mount);
   }
 
+  // ------------------------------------------------------------ drift monitor
+
+  /**
+   * Update the drift estimate from rest observations.
+   *
+   * When the arm is held still AND back near the calibration pose, the elbow
+   * relative rotation should be identity. Whatever it actually is, is the
+   * accumulated inter-sensor drift. Both conditions matter: stillness alone
+   * would let a rest in a flexed pose be mistaken for drift.
+   *
+   * This only measures. Applying the correction is `rezeroFromRest`, kept
+   * manual because a wearer whose "rest" is not the calibration pose would
+   * otherwise have a wrong reference silently written underneath them.
+   */
+  updateDrift(elbowQuat, nowMs) {
+    const allStill = this.trackedNodes.every((id) => {
+      const entry = this.latest.get(id);
+      return entry && entry.gyroMag <= this.options.stillGyroMaxRadps;
+    });
+    if (!allStill) {
+      this.stillSinceMs = null;
+      return;
+    }
+    if (this.stillSinceMs === null) this.stillSinceMs = nowMs;
+    if (nowMs - this.stillSinceMs < this.options.restStillMs) return;
+
+    // Near-neutral must be judged on the TOTAL elbow rotation, not on the
+    // flexion component. A large purely off-axis pose has a flexion of ~0 and
+    // would otherwise be mistaken for the neutral pose, so the drift estimate
+    // would absorb the whole off-axis rotation and disarm the validity gate.
+    const totalDeg = quatAngleDeg(elbowQuat);
+    if (totalDeg === null || totalDeg > this.options.restMaxFlexionDeg) return;
+
+    this.restElbow = elbowQuat;
+    this.driftDeg = quatAngleDeg(elbowQuat) || 0;
+  }
+
+  /**
+   * Re-zero the elbow reference to the current pose, cancelling accumulated
+   * drift without redoing the neutral pose or the hinge axis. Only valid from
+   * a rest observation, which is what makes "the current pose is neutral" a
+   * safe assumption.
+   */
+  rezeroFromRest() {
+    if (this.state !== CAL_STATE.CALIBRATED) return false;
+    if (!this.restElbow) return false;
+    // Correct using the STORED rest observation, never the live pose. Reading
+    // this.latest here would re-zero to whatever the arm happens to be doing at
+    // the moment the button is pressed, which is exactly the silent
+    // mis-referencing this method is supposed to avoid.
+    //
+    // With E_rest = conj(N) * raw_rest, the neutral that makes the rest pose
+    // read as identity is N' = N * E_rest.
+    this.neutralElbow = quatMultiply(this.neutralElbow, this.restElbow);
+    const previous = this.driftDeg;
+    this.restElbow = null;
+    this.driftDeg = 0;
+    this.onEvent({ kind: "drift_rezeroed", clearedDeg: previous });
+    return true;
+  }
+
   // ------------------------------------------------------------------ frame
 
   /**
@@ -625,6 +729,8 @@ export class MotionEngine {
     let yawDriftHintDeg = null;
     let flexionDeg = null;
     let offAxisDeg = null;
+    let offAxisExcessDeg = null;
+    let flexionValid = true;
     if (calibrated && requiredFresh && this.neutralElbow) {
       const raw = this.rawElbowRelative(
         this.latest.get(this.roles.upperArm).quat,
@@ -642,6 +748,19 @@ export class MotionEngine {
           flexionDeg = decomposed.twistDeg;
           offAxisDeg = decomposed.swingDeg;
         }
+      }
+      this.updateDrift(elbow, nowMs);
+      // Drift lands almost entirely in the off-axis term, so the validity gate
+      // is applied to the EXCESS over the current drift estimate. Comparing the
+      // raw value would make a normal rep fail the gate after a few minutes.
+      offAxisExcessDeg = offAxisDeg === null ? null : Math.max(0, offAxisDeg - this.driftDeg);
+      const tooFarOffAxis =
+        offAxisExcessDeg !== null && offAxisExcessDeg > this.options.flexionMaxOffAxisDeg;
+      const implausible =
+        flexionDeg !== null && Math.abs(flexionDeg) > this.options.flexionMaxPlausibleDeg;
+      if (tooFarOffAxis || implausible) {
+        flexionValid = false;
+        flexionDeg = null;
       }
       // With no magnetometer, a slow common-mode rotation of both segments that
       // is NOT accompanied by elbow change is the visible signature of yaw
@@ -668,6 +787,11 @@ export class MotionEngine {
        * and that elbow_flexion_deg is describing only part of what happened.
        */
       elbow_off_axis_deg: offAxisDeg,
+      /**
+       * Off-axis with the drift estimate removed. This, not the raw value, is
+       * what a consumer should threshold on to detect compound motion.
+       */
+      elbow_off_axis_excess_deg: offAxisExcessDeg,
       upper_arm_deviation_deg: calibrated ? quatAngleDeg(upperDelta) : null,
       health: {
         n2: Boolean(fresh.get(2)),
@@ -682,6 +806,15 @@ export class MotionEngine {
         hingeState: this.hingeState,
         hingeMessage: this.hingeMessage,
         hingeQuality: this.hingeQuality,
+        /**
+         * Why elbow_flexion_deg is null: false here means the motion was too
+         * far off the hinge for a signed angle to mean anything, as opposed to
+         * no hinge calibration having been run at all.
+         */
+        flexionValid,
+        driftDeg: this.driftDeg,
+        recalibrationRecommended: this.driftDeg > this.options.driftWarnDeg,
+        restObserved: this.restElbow !== null,
         forearmDeviationDeg: calibrated ? quatAngleDeg(foreDelta) : null,
         elbowAxisNeutralFrame: elbowAxis,
         skewMs,
@@ -716,7 +849,9 @@ export class MotionEngine {
       num(f.elbow_relative_rotation_deg),
       num(f.elbow_flexion_deg),
       num(f.elbow_off_axis_deg),
+      num(f.elbow_off_axis_excess_deg),
       num(f.upper_arm_deviation_deg),
+      num(f.diagnostics.driftDeg),
       f.health.calibrated ? 1 : 0,
       f.health.synchronized ? 1 : 0,
       num(f.diagnostics.skewMs),
@@ -728,7 +863,8 @@ export class MotionEngine {
       "t_s",
       "upper_qx", "upper_qy", "upper_qz", "upper_qw",
       "fore_qx", "fore_qy", "fore_qz", "fore_qw",
-      "elbow_deg", "elbow_flexion_deg", "elbow_off_axis_deg", "upper_dev_deg",
+      "elbow_deg", "elbow_flexion_deg", "elbow_off_axis_deg",
+      "elbow_off_axis_excess_deg", "upper_dev_deg", "drift_deg",
       "calibrated", "synchronized", "skew_ms",
     ];
   }

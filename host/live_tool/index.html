@@ -386,7 +386,8 @@
           <div id="hingeNote" class="note"></div>
           <dl class="kv">
             <dt>Elbow flexion</dt><dd id="flexionValue">—</dd>
-            <dt>Off-axis</dt><dd id="offAxisValue">—</dd>
+            <dt>Off-axis (excess)</dt><dd id="offAxisValue">—</dd>
+            <dt>Drift estimate</dt><dd id="driftValue">—</dd>
             <dt>Elbow rotation (unsigned)</dt><dd id="elbowValue">—</dd>
             <dt>Upper-arm deviation</dt><dd id="upperDevValue">—</dd>
             <dt>Forearm deviation</dt><dd id="foreDevValue">—</dd>
@@ -498,7 +499,7 @@
   <script type="module">
     import { MotionEngine } from "./js/motion-engine.js";
 
-    const EXPECTED_LOG_COLUMNS = 16;
+    const EXPECTED_LOG_COLUMNS = 18;
     const engineOk =
       typeof MotionEngine.prototype.beginHingeCalibration === "function" &&
       MotionEngine.LOG_COLUMNS.length === EXPECTED_LOG_COLUMNS;

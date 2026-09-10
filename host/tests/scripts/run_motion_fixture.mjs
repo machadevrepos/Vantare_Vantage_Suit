@@ -39,6 +39,8 @@ for (const scenario of fixture.scenarios) {
       engine.clearCalibration();
     } else if (step.op === "beginHinge") {
       engine.beginHingeCalibration(step.nowMs);
+    } else if (step.op === "rezero") {
+      engine.rezeroFromRest();
     } else if (step.op === "sample") {
       engine.pushSample(step.node, step.values, step.deviceS, step.nowMs);
       // main.js drives updateCalibration from the render tick; the harness
@@ -62,6 +64,7 @@ for (const scenario of fixture.scenarios) {
     hingeState: engine.hingeState,
     hingeMessage: engine.hingeMessage,
     hingeQuality: engine.hingeQuality,
+    driftDeg: engine.driftDeg,
   });
 }
 

@@ -108,6 +108,7 @@ export class Ui {
     this.hingeNote = el("hingeNote");
     this.flexionValue = el("flexionValue");
     this.offAxisValue = el("offAxisValue");
+    this.driftValue = el("driftValue");
     this.calibrationBadge = el("calibrationBadge");
     this.calibrationNote = el("calibrationNote");
     this.elbowValue = el("elbowValue");
@@ -232,13 +233,20 @@ export class Ui {
     // values: "-25" next to "25" must not be readable as a typo.
     this.flexionValue.textContent = (() => {
       const value = frame.elbow_flexion_deg;
-      if (value === null || value === undefined) return "—";
+      if (value === null || value === undefined) {
+        // Distinguish "no hinge axis yet" from "this motion is not a hinge".
+        return diagnostics.flexionValid === false ? "off-hinge" : "—";
+      }
       // toFixed keeps the sign of a negative zero, which renders as "-0.0".
       const fixed = value.toFixed(1);
       if (fixed === "-0.0") return "0.0°";
       return `${value > 0 ? "+" : ""}${fixed}°`;
     })();
-    this.offAxisValue.textContent = deg(frame.elbow_off_axis_deg);
+    this.offAxisValue.textContent = deg(frame.elbow_off_axis_excess_deg);
+    // Drift is a session-health number, so it is flagged rather than just shown.
+    this.driftValue.textContent = diagnostics.recalibrationRecommended
+      ? `${diagnostics.driftDeg.toFixed(1)}° — recalibrate`
+      : deg(diagnostics.driftDeg);
     this.elbowValue.textContent = deg(frame.elbow_relative_rotation_deg);
     this.upperDevValue.textContent = deg(frame.upper_arm_deviation_deg);
     this.foreDevValue.textContent = deg(diagnostics.forearmDeviationDeg);

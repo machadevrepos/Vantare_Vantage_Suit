@@ -30,6 +30,7 @@ unusable for measuring rep tempo.
   elbow_relative_rotation_deg: 87.4 | null,   // unsigned composite
   elbow_flexion_deg:            87.1 | null,   // signed, about the measured hinge
   elbow_off_axis_deg:            2.3 | null,   // how un-hinge-like the motion is
+  elbow_off_axis_excess_deg:     2.3 | null,   // off-axis minus the drift estimate
   upper_arm_deviation_deg:      12.1 | null,
   health: { n2, n3, n4, synchronized, calibrated },   // all booleans
   diagnostics: { ... }                                // ours, not part of the contract
@@ -44,7 +45,8 @@ unusable for measuring rep tempo.
 | `forearm_orientation` | Same, for the forearm. |
 | `elbow_relative_rotation_deg` | Rotation between the two segments, referenced to neutral. `0` = calibration pose. Unsigned, range `[0, 180]`. Kept for continuity; **prefer `elbow_flexion_deg`**. |
 | `elbow_flexion_deg` | Signed rotation about the measured hinge axis — the real joint angle. `null` until a hinge calibration has run. |
-| `elbow_off_axis_deg` | The part of the motion that was *not* about the hinge. Near zero on a clean rep; large on compound movement, meaning `elbow_flexion_deg` describes only part of what happened. |
+| `elbow_off_axis_deg` | The part of the motion that was *not* about the hinge. Near zero on a clean rep; large on compound movement. |
+| `elbow_off_axis_excess_deg` | Off-axis with the drift estimate removed. **Threshold on this, not the raw value** — drift inflates the raw term by ~10°/min. |
 | `upper_arm_deviation_deg` | How far the upper arm has moved from its neutral pose. |
 | `health.n2/n3/n4` | That node produced a sample within the last 250 ms. |
 | `health.synchronized` | Device-time skew between N2 and N4 is within 60 ms. |
@@ -207,6 +209,61 @@ elbow axis — do not apply `forearm_orientation` as a raw quaternion.** Limit 1
 below (axes in the sensor's neutral frame) then does not affect the elbow at
 all, because a scalar angle carries no frame. The shoulder still needs the full
 mount correction, so treat upper-arm orientation as provisional until then.
+
+## Field results — 2026-09-10 drift and random-movement tests
+
+Two targeted tests, both of which changed the implementation.
+
+### Drift (05:59, 60 s of held stillness)
+
+| Metric | Drift rate | Residual noise |
+|---|---|---|
+| Elbow flexion | **−4.1°/min** | sd 0.44° |
+| Off-axis | **+9.9°/min** | sd 0.97° |
+| Upper-arm deviation | +0.03°/min | sd 0.55° |
+| Unsigned elbow | +10.3°/min | sd 0.71° |
+
+Residual noise under 1° means this is genuine drift, not sensor noise. Each
+segment's own deviation is flat, so the drift is in the *relative* orientation
+— N2 and N4 pulling apart, exactly the magnetometer-free GRV behaviour.
+
+The important part: **the hinge projection isolates it.** Drift lands almost
+entirely in the off-axis term, leaving flexion drifting at only −4.1°/min. But
+it also means any fixed off-axis threshold decays over a session, which is why
+the gate thresholds `elbow_off_axis_excess_deg` rather than the raw value.
+
+Practical consequence: flexion is good for roughly 2–3 minutes per calibration
+(~8–12° of accumulated error). `diagnostics.recalibrationRecommended` flags
+when the estimate passes 15°. `rezeroFromRest()` clears it from a rest
+observation without redoing the neutral pose or the hinge axis.
+
+### Random movement (06:02)
+
+| Phase | Off-axis (median / p95 / max) | Max upper-arm dev |
+|---|---|---|
+| Curl-like opening | 11.7 / 28.2 / 90.4 | 21.7 |
+| Random movement | **104.1 / 155.4 / 178.7** | 135.1 |
+
+Off-axis separates compound motion from clean reps by an enormous margin
+(clean curls: median 4.5°, max 12.1°).
+
+It also exposed a defect: **26% of random-movement frames reported
+|flexion| > 150°**, which an elbow physically cannot do. Swing-twist about a
+fixed axis is only meaningful while the motion is roughly about that axis; past
+that the twist term runs to ±180° as the quaternion's scalar part nears zero.
+The engine was reporting those confidently.
+
+Fixed with two guards, validated by replaying both sessions:
+
+| Gate | Effect |
+|---|---|
+| `elbow_off_axis_excess_deg > 35°` | catches 78% of impossible frames |
+| `\|flexion\| > 150°` (anatomical limit) | catches the remainder |
+| **Combined** | **0 impossible values survive**, 96% of random-movement frames withheld, and all clean-curl frames retained (peaks 137–140°) |
+
+When flexion is withheld, `diagnostics.flexionValid` is `false` — distinct from
+`null` meaning no hinge calibration has run. The unsigned angle, off-axis term
+and segment quaternions continue to be reported.
 
 ## Calibration behaviour
 
