@@ -1,16 +1,13 @@
 /**
- * Constrained arm avatar for the live Coach Assist tool.
+ * Anatomical arm avatar for the live Coach Assist tool.
  *
- * N4 drives a mount-relative shoulder/upper-arm transform and the Motion
- * Engine's hinge-calibrated N2-vs-N4 angle drives the elbow. The shoulder axes
- * remain sensor-neutral, so this is a test visualizer rather than an
- * anatomical claim.
+ * Corrected upper-arm and forearm orientations from the Motion Engine render
+ * as a nested transform: the forearm is drawn relative to the upper arm
+ * (conjugate(upper) * forearm), so the elbow articulates in every shoulder
+ * direction. Directional data is consumed only while the Motion Engine
+ * reports axisFrame "anatomical"; anything else holds or resets the display
+ * rather than implying anatomical accuracy.
  */
-
-function cleanDegrees(value) {
-  const rounded = Number(value.toFixed(3));
-  return Math.abs(rounded) < 1e-9 ? 0 : rounded;
-}
 
 function cleanMatrixValue(value) {
   const rounded = Number(value.toFixed(9));
@@ -25,6 +22,19 @@ function normalizeQuaternion(quaternion) {
   const norm = Math.hypot(x, y, z, w);
   if (norm < 1e-9) return null;
   return { qx: x / norm, qy: y / norm, qz: z / norm, qw: w / norm };
+}
+
+function quatMultiply(a, b) {
+  return {
+    qw: a.qw * b.qw - a.qx * b.qx - a.qy * b.qy - a.qz * b.qz,
+    qx: a.qw * b.qx + a.qx * b.qw + a.qy * b.qz - a.qz * b.qy,
+    qy: a.qw * b.qy - a.qx * b.qz + a.qy * b.qw + a.qz * b.qx,
+    qz: a.qw * b.qz + a.qx * b.qy - a.qy * b.qx + a.qz * b.qw,
+  };
+}
+
+function quatConjugate(q) {
+  return { qx: -q.qx, qy: -q.qy, qz: -q.qz, qw: q.qw };
 }
 
 /** Shortest-path spherical interpolation; q and -q are the same rotation. */
@@ -65,16 +75,15 @@ function quaternionSeparationDeg(a, b) {
   return 2 * Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
 }
 
-function smoothingAlpha(dtMs, error, fullSpeedError) {
-  const activity = Math.max(0, Math.min(1, error / fullSpeedError));
-  const timeConstantMs = 110 - 75 * activity;
+/**
+ * Time-aware display smoothing: a ~15 ms time constant while the pose is
+ * clearly moving, relaxing up to 60 ms so sub-degree jitter is damped without
+ * adding visible lag to real movement.
+ */
+function smoothingAlpha(dtMs, errorDeg) {
+  const activity = Math.max(0, Math.min(1, errorDeg / 10));
+  const timeConstantMs = 15 + 45 * (1 - activity);
   return 1 - Math.exp(-Math.max(0, Math.min(50, dtMs)) / timeConstantMs);
-}
-
-function rateLimitedAlpha(alpha, errorDeg, dtMs) {
-  if (errorDeg <= 1e-9) return alpha;
-  const maxStepDeg = 540 * Math.max(0, Math.min(50, dtMs)) / 1000;
-  return Math.min(alpha, maxStepDeg / errorDeg);
 }
 
 /**
@@ -82,14 +91,14 @@ function rateLimitedAlpha(alpha, errorDeg, dtMs) {
  * packet used by logging, rep analysis, or qualification.
  */
 export class ArmPoseSmoother {
-  constructor({ dropoutHoldMs = 250 } = {}) {
+  constructor({ dropoutHoldMs = 120 } = {}) {
     this.dropoutHoldMs = dropoutHoldMs;
-    this.currentShoulder = { ...IDENTITY_QUATERNION };
-    this.targetShoulder = { ...IDENTITY_QUATERNION };
-    this.currentElbowDeg = 0;
-    this.targetElbowDeg = 0;
+    this.currentUpper = { ...IDENTITY_QUATERNION };
+    this.targetUpper = { ...IDENTITY_QUATERNION };
+    this.currentForearmRelative = { ...IDENTITY_QUATERNION };
+    this.targetForearmRelative = { ...IDENTITY_QUATERNION };
     this.hasPose = false;
-    this.inputState = "calibration_required";
+    this.inputState = "anatomical_calibration_required";
     this.lastLiveState = "live";
     this.lastValidAtMs = null;
     this.lastSampleAtMs = null;
@@ -97,13 +106,13 @@ export class ArmPoseSmoother {
 
   pushFrame(frame, nowMs) {
     const pose = armPoseForMotion(frame);
-    if (pose.state === "calibration_required") {
+    if (pose.state === "anatomical_calibration_required") {
       this.inputState = pose.state;
       this.hasPose = false;
-      this.currentShoulder = { ...IDENTITY_QUATERNION };
-      this.targetShoulder = { ...IDENTITY_QUATERNION };
-      this.currentElbowDeg = 0;
-      this.targetElbowDeg = 0;
+      this.currentUpper = { ...IDENTITY_QUATERNION };
+      this.targetUpper = { ...IDENTITY_QUATERNION };
+      this.currentForearmRelative = { ...IDENTITY_QUATERNION };
+      this.targetForearmRelative = { ...IDENTITY_QUATERNION };
       this.lastValidAtMs = null;
       this.lastSampleAtMs = null;
       return;
@@ -112,45 +121,49 @@ export class ArmPoseSmoother {
       this.inputState = pose.state;
       return;
     }
-    const shoulder = normalizeQuaternion(frame?.upper_arm_orientation);
-    if (shoulder) this.targetShoulder = shoulder;
-    if (pose.state === "live") this.targetElbowDeg = pose.elbowDeg;
+    this.targetUpper = pose.shoulder;
+    this.targetForearmRelative = pose.forearmRelative;
     this.inputState = pose.state;
     this.lastLiveState = pose.state;
     this.lastValidAtMs = nowMs;
     if (!this.hasPose) {
-      this.currentShoulder = { ...this.targetShoulder };
-      this.currentElbowDeg = this.targetElbowDeg;
+      this.currentUpper = { ...this.targetUpper };
+      this.currentForearmRelative = { ...this.targetForearmRelative };
       this.hasPose = true;
     }
   }
 
+  /** Display-only fast path for a freshly received calibrated N4 sample. */
   pushShoulder(quaternion) {
     const shoulder = normalizeQuaternion(quaternion);
     if (!shoulder) return;
-    this.targetShoulder = shoulder;
+    this.targetUpper = shoulder;
     if (!this.hasPose) {
-      this.currentShoulder = { ...shoulder };
+      this.currentUpper = { ...shoulder };
       this.hasPose = true;
     }
   }
 
   sample(nowMs) {
     if (!this.hasPose) {
-      return { shoulder: { ...IDENTITY_QUATERNION }, elbowDeg: 0, state: this.inputState };
+      return {
+        shoulder: { ...IDENTITY_QUATERNION },
+        forearmRelative: { ...IDENTITY_QUATERNION },
+        state: this.inputState,
+      };
     }
     if (this.lastSampleAtMs !== null) {
       const dtMs = nowMs - this.lastSampleAtMs;
-      const shoulderError = quaternionSeparationDeg(this.currentShoulder, this.targetShoulder);
-      const shoulderAlpha = rateLimitedAlpha(
-        smoothingAlpha(dtMs, shoulderError, 12), shoulderError, dtMs
+      const upperError = quaternionSeparationDeg(this.currentUpper, this.targetUpper);
+      const upperAlpha = smoothingAlpha(dtMs, upperError);
+      this.currentUpper = slerpQuaternion(this.currentUpper, this.targetUpper, upperAlpha);
+      const forearmError = quaternionSeparationDeg(
+        this.currentForearmRelative, this.targetForearmRelative
       );
-      this.currentShoulder = slerpQuaternion(this.currentShoulder, this.targetShoulder, shoulderAlpha);
-      const elbowError = Math.abs(this.targetElbowDeg - this.currentElbowDeg);
-      const elbowAlpha = rateLimitedAlpha(
-        smoothingAlpha(dtMs, elbowError, 10), elbowError, dtMs
+      const forearmAlpha = smoothingAlpha(dtMs, forearmError);
+      this.currentForearmRelative = slerpQuaternion(
+        this.currentForearmRelative, this.targetForearmRelative, forearmAlpha
       );
-      this.currentElbowDeg += (this.targetElbowDeg - this.currentElbowDeg) * elbowAlpha;
     }
     this.lastSampleAtMs = nowMs;
     let state = this.inputState;
@@ -158,7 +171,11 @@ export class ArmPoseSmoother {
         nowMs - this.lastValidAtMs <= this.dropoutHoldMs) {
       state = this.lastLiveState;
     }
-    return { shoulder: { ...this.currentShoulder }, elbowDeg: this.currentElbowDeg, state };
+    return {
+      shoulder: { ...this.currentUpper },
+      forearmRelative: { ...this.currentForearmRelative },
+      state,
+    };
   }
 }
 
@@ -186,44 +203,40 @@ export function rotationMatrixForQuaternion(quaternion) {
   return values.map(cleanMatrixValue);
 }
 
-/** Convert a normalized packet quaternion to CSS rotation angles. */
-function shoulderEulerDeg(quaternion) {
-  const { qx: x, qy: y, qz: z, qw: w } = quaternion || {};
-  if (![x, y, z, w].every(Number.isFinite)) return { x: 0, y: 0, z: 0 };
-  const roll = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
-  const pitch = Math.asin(Math.max(-1, Math.min(1, 2 * (w * y - z * x))));
-  const yaw = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
-  const degrees = 180 / Math.PI;
-  return {
-    x: cleanDegrees(roll * degrees),
-    y: cleanDegrees(pitch * degrees),
-    z: cleanDegrees(yaw * degrees),
-  };
-}
-
+/**
+ * Classify a MotionEngine frame for the rig. Directional transforms exist only
+ * after both mount corrections are installed (axisFrame "anatomical").
+ */
 export function armPoseForMotion(frame) {
-  const shoulderDeg = shoulderEulerDeg(frame?.upper_arm_orientation);
   const health = frame?.health;
-  if (!health?.calibrated) return { state: "calibration_required", elbowDeg: 0, shoulderDeg };
-  if (!health.n2 || !health.n4 || !health.synchronized) {
-    return { state: "tracking_unavailable", elbowDeg: 0, shoulderDeg };
+  const axisFrame = frame?.diagnostics?.axisFrame;
+  if (!health?.calibrated || axisFrame !== "anatomical") {
+    return {
+      state: "anatomical_calibration_required",
+      shoulder: { ...IDENTITY_QUATERNION },
+      forearmRelative: { ...IDENTITY_QUATERNION },
+    };
   }
-  if (frame.elbow_flexion_deg === null || frame.elbow_flexion_deg === undefined ||
-      frame.diagnostics?.flexionValid === false) {
-    return { state: "shoulder_live", elbowDeg: 0, shoulderDeg };
+  const upper = normalizeQuaternion(frame.upper_arm_orientation);
+  const forearm = normalizeQuaternion(frame.forearm_orientation);
+  if (!health.n2 || !health.n4 || !health.synchronized || !upper || !forearm) {
+    return {
+      state: "tracking_unavailable",
+      shoulder: upper || { ...IDENTITY_QUATERNION },
+      forearmRelative: forearm || { ...IDENTITY_QUATERNION },
+    };
   }
   return {
     state: "live",
-    elbowDeg: Math.max(-150, Math.min(150, frame.elbow_flexion_deg)),
-    shoulderDeg,
+    shoulder: upper,
+    forearmRelative: quatMultiply(quatConjugate(upper), forearm),
   };
 }
 
 const LABELS = {
-  calibration_required: "Calibrate neutral pose",
+  anatomical_calibration_required: "Run the three-pose calibration",
   tracking_unavailable: "Live tracking unavailable",
-  shoulder_live: "Live shoulder, calibrate elbow hinge",
-  live: "Live elbow tracking",
+  live: "Live arm tracking",
 };
 
 /** Human-readable anatomy used by the live CSS 3D rig. */
@@ -238,7 +251,7 @@ export function anatomicalArmMarkup() {
       <div class="arm-shoulder" data-arm-part="shoulder"><span class="anatomy-highlight"></span></div>
       <div class="arm-upper" data-arm-part="upper-arm">
         <div class="arm-limb arm-upper-surface"><span class="arm-muscle biceps"></span><span class="arm-muscle triceps"></span></div>
-        <div class="arm-node-wrap shoulder"><span class="arm-node-dot"></span><span class="arm-node-label">N4 shoulder</span></div>
+        <div class="arm-node-wrap shoulder"><span class="arm-node-dot"></span><span class="arm-node-label">N4 upper arm</span></div>
         <div class="arm-elbow" data-arm-part="elbow"><span class="elbow-point"></span></div>
         <div class="arm-node-wrap elbow"><span class="arm-node-dot"></span><span class="arm-node-label">N3 elbow</span></div>
         <div class="arm-forearm" data-arm-part="forearm">
@@ -253,7 +266,7 @@ export function anatomicalArmMarkup() {
         </div>
       </div>
     </div>
-    <div class="arm-avatar-label" data-arm-status>Calibrate neutral pose</div>`;
+    <div class="arm-avatar-label" data-arm-status>Run the three-pose calibration</div>`;
 }
 
 export class ArmAvatar {
@@ -288,10 +301,11 @@ export class ArmAvatar {
   paintAt(nowMs) {
     if (!this.root) return;
     const pose = this.smoother.sample(nowMs);
-    const matrix = rotationMatrixForQuaternion(pose.shoulder);
-    this.root.style.setProperty("--upper-matrix", `matrix3d(${matrix.join(",")})`);
-    this.root.style.setProperty("--elbow-deg", `${cleanDegrees(pose.elbowDeg)}deg`);
+    const upperMatrix = rotationMatrixForQuaternion(pose.shoulder);
+    const forearmMatrix = rotationMatrixForQuaternion(pose.forearmRelative);
+    this.root.style.setProperty("--upper-matrix", `matrix3d(${upperMatrix.join(",")})`);
+    this.root.style.setProperty("--forearm-matrix", `matrix3d(${forearmMatrix.join(",")})`);
     this.root.dataset.state = pose.state;
-    if (this.status) this.status.textContent = LABELS[pose.state];
+    if (this.status) this.status.textContent = LABELS[pose.state] ?? "";
   }
 }

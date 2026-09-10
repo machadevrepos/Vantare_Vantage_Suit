@@ -115,8 +115,8 @@
     .panel .body { padding: 12px 14px; }
     .panel .body.tight { padding: 8px 10px; }
     .arm-avatar {
-      --elbow-deg: 0deg;
       --upper-matrix: matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1);
+      --forearm-matrix: matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1);
       --skin-light: #f2c7a6;
       --skin-mid: #c98f6c;
       --skin-deep: #784933;
@@ -128,7 +128,7 @@
       perspective: 900px;
     }
     .arm-avatar[data-state="tracking_unavailable"],
-    .arm-avatar[data-state="calibration_required"] { filter: saturate(.45); }
+    .arm-avatar[data-state="anatomical_calibration_required"] { filter: saturate(.45); }
     .arm-rig { position:absolute; left:50%; top:54px; width:0; height:0; transform-style:preserve-3d; transform:rotateX(-28deg) rotateZ(8deg); }
     .arm-shoulder { position:absolute; left:-34px; top:-30px; width:68px; height:70px; border-radius:48% 52% 45% 46%; background:radial-gradient(circle at 36% 25%,var(--skin-light),var(--skin-mid) 58%,var(--skin-deep)); transform:translateZ(10px); box-shadow:inset -8px -9px 14px rgba(78,38,25,.35),0 12px 22px rgba(0,0,0,.34); }
     .anatomy-highlight { position:absolute; left:12px; top:9px; width:24px; height:12px; border-radius:50%; background:rgba(255,235,218,.28); filter:blur(3px); }
@@ -141,7 +141,7 @@
     .arm-muscle.triceps { right:3px; top:36px; width:15px; height:73px; border-radius:50%; border-right:2px solid rgba(103,54,36,.22); }
     .arm-elbow { position:absolute; left:10px; top:128px; width:34px; height:35px; z-index:4; border-radius:48% 48% 55% 55%; background:radial-gradient(circle at 40% 30%,var(--skin-light),var(--skin-mid) 65%,var(--skin-deep)); box-shadow:0 5px 9px rgba(0,0,0,.3); transform:translateZ(4px); }
     .elbow-point { position:absolute; right:3px; top:13px; width:9px; height:11px; border-radius:50%; background:rgba(111,62,43,.2); }
-    .arm-forearm { left:6px; top:146px; width:42px; height:133px; transform-origin:21px 0; transform:rotateZ(var(--elbow-deg)) translateZ(4px); will-change:transform; }
+    .arm-forearm { left:6px; top:146px; width:42px; height:133px; transform-origin:21px 0; transform:var(--forearm-matrix) translateZ(4px); will-change:transform; }
     .arm-forearm-surface { clip-path:polygon(4% 0,96% 0,86% 40%,68% 100%,30% 100%,13% 45%); border-radius:20px 20px 13px 13px; }
     .arm-muscle.forearm { left:5px; top:13px; width:28px; height:76px; border-radius:50%; background:linear-gradient(90deg,rgba(255,226,204,.08),rgba(255,226,204,.25),rgba(108,58,40,.12)); }
     .arm-wrist { position:absolute; left:8px; top:123px; width:27px; height:25px; border-radius:9px 9px 12px 12px; background:linear-gradient(90deg,var(--skin-deep),var(--skin-mid) 35%,var(--skin-light) 62%,var(--skin-mid)); box-shadow:inset 0 -3px 4px rgba(84,42,28,.22); }
@@ -457,7 +457,7 @@
       <section class="panel">
         <h2>3D Arm <span class="hint">60 Hz smoothed upper arm + elbow · mount-relative</span></h2>
         <div class="body tight">
-          <div id="armAvatar" class="arm-avatar" data-state="calibration_required"></div>
+          <div id="armAvatar" class="arm-avatar" data-state="anatomical_calibration_required"></div>
           <div class="note">N4 drives the mount-relative upper-arm view; N2-vs-N4 drives elbow flexion. Adaptive 60 Hz interpolation suppresses jitter and holds brief sync dropouts without changing the recorded motion data.</div>
         </div>
       </section>
