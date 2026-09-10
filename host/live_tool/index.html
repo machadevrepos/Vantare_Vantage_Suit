@@ -114,6 +114,57 @@
     .panel > h2 .hint { font-weight: 500; letter-spacing: 0; text-transform: none; color: #55677c; font-size: 10.5px; margin-left: auto; }
     .panel .body { padding: 12px 14px; }
     .panel .body.tight { padding: 8px 10px; }
+    .arm-avatar {
+      --elbow-deg: 0deg;
+      --upper-matrix: matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1);
+      --skin-light: #f2c7a6;
+      --skin-mid: #c98f6c;
+      --skin-deep: #784933;
+      min-height: 430px;
+      overflow: hidden;
+      position: relative;
+      border-radius: 10px;
+      background: radial-gradient(ellipse at 48% 34%, #344a63 0, #182536 48%, #0d141e 82%);
+      perspective: 900px;
+    }
+    .arm-avatar[data-state="tracking_unavailable"],
+    .arm-avatar[data-state="calibration_required"] { filter: saturate(.45); }
+    .arm-rig { position:absolute; left:50%; top:54px; width:0; height:0; transform-style:preserve-3d; transform:rotateX(-28deg) rotateZ(8deg); }
+    .arm-shoulder { position:absolute; left:-34px; top:-30px; width:68px; height:70px; border-radius:48% 52% 45% 46%; background:radial-gradient(circle at 36% 25%,var(--skin-light),var(--skin-mid) 58%,var(--skin-deep)); transform:translateZ(10px); box-shadow:inset -8px -9px 14px rgba(78,38,25,.35),0 12px 22px rgba(0,0,0,.34); }
+    .anatomy-highlight { position:absolute; left:12px; top:9px; width:24px; height:12px; border-radius:50%; background:rgba(255,235,218,.28); filter:blur(3px); }
+    .arm-upper,.arm-forearm,.arm-hand { position:absolute; transform-style:preserve-3d; backface-visibility:hidden; }
+    .arm-upper { left:-27px; top:25px; width:54px; height:142px; transform-origin:27px 0; transform:translateZ(8px) var(--upper-matrix); will-change:transform; }
+    .arm-limb { position:absolute; inset:0; background:linear-gradient(90deg,var(--skin-deep),var(--skin-mid) 22%,var(--skin-light) 53%,var(--skin-mid) 80%,var(--skin-deep)); box-shadow:inset -8px 0 12px rgba(75,38,25,.28),inset 6px 0 10px rgba(255,226,204,.2),0 10px 16px rgba(0,0,0,.28); }
+    .arm-upper-surface { clip-path:polygon(14% 0,86% 0,100% 28%,82% 76%,68% 100%,31% 100%,18% 76%,0 28%); border-radius:28px 28px 18px 18px; }
+    .arm-muscle { position:absolute; pointer-events:none; }
+    .arm-muscle.biceps { left:8px; top:26px; width:31px; height:76px; border-radius:55% 45% 48% 52%; background:linear-gradient(90deg,transparent,rgba(255,225,201,.27),rgba(118,65,43,.13)); }
+    .arm-muscle.triceps { right:3px; top:36px; width:15px; height:73px; border-radius:50%; border-right:2px solid rgba(103,54,36,.22); }
+    .arm-elbow { position:absolute; left:10px; top:128px; width:34px; height:35px; z-index:4; border-radius:48% 48% 55% 55%; background:radial-gradient(circle at 40% 30%,var(--skin-light),var(--skin-mid) 65%,var(--skin-deep)); box-shadow:0 5px 9px rgba(0,0,0,.3); transform:translateZ(4px); }
+    .elbow-point { position:absolute; right:3px; top:13px; width:9px; height:11px; border-radius:50%; background:rgba(111,62,43,.2); }
+    .arm-forearm { left:6px; top:146px; width:42px; height:133px; transform-origin:21px 0; transform:rotateZ(var(--elbow-deg)) translateZ(4px); will-change:transform; }
+    .arm-forearm-surface { clip-path:polygon(4% 0,96% 0,86% 40%,68% 100%,30% 100%,13% 45%); border-radius:20px 20px 13px 13px; }
+    .arm-muscle.forearm { left:5px; top:13px; width:28px; height:76px; border-radius:50%; background:linear-gradient(90deg,rgba(255,226,204,.08),rgba(255,226,204,.25),rgba(108,58,40,.12)); }
+    .arm-wrist { position:absolute; left:8px; top:123px; width:27px; height:25px; border-radius:9px 9px 12px 12px; background:linear-gradient(90deg,var(--skin-deep),var(--skin-mid) 35%,var(--skin-light) 62%,var(--skin-mid)); box-shadow:inset 0 -3px 4px rgba(84,42,28,.22); }
+    .arm-hand { left:2px; top:143px; width:39px; height:102px; transform:translateZ(1px); }
+    .arm-palm { position:absolute; left:0; top:0; width:39px; height:55px; border-radius:12px 12px 16px 15px; background:radial-gradient(ellipse at 45% 35%,var(--skin-light),var(--skin-mid) 62%,var(--skin-deep)); box-shadow:inset -5px -4px 8px rgba(83,41,27,.22),0 7px 10px rgba(0,0,0,.25); }
+    .palm-pad { position:absolute; left:7px; top:10px; width:23px; height:31px; border-radius:50%; border:1px solid rgba(105,57,39,.13); }
+    .arm-thumb { position:absolute; left:-13px; top:13px; width:18px; height:43px; transform:rotate(23deg); transform-origin:14px 5px; }
+    .arm-thumb i { display:block; width:13px; height:22px; margin-top:-3px; border-radius:9px; background:linear-gradient(90deg,var(--skin-deep),var(--skin-light) 54%,var(--skin-mid)); box-shadow:0 2px 4px rgba(0,0,0,.2); }
+    .arm-fingers { position:absolute; left:2px; top:48px; width:36px; height:55px; display:flex; align-items:flex-start; gap:1px; }
+    .arm-finger { width:8px; transform-origin:50% 0; }
+    .arm-finger-index { height:46px; }
+    .arm-finger-middle { height:51px; }
+    .arm-finger-ring { height:48px; }
+    .arm-finger-little { height:39px; }
+    .arm-phalange { display:block; width:100%; height:33%; margin-top:-1px; border-radius:5px; background:linear-gradient(90deg,var(--skin-deep),var(--skin-light) 48%,var(--skin-mid)); border-bottom:1px solid rgba(95,48,32,.25); box-sizing:border-box; }
+    .arm-node-wrap { position:absolute; z-index:8; left:-5px; width:64px; height:13px; border-radius:7px; background:linear-gradient(90deg,#1a2029,#4c5f70 45%,#17202a); border:1px solid #8093a4; box-shadow:0 2px 5px rgba(0,0,0,.4); transform:translateZ(12px); }
+    .arm-node-wrap.shoulder { top:13px; }
+    .arm-node-wrap.elbow { top:127px; }
+    .arm-node-wrap.wrist { left:2px; top:112px; width:39px; }
+    .arm-node-dot { position:absolute; left:50%; top:2px; width:8px; height:8px; margin-left:-4px; border-radius:3px; background:#f0b54b; box-shadow:0 0 7px #ffca68; }
+    .arm-node-label { position:absolute; left:68px; top:-3px; padding:2px 5px; border:1px solid #806629; border-radius:8px; background:#302513; color:#ffe0a0; font-size:9px; white-space:nowrap; }
+    .arm-node-wrap.wrist .arm-node-label { left:44px; }
+    .arm-avatar-label { position:absolute; left:12px; right:12px; bottom:10px; color:#c9d9e9; font-size:12px; text-align:center; }
 
     /* ---------- controls ---------- */
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -400,6 +451,14 @@
             arm-only rig. Axes are in each sensor's neutral frame until a two-pose
             mount calibration is added.
           </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>3D Arm <span class="hint">60 Hz smoothed upper arm + elbow · mount-relative</span></h2>
+        <div class="body tight">
+          <div id="armAvatar" class="arm-avatar" data-state="calibration_required"></div>
+          <div class="note">N4 drives the mount-relative upper-arm view; N2-vs-N4 drives elbow flexion. Adaptive 60 Hz interpolation suppresses jitter and holds brief sync dropouts without changing the recorded motion data.</div>
         </div>
       </section>
 

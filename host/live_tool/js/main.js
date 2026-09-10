@@ -32,6 +32,7 @@ import {
 } from "./live-inference.js";
 import { HapticController, HAPTIC_DEFAULTS } from "./haptic-controller.js";
 import { MotionEngine } from "./motion-engine.js";
+import { ArmAvatar } from "./arm-avatar.js";
 import { RepAnalyzer } from "./rep-analyzer.js";
 import { SessionLog } from "./session-log.js";
 import { Ui } from "./ui.js";
@@ -86,6 +87,7 @@ class App {
     this.motion = new MotionEngine({
       onEvent: (event) => this.onMotionEvent(event),
     });
+    this.armAvatar = new ArmAvatar(document.getElementById("armAvatar"));
     this.lastMotionFrame = null;
 
     // The rep analyzer consumes motion packets, so it inherits the same
@@ -165,6 +167,7 @@ class App {
     this.motion.updateCalibration(now);
     const frame = this.motion.computeFrame(now);
     this.lastMotionFrame = frame;
+    this.armAvatar.render(frame);
     this.repAnalyzer.pushFrame(frame);
     if (!this.sessionActive) return;
     const row = this.motion.toLogRow(frame);
@@ -490,6 +493,13 @@ class App {
     // streaming alone, with no inference session and no model loaded.
     if (sample.sensorId === SENSOR.BNO) {
       this.motion.pushSample(sample.nodeId, values, sample.mappedMs / 1000);
+      // Visual-only fast path: queue the latest calibrated N4 target here so
+      // the 60 Hz avatar loop can consume it on the next display frame instead
+      // of waiting up to 40 ms for the analytics tick. The smoother prevents
+      // direct sample-to-CSS jumps; logging and rep analysis remain at 25 Hz.
+      if (sample.nodeId === this.motion.roles.upperArm) {
+        this.armAvatar.renderShoulder(this.motion.segmentDelta(sample.nodeId));
+      }
     }
     if (!sample.isModelStream) return;
     if (!this.sessionActive || !this.preprocessor) return;
