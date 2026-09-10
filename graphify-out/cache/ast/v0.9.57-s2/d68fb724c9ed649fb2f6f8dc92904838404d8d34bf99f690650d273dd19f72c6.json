@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_firmware_master_fatfs_target_user_diskio_h", "label": "user_diskio.h", "file_type": "code", "source_file": "firmware/Master/FATFS/Target/user_diskio.h", "source_location": "L1"}], "edges": [], "raw_calls": [], "parse_errors": {"first_error_line": 39, "multiline_error": false}}

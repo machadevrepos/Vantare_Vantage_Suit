@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_firmware_master_middlewares_st_stm32_wpan_ble_core_auto_ble_vs_codes_h", "label": "ble_vs_codes.h", "file_type": "code", "source_file": "firmware/Master/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_vs_codes.h", "source_location": "L1"}], "edges": [], "raw_calls": []}

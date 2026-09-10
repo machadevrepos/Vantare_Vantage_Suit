@@ -1,0 +1,18 @@
+D:\Projects\Vantare_Vantage_Suit\firmware\Master\Drivers\CMSIS\Device\ST\STM32WBxx\LICENSE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\Master\Drivers\CMSIS\LICENSE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\Master\Drivers\STM32WBxx_HAL_Driver\LICENSE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\Node\Drivers\CMSIS\Device\ST\STM32WBxx\LICENSE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\Node\Drivers\CMSIS\LICENSE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\Node\Drivers\STM32WBxx_HAL_Driver\LICENSE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\Node\size_budget.md
+D:\Projects\Vantare_Vantage_Suit\firmware\third_party\icm45686-driver\README.md
+D:\Projects\Vantare_Vantage_Suit\firmware\third_party\sh2\NOTICE.txt
+D:\Projects\Vantare_Vantage_Suit\firmware\third_party\sh2\README.md
+D:\Projects\Vantare_Vantage_Suit\firmware\third_party\w25qxx\README.md
+D:\Projects\Vantare_Vantage_Suit\host\desktop_tool\Exoskeleton.html
+D:\Projects\Vantare_Vantage_Suit\host\desktop_tool\README_BINARY_RECORDING.md
+D:\Projects\Vantare_Vantage_Suit\host\live_tool\README.md
+D:\Projects\Vantare_Vantage_Suit\host\live_tool\index.html
+D:\Projects\Vantare_Vantage_Suit\host\live_tool\model\README.txt
+D:\Projects\Vantare_Vantage_Suit\host\tests\cpp\CMakeLists.txt
+D:\Projects\Vantare_Vantage_Suit\host\notebooks\Vantage_Suit_Bicep_Curl.ipynb - Colab.pdf

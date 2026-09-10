@@ -1,0 +1,1 @@
+{"nodes": [{"id": "$graphify-root$_firmware_node_core_inc_stm32_lpm_if_h", "label": "stm32_lpm_if.h", "file_type": "code", "source_file": "firmware/Node/Core/Inc/stm32_lpm_if.h", "source_location": "L1"}], "edges": [], "raw_calls": [], "parse_errors": {"first_error_line": 75, "multiline_error": false}}
