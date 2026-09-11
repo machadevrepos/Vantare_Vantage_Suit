@@ -228,7 +228,9 @@ export class Ui {
     const badges = {
       uncalibrated: { text: "Not calibrated", cls: "idle" },
       capturing: { text: "Hold still…", cls: "busy" },
-      calibrated: { text: "Calibrated", cls: "ok" },
+      calibrated: diagnostics.anatomicalState === "calibrated"
+        ? { text: "Anatomical calibration ready", cls: "ok" }
+        : { text: "Neutral saved - finish poses", cls: "busy" },
       failed: { text: "Calibration failed", cls: "bad" },
     };
     const badge = badges[diagnostics.calibrationState] || badges.uncalibrated;
@@ -310,7 +312,7 @@ export class Ui {
       });
       const aim =
         diagnostics.anatomicalState === "forward_capturing"
-          ? "aim ~90° separation"
+          ? `need ${MOTION_DEFAULTS.anatomicalAimSeparationMinDeg}-${MOTION_DEFAULTS.anatomicalAimSeparationMaxDeg}° separation`
           : `aim ${MOTION_DEFAULTS.anatomicalMinAngleDeg}-${MOTION_DEFAULTS.anatomicalMaxAngleDeg}°`;
       live = ` — live: ${parts.join(" | ")} (${aim})`;
     }

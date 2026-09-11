@@ -1,5 +1,28 @@
 # Motion Engine — data contract for the 3D / app team
 
+> **Calibration update, build 2026-09-11.25:** the historical warning-only
+> acceptance described below is superseded. Both N2 and N4 side/forward
+> rotation-axis separations must be 80-100 degrees. Outside that range the
+> engine clears mount corrections, returns to `side_ready`, logs
+> `anatomical_forward_rejected` with `code: capture_geometry`, and keeps the
+> directional viewer unavailable. The pure TRIAD solver still has its wider
+> mathematical validity range; this is a separate capture-quality gate.
+>
+> The 07:33:52 field log accepted N4=66.17 degrees and N2=85.35 degrees and
+> contains 18 events but no sample rows. It supports the calibration-quality
+> finding, not a diagnosis of live latency or the wearer's motion trajectory.
+> Raw streaming now registers and records sensor samples plus motion ticks
+> without an inference session. Download Log after the next physical check.
+>
+> Mount N2 on the distal forearm above the wrist joint and N4 on the upper arm
+> below the shoulder joint. N3 is auxiliary. Mount angles may differ; straps
+> must remain fixed. Follow the page's neutral (palm to thigh), side (palm
+> down), forward (thumb up) cues with straight wrist/elbow and still torso.
+> Validate repeated neutral/side/forward holds, then slow elbow bends before
+> free motion. Passing geometry is not proof of anatomical accuracy, and this
+> update still needs live validation. No torso compensation is available.
+
+
 Status: **validated on hardware 2026-09-10.** Neutral + hinge calibration and
 signed flexion all confirmed on a real arm; see "Field results" below. The
 three-pose anatomical calibration completed its first physical run on
@@ -299,6 +322,17 @@ mount correction.
 **Axis convention (right arm only):** `+X` wearer-right, `+Y` down the neutral
 arm, `+Z` forward. Directional targets: side axis `[0, 0, -1]`, forward axis
 `[1, 0, 0]`. N4 is the upper arm, N2 the forearm; N3 stays auxiliary.
+
+**Front-facing CSS viewer:** wearer-right is screen-left. Convert packet
+rotations at the renderer boundary using `B R B^-1`, with
+`B = diag(-1, 1, 1)`; equivalently map quaternion `(x,y,z,w)` to
+`(x,-y,-z,w)`. Apply this to both the shoulder and elbow-relative transforms.
+Keep calibration, smoothing and logged orientations in the anatomical frame.
+Build `2026-09-11.24` corrects the previous direct matrix mapping, which drew
+right-side raises across the chest. Regression checks include outward, forward,
+overhead and composed elbow directions, plus the side-raise sample at device
+182.667 s from `tmp/vantage_live_2026-09-11T07-08-56-665Z.ndjson`.
+
 
 **Workflow (ordered UI steps):**
 

@@ -166,6 +166,36 @@
     .arm-node-wrap.wrist .arm-node-label { left:44px; }
     .arm-avatar-label { position:absolute; left:12px; right:12px; bottom:10px; color:#c9d9e9; font-size:12px; text-align:center; }
 
+    /* Full-body context; only the original right-arm hierarchy consumes live matrices. */
+    .arm-avatar { min-height:560px; }
+    .body-reference-note { position:absolute; top:15px; left:12px; right:12px; color:#d6e4f1; text-align:center; font-size:12px; }
+    .body-reference-legend { position:absolute; bottom:33px; left:12px; right:12px; color:#9fb0c2; text-align:center; font-size:11px; }
+    .body-rig { position:absolute; left:50%; top:56px; width:0; height:0; transform:scale(.56); transform-style:preserve-3d; --body-surface:linear-gradient(90deg,#344453,#8096a6 43%,#617989 70%,#30414f); }
+    .body-rig > div, .body-rest-arm > div, .body-leg > div { position:absolute; }
+    .body-head { left:-39px; top:0; width:78px; height:100px; border-radius:44% 44% 46% 46%; background:var(--body-surface); box-shadow:inset 0 -9px 14px #263746; }
+    .body-face { position:absolute; left:20px; top:43px; width:38px; height:31px; border-bottom:2px solid #344856; border-radius:50%; }
+    .body-neck { left:-22px; top:87px; width:44px; height:48px; background:var(--body-surface); border-radius:12px; }
+    .body-torso { left:-101px; top:118px; width:202px; height:230px; background:var(--body-surface); clip-path:polygon(24% 0,76% 0,100% 12%,91% 51%,77% 100%,23% 100%,9% 51%,0 12%); border-radius:45px; }
+    .body-chest-line { position:absolute; left:32px; top:72px; width:138px; height:25px; border-bottom:2px solid #3d5263; border-radius:45%; }
+    .body-abdomen { position:absolute; left:100px; top:106px; height:99px; border-left:1px solid #435c6d; }
+    .body-pelvis { left:-79px; top:325px; width:158px; height:111px; background:var(--body-surface); border-radius:25% 25% 40% 40%; }
+    .body-rig .arm-rig { left:-108px; top:145px; transform:scale(.85); }
+    .body-rig .arm-upper, .body-rig .arm-forearm, .body-rig .arm-hand { backface-visibility:visible; }
+    .body-rig .arm-node-label { left:auto; right:72px; font-size:17px; }
+    .body-rig .arm-node-wrap.wrist .arm-node-label { left:auto; right:47px; }
+    .body-rest-arm { left:108px; top:124px; width:0; height:0; }
+    .body-rest-upper { left:-24px; top:0; width:48px; height:147px; background:var(--body-surface); border-radius:45% 45% 35% 35%; }
+    .body-rest-elbow { left:-17px; top:133px; width:34px; height:30px; background:var(--body-surface); border-radius:50%; }
+    .body-rest-forearm { left:-19px; top:155px; width:38px; height:122px; background:var(--body-surface); clip-path:polygon(0 0,100% 0,77% 100%,23% 100%); border-radius:18px; }
+    .body-rest-hand { left:-15px; top:272px; width:30px; height:74px; background:var(--body-surface); border-radius:12px 12px 10px 10px; }
+    .body-leg { top:405px; width:0; height:0; }
+    .body-leg-right { left:-43px; } .body-leg-left { left:43px; }
+    .body-thigh { left:-36px; top:0; width:72px; height:183px; background:var(--body-surface); border-radius:32px 32px 24px 24px; }
+    .body-knee { left:-25px; top:165px; width:50px; height:45px; background:radial-gradient(ellipse at 45% 35%,#8da0ad,#43596b); border-radius:45%; }
+    .body-shin { left:-26px; top:199px; width:52px; height:170px; background:var(--body-surface); clip-path:polygon(4% 0,96% 0,100% 25%,73% 100%,27% 100%,0 25%); border-radius:23px; }
+    .body-foot { left:-22px; top:359px; width:44px; height:56px; background:var(--body-surface); border-radius:12px 12px 18px 18px; }
+    @media(max-width:480px) { .body-rig { transform:scale(.49); top:70px; } .arm-avatar { min-height:535px; } }
+
     /* ---------- controls ---------- */
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .row + .row { margin-top: 8px; }
@@ -426,6 +456,21 @@
       <section class="panel">
         <h2>Motion Engine <span class="hint">Coach Assist · deterministic · no model</span></h2>
         <div class="body">
+          <details class="note" open style="margin-bottom:12px">
+            <summary><strong>Sensor placement and calibration poses</strong></summary>
+            <p>N2: secure on the forearm just above the back of the wrist, not across the wrist joint or on the hand.
+            N4: secure on the outer upper arm below the shoulder joint, moving with the upper arm.
+            N3: your elbow-side position is auxiliary; it does not drive either avatar segment.
+            The boards may face different directions. Keep the straps fixed throughout calibration and testing.</p>
+            <ol>
+              <li>Neutral: stand upright, arm straight down, palm facing thigh, wrist straight. Hold still.</li>
+              <li>Side: raise the straight right arm directly out to your side to shoulder height, palm down. Keep your torso still.</li>
+              <li>Forward: raise straight ahead to shoulder height, thumb up, wrist straight. Both sensors need 80-100 degrees between the captured rotation axes. A retry message means tracking is not ready.</li>
+              <li>Hinge: with upper arm still by your side, perform slow elbow bends without twisting the forearm.</li>
+            </ol>
+            <p>Check neutral, side and forward holds before testing free motion. If a strap moves, redo calibration.
+            Raw streaming now records sensor and motion samples for Download Log; an inference session is not required.</p>
+          </details>
           <div class="row" style="margin-bottom:10px">
             <button id="calibrateBtn" class="sm">1. Calibrate Neutral</button>
             <button id="sideCalibrateBtn" class="sm" disabled>2. Capture Right-Side Raise</button>
@@ -460,10 +505,10 @@
       </section>
 
       <section class="panel">
-        <h2>3D Arm <span class="hint">60 Hz smoothed upper arm + forearm · anatomical</span></h2>
+        <h2>Full Body <span class="hint">60 Hz smoothed upper arm + forearm · anatomical</span></h2>
         <div class="body tight">
           <div id="armAvatar" class="arm-avatar" data-state="anatomical_calibration_required"></div>
-          <div class="note">Directional segment tracking starts only after the three-pose workflow (steps 1&ndash;3 above): N4 and N2 mount corrections are solved from the side and forward raises, then the upper arm and the elbow-relative forearm render at 60&nbsp;Hz. Adaptive interpolation suppresses jitter and holds brief sync dropouts without changing the recorded motion data.</div>
+          <div class="note">The full body is a stationary visual reference; only the right arm is tracked by N4, N3 and N2. Chest, back, neck and leg tracking are not connected yet. Directional segment tracking starts only after the three-pose workflow (steps 1&ndash;3 above): N4 and N2 mount corrections are solved from the side and forward raises, then the upper arm and the elbow-relative forearm render at 60&nbsp;Hz. Adaptive interpolation suppresses jitter and holds brief sync dropouts without changing the recorded motion data.</div>
         </div>
       </section>
 

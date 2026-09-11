@@ -728,9 +728,7 @@ class MotionEngineTest(unittest.TestCase):
 
     @staticmethod
     def scenario_anatomical_quality_warning():
-        """A 70-degree capture pair still solves (the window is 60-120) but
-        must warn: the second axis lands ~20 degrees off its target, so the
-        render is skewed and the wearer should redo steps 2-3."""
+        """A 70-degree pair must not install a known-skewed anatomical frame."""
         builder = MotionEngineTest.calibrated_builder("anatomical_warning")
         off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
         builder.begin_side()
@@ -952,19 +950,33 @@ class MotionEngineTest(unittest.TestCase):
             self.assertAlmostEqual(live[node_id]["raiseDeg"], 90.0, delta=1e-3)
             self.assertAlmostEqual(live[node_id]["separationDeg"], 70.0, delta=1e-3)
 
-    def test_poor_capture_geometry_is_reported_after_the_solve(self):
-        """A solve accepted inside the 60-120 window but off the ideal right
-        angle must carry a visible warning with the expected skew."""
+    def test_poor_capture_geometry_requires_retry(self):
         scenario = self.results["anatomical_warning"]
-        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
-        for quality in scenario["anatomicalQuality"]["nodes"].values():
-            self.assertAlmostEqual(quality["axisSeparationDeg"], 70.0, delta=1e-3)
-        frame = self.frames("anatomical_warning")["after_solve"]["frame"]
-        warning = frame["diagnostics"]["anatomicalWarning"]
-        self.assertIsNotNone(warning)
-        self.assertIn("70", warning)
-        self.assertIn("20", warning)
-        self.assertIn("Capture geometry", scenario["anatomicalMessage"])
+        self.assertEqual(scenario["anatomicalState"], "side_ready")
+        self.assertIsNone(scenario["anatomicalQuality"])
+        self.assertIn("80-100", scenario["anatomicalMessage"])
+
+    def test_geometry_gate_is_symmetric_and_retry_recovers(self):
+        for separation in (66.171311, 114.0):
+            with self.subTest(separation=separation):
+                builder = self.calibrated_builder("geometry_retry")
+                builder.begin_side()
+                builder.hold(self.rigid_arm_pose((0, 0, -1), 90), 1.2)
+                builder.begin_forward()
+                offset = math.radians(90 - separation)
+                builder.hold(self.rigid_arm_pose((math.cos(offset), 0, -math.sin(offset)), 90), 1.2)
+                builder.frame("rejected")
+                builder.display_pose("rejected_pose")
+                builder.begin_forward()
+                builder.hold(self.rigid_arm_pose((1, 0, 0), 90), 1.2)
+                builder.frame("recovered")
+                results, _ = run_scenarios([builder.build()])
+                result = results["geometry_retry"]
+                rejected = next(f["frame"] for f in result["frames"] if f["label"] == "rejected")
+                self.assertEqual(rejected["diagnostics"]["axisFrame"], "sensor_neutral")
+                self.assertEqual(result["anatomicalState"], "calibrated")
+                events = [e for e in result["events"] if e["kind"] == "anatomical_forward_rejected"]
+                self.assertEqual(events[-1]["code"], "capture_geometry")
 
     def test_display_prediction_reconstructs_the_true_pose(self):
         """The avatar's gyro extrapolation, not lagged interpolation: omega
@@ -1015,19 +1027,12 @@ class MotionEngineTest(unittest.TestCase):
         self.assertIn("elbow straight", scenario["anatomicalMessage"].lower())
 
     def test_directional_capture_catches_bent_elbow_the_magnitude_gate_misses(self):
-        """A 45-degree bent side raise calibrates (documented trade-off: it
-        is geometrically identical to a natural scapular-plane raise), but
-        the damage is contained and visible: the upper arm's mount stays
-        exact on a later straight raise while the forearm's mount - which
-        absorbed the bend - reads off-target in the render."""
+        """A bent capture that formerly produced a skewed mount now fails geometry."""
         scenario = self.results["anatomical_bent_hidden"]
-        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        self.assertEqual(scenario["anatomicalState"], "side_ready")
+        self.assertIsNone(scenario["anatomicalQuality"])
         frame = self.frames("anatomical_bent_hidden")["straight_check"]["frame"]
-        target = q_axis_angle((0.0, 0.0, -1.0), 90.0)
-        upper_error = q_angle_deg(q_mul(q_conj(target), packet_to_q(frame["upper_arm_orientation"])))
-        fore_error = q_angle_deg(q_mul(q_conj(target), packet_to_q(frame["forearm_orientation"])))
-        self.assertLess(upper_error, 1.0, "upper mount must stay exact")
-        self.assertGreater(fore_error, 5.0, "forearm mount must show the absorbed bend")
+        self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
 
     def test_anatomical_capture_completes_despite_heading_offsets(self):
         """GRV headings do NOT cancel in inter-sensor products, so every

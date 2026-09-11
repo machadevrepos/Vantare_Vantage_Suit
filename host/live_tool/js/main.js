@@ -180,7 +180,9 @@ class App {
     // The numeric panel tracks the same 25 Hz signal as the rig; leaving it
     // on the 250 ms render tick made the angles visibly lag the model.
     this.ui.renderMotion(frame);
-    if (!this.sessionActive) return;
+    // Raw-stream Coach Assist must remain replayable without an ML session.
+    if (!this.sessionActive && !this.transport.connected) return;
+    this.sessionLog.registerStream(MOTION_LOG_STREAM, MotionEngine.LOG_COLUMNS.length);
     const row = this.motion.toLogRow(frame);
     if (row) this.sessionLog.logSample(MOTION_LOG_STREAM, row[0], row.slice(1));
   }
@@ -536,9 +538,8 @@ class App {
       }
     }
     if (!sample.isModelStream) return;
-    if (!this.sessionActive || !this.preprocessor) return;
-    if (this.firstSampleAtMs === null) this.firstSampleAtMs = performance.now();
     const key = `n${sample.nodeId}s${sample.sensorId}`;
+    this.sessionLog.registerStream(key, (sample.sensorId === SENSOR.BNO ? BNO_COLUMNS : ICM_COLUMNS).length + 1);
     this.sessionLog.logSample(
       key,
       sample.mappedMs / 1000,
@@ -548,6 +549,8 @@ class App {
           : Object.fromEntries(ICM_COLUMNS.map((c) => [c, values[c]]))
       )
     );
+    if (!this.sessionActive || !this.preprocessor) return;
+    if (this.firstSampleAtMs === null) this.firstSampleAtMs = performance.now();
     const accepted = this.preprocessor.pushSample(
       sample.nodeId,
       sample.sensorId,

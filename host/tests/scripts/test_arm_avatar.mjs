@@ -109,6 +109,43 @@ assert.equal(
 
 // ----------------------------------------------------- matrix + markup
 
+// Anatomical +X is wearer-right (screen-left in the front-facing body),
+// +Y is down and +Z is forward/toward the camera. Test visible endpoints,
+// not just quaternion algebra, to catch a mirrored arm crossing the chest.
+function transformDirection(matrix, vector) {
+  return [0, 1, 2].map((row) => vector.reduce((sum, value, col) => sum + matrix[col * 4 + row] * value, 0));
+}
+function assertDirection(actual, expected, label) {
+  assert.ok(Math.hypot(...actual.map((v, i) => v - expected[i])) < 1e-7,
+    `${label}: ${actual} vs ${expected}`);
+}
+const down = [0, 1, 0];
+const rightRaise = qAxisAngle([0, 0, -1], 90);
+const forwardRaise = qAxisAngle([1, 0, 0], 90);
+assertDirection(transformDirection(rotationMatrixForQuaternion(rightRaise), down), [-1, 0, 0],
+  "right-side raise must extend left on screen, away from the chest");
+assertDirection(transformDirection(rotationMatrixForQuaternion(forwardRaise), down), [0, 0, 1],
+  "forward raise must point toward the camera");
+assertDirection(transformDirection(rotationMatrixForQuaternion(qAxisAngle([0, 0, -1], 180)), down), [0, -1, 0],
+  "overhead raise must point up");
+// Real regression: 2026-09-11T07-08-56-665Z at device t=182.667 s.
+// The old renderer sent this nearly horizontal side raise across the chest.
+const recordedSide = rotationMatrixForQuaternion({
+  qx: -0.0002914908400271088, qy: 0.0014172521186992526,
+  qz: -0.683426022529602, qw: 0.7300183176994324,
+});
+const recordedDirection = transformDirection(recordedSide, down);
+assert.ok(recordedDirection[0] < -0.99 && Math.abs(recordedDirection[1]) < 0.1
+  && Math.abs(recordedDirection[2]) < 0.01, "recorded side raise must extend outward");
+// Parent/child basis conversions must compose, including a bent elbow.
+const compoundUpper = qMul(rightRaise, qAxisAngle([0, 1, 0], 30));
+const compoundFore = qMul(compoundUpper, forwardRaise);
+const compoundPose = armPoseForMotion(anatomicalFrame(compoundUpper, compoundFore));
+const nestedTip = transformDirection(rotationMatrixForQuaternion(compoundPose.shoulder),
+  transformDirection(rotationMatrixForQuaternion(compoundPose.forearmRelative), down));
+assertDirection(nestedTip, transformDirection(rotationMatrixForQuaternion(compoundFore), down),
+  "nested forearm must match absolute segment direction after basis conversion");
+
 // Applying three Euler angles in CSS order loses the quaternion's rotation
 // semantics around combined axes. The renderer must consume the quaternion as
 // one matrix so 360-degree sweeps do not hit Euler/gimbal artifacts.
@@ -118,7 +155,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   rotationMatrixForQuaternion({ qx: 0, qy: 0, qz: Math.SQRT1_2, qw: Math.SQRT1_2 }),
-  [0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+  [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
 );
 
 // The live avatar must expose a complete recognizable arm rather than two
@@ -234,7 +271,7 @@ const avatar = new ArmAvatar({
 avatar.renderShoulder(qZ90);
 assert.equal(
   styleValues.get("--upper-matrix"),
-  "matrix3d(0,1,0,0,-1,0,0,0,0,0,1,0,0,0,0,1)",
+  "matrix3d(0,-1,0,0,1,0,0,0,0,0,1,0,0,0,0,1)",
 );
 const identityMatrix = "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)";
 assert.equal(styleValues.get("--forearm-matrix"), identityMatrix);
@@ -251,7 +288,7 @@ const arrayAvatar = new ArmAvatar({
 arrayAvatar.renderShoulder([Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
 assert.equal(
   arrayStyle.get("--upper-matrix"),
-  "matrix3d(0,1,0,0,-1,0,0,0,0,0,1,0,0,0,0,1)",
+  "matrix3d(0,-1,0,0,1,0,0,0,0,0,1,0,0,0,0,1)",
   "array-format quaternion must drive the fast path",
 );
 

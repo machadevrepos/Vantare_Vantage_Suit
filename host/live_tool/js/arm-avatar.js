@@ -249,8 +249,13 @@ export class ArmPoseSmoother {
 }
 
 /**
- * CSS column-major rotation matrix for a packet quaternion. Keeping the
- * quaternion whole avoids Euler order ambiguity and gimbal lock.
+ * CSS column-major rotation matrix for an anatomical packet quaternion.
+ * Packet axes: +X wearer-right, +Y down, +Z forward. In the front-facing
+ * mannequin CSS +X is screen-right, +Y down, +Z toward the viewer, so the
+ * coordinate basis is B = diag(-1, 1, 1). Apply B R(q) B^-1 to BOTH nested
+ * segment rotations. A quaternion's axial vector transforms as det(B) B v:
+ * (x, y, z, w) -> (x, -y, -z, w). Keep engine/smoother data anatomical.
+ * Keeping the quaternion whole avoids Euler order ambiguity and gimbal lock.
  */
 export function rotationMatrixForQuaternion(quaternion) {
   const { qx: px, qy: py, qz: pz, qw: pw } = quaternion || {};
@@ -260,8 +265,8 @@ export function rotationMatrixForQuaternion(quaternion) {
   const norm = Math.hypot(px, py, pz, pw);
   if (norm < 1e-9) return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   const x = px / norm;
-  const y = py / norm;
-  const z = pz / norm;
+  const y = -py / norm;
+  const z = -pz / norm;
   const w = pw / norm;
   const values = [
     1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y), 0,
@@ -316,7 +321,16 @@ export function anatomicalArmMarkup() {
         <i class="arm-phalange proximal"></i><i class="arm-phalange middle"></i><i class="arm-phalange distal"></i>
       </div>`).join("");
   return `
-    <div class="arm-rig" role="img" aria-label="Live articulated human arm">
+    <div class="body-reference-note">Full body reference &middot; right arm tracked</div>
+    <div class="body-rig" role="img" aria-label="Full human body with tracked right arm; torso, left arm and legs are an untracked neutral reference">
+      <div class="body-head"><span class="body-face"></span></div>
+      <div class="body-neck"></div>
+      <div class="body-torso"><span class="body-chest-line"></span><span class="body-abdomen"></span></div>
+      <div class="body-pelvis"></div>
+      <div class="body-rest-arm"><div class="body-rest-upper"></div><div class="body-rest-elbow"></div><div class="body-rest-forearm"></div><div class="body-rest-hand"></div></div>
+      <div class="body-leg body-leg-right"><div class="body-thigh"></div><div class="body-knee"></div><div class="body-shin"></div><div class="body-foot"></div></div>
+      <div class="body-leg body-leg-left"><div class="body-thigh"></div><div class="body-knee"></div><div class="body-shin"></div><div class="body-foot"></div></div>
+      <div class="arm-rig" aria-label="Live articulated human arm">
       <div class="arm-shoulder" data-arm-part="shoulder"><span class="anatomy-highlight"></span></div>
       <div class="arm-upper" data-arm-part="upper-arm">
         <div class="arm-limb arm-upper-surface"><span class="arm-muscle biceps"></span><span class="arm-muscle triceps"></span></div>
@@ -335,6 +349,8 @@ export function anatomicalArmMarkup() {
         </div>
       </div>
     </div>
+    </div>
+    <div class="body-reference-legend">Muted body = untracked reference &middot; gold markers = arm sensors</div>
     <div class="arm-avatar-label" data-arm-status>Run the three-pose calibration</div>`;
 }
 

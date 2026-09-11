@@ -96,13 +96,9 @@ export const MOTION_DEFAULTS = {
   anatomicalMaxAngleDeg: 105,
   anatomicalMaxSegmentMismatchDeg: 15,
   anatomicalTimeoutMs: 15000,
-  /**
-   * Warn after a solve whose capture pair was not a right angle. The second
-   * captured axis lands (90 - separation) degrees off its anatomical target,
-   * so a 70-degree pair predicts ~20 degrees of forward skew. Reported, not
-   * corrected: the fix is redoing steps 2-3 with the live separation readout.
-   */
+  /** Directional calibration must be within 10 degrees of orthogonal. */
   anatomicalAimSeparationMinDeg: 80,
+  anatomicalAimSeparationMaxDeg: 100,
 
   // --- hinge (range) calibration: a few slow reps to find the joint axis ---
   /** Only frames past this flexion contribute; small rotations have noisy axes. */
@@ -867,23 +863,28 @@ export class MotionEngine {
       };
     }
 
+    // A valid TRIAD rotation can still fit the physical poses poorly. Do not
+    // animate with a knowingly skewed frame (field run 2026-09-11T07:33).
+    const poorNodes = this.requiredNodes.filter((id) =>
+      quality[id].axisSeparationDeg < this.options.anatomicalAimSeparationMinDeg ||
+      quality[id].axisSeparationDeg > this.options.anatomicalAimSeparationMaxDeg
+    );
+    if (poorNodes.length) {
+      const separationsDeg = Object.fromEntries(this.requiredNodes.map((id) => [id, quality[id].axisSeparationDeg]));
+      const summary = this.requiredNodes.map((id) => `N${id}: ${separationsDeg[id].toFixed(0)} degrees`).join(", ");
+      this.mountCorrection.clear();
+      this.anatomicalQuality = null;
+      this.anatomicalCapture = null;
+      this.anatomicalState = ANATOMICAL_STATE.SIDE_READY;
+      this.anatomicalWarning = null;
+      this.anatomicalMessage = `Calibration needs a retry (${summary}; need ${this.options.anatomicalAimSeparationMinDeg}-${this.options.anatomicalAimSeparationMaxDeg}). ` +
+        "Keep torso still, elbow and wrist straight. Retry forward with thumb up; if it repeats, redo the side raise with palm down. Check N4 is secure on the upper arm.";
+      this.onEvent({ kind: "anatomical_forward_rejected", code: "capture_geometry", reason: this.anatomicalMessage, separationsDeg });
+      return;
+    }
     this.mountCorrection = solved;
     this.anatomicalQuality = { nodes: quality, segmentMismatchDeg: mismatchDeg };
-    // A non-right-angle capture pair is a proper rotation only up to the
-    // separation error: the second axis lands (90 - separation) degrees off
-    // its anatomical target, which skews every direction near it. The 05:58
-    // session solved at 65.8 degrees and rendered the forward raise 23.5
-    // degrees off (replay audit). Report it so the wearer can redo steps
-    // 2-3 instead of trusting a mount that is quietly wrong.
-    const minSeparationDeg = Math.min(
-      ...this.requiredNodes.map((id) => quality[id].axisSeparationDeg)
-    );
-    this.anatomicalWarning =
-      minSeparationDeg < this.options.anatomicalAimSeparationMinDeg
-        ? `Capture geometry was ${minSeparationDeg.toFixed(0)} degrees (ideal 90) - ` +
-          `expect about ${(90 - minSeparationDeg).toFixed(0)} degrees of forward tracking skew; ` +
-          "redo steps 2-3 for best tracking."
-        : null;
+    this.anatomicalWarning = null;
     this.anatomicalCapture = null;
     this.anatomicalState = ANATOMICAL_STATE.CALIBRATED;
     this.anatomicalMessage = this.anatomicalWarning

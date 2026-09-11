@@ -294,7 +294,7 @@ class LiveToolInvariants(unittest.TestCase):
     def test_live_tool_build_bumped_for_anatomical_workflow(self):
         """A stale cached module graph silently runs the old two-pose UI; the
         visible build string must move with this workflow change."""
-        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.22"', INFERENCE)
+        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.25"', INFERENCE)
 
     # --------------------------------------------------- anatomical replay
 
@@ -388,9 +388,8 @@ class LiveToolInvariants(unittest.TestCase):
         self.assertGreater(metrics["dropoutFrames"], 0, "dropout segment must be visible")
         self.assertIn("p50", metrics["visualStepDistribution"])
 
-    def test_anatomical_replay_reports_a_geometry_warning(self):
-        """A solve from an off-right-angle capture pair must surface its
-        post-solve warning through the replay audit, not only in the UI."""
+    def test_anatomical_replay_keeps_rejected_geometry_unavailable(self):
+        """Rejected geometry must never replay as an anatomical calibration."""
         if shutil.which("node") is None:
             self.skipTest("node not available")
         sys.path.insert(0, str(ROOT / "host" / "tests" / "python"))
@@ -410,9 +409,9 @@ class LiveToolInvariants(unittest.TestCase):
 
         metrics = self._replay_anatomical(builder)
 
-        self.assertEqual(metrics["axisFrame"], "anatomical")
-        self.assertIn("calibrationWarning", metrics)
-        self.assertIn("70", metrics["calibrationWarning"])
+        self.assertEqual(metrics["axisFrame"], "sensor_neutral")
+        self.assertEqual(metrics["directionValidation"], "unavailable")
+        self.assertNotIn("calibrationWarning", metrics)
 
     def test_replay_reports_legacy_sensor_neutral_logs_honestly(self):
         """A log from before the three-pose workflow has no directional
