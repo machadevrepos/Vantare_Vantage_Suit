@@ -3708,15 +3708,15 @@
     "semantic_hash": "96c676c6159d5204f2cc734f2b1f7458"
   },
   "host/live_tool/js/live-inference.js": {
-    "mtime": 1789041725.0921848,
-    "seen": 1789042765.4612648,
-    "ast_hash": "723dea26ebea646ea23fe642eed70b5a",
+    "mtime": 1789100885.6732996,
+    "seen": 1789101045.2643087,
+    "ast_hash": "5f0cfe003be7e87453848892f5ff5488",
     "semantic_hash": ""
   },
   "host/live_tool/js/main.js": {
-    "mtime": 1789041716.3045292,
-    "seen": 1789042765.461267,
-    "ast_hash": "c41d4af239e91b64bab834c616961662",
+    "mtime": 1789100863.8052838,
+    "seen": 1789101045.2643118,
+    "ast_hash": "9eaae239b9e4ed55d52fc3dcf0ee1717",
     "semantic_hash": ""
   },
   "host/live_tool/js/ml-preprocessing.js": {
@@ -3726,9 +3726,9 @@
     "semantic_hash": "9aeeaaede294841007026969e625151d"
   },
   "host/live_tool/js/motion-engine.js": {
-    "mtime": 1789040362.2841783,
-    "seen": 1789042765.4612722,
-    "ast_hash": "4a954dd8a3856be8954a9645d098bed3",
+    "mtime": 1789100806.4949899,
+    "seen": 1789101045.2643182,
+    "ast_hash": "8d30bd59a0d04ed1e4f2b1fa72b6021c",
     "semantic_hash": ""
   },
   "host/live_tool/js/rep-analyzer.js": {
@@ -3744,9 +3744,9 @@
     "semantic_hash": "30cfcda7e9e7de380723325c010f6685"
   },
   "host/live_tool/js/ui.js": {
-    "mtime": 1789041695.756899,
-    "seen": 1789042765.4612792,
-    "ast_hash": "0953c9ff9a0894a52e580af9c5cbc5af",
+    "mtime": 1789100885.594972,
+    "seen": 1789101045.2643263,
+    "ast_hash": "324d86da256b19b5128b1bbe80c9433e",
     "semantic_hash": ""
   },
   "host/live_tool/model/feature_names.json": {
@@ -4002,15 +4002,15 @@
     "semantic_hash": "dca9d1186264ef3c6bb83d40e3086fc1"
   },
   "host/tests/python/test_live_tool_invariants.py": {
-    "mtime": 1789042326.286342,
-    "seen": 1789042765.4613807,
-    "ast_hash": "ce309f9c1435fcd782bdbf4c7e2b23a9",
+    "mtime": 1789100885.6460268,
+    "seen": 1789101045.2644508,
+    "ast_hash": "549290fdee24224c6c77d6c73e3ea790",
     "semantic_hash": ""
   },
   "host/tests/python/test_motion_engine.py": {
-    "mtime": 1789040362.282397,
-    "seen": 1789042765.4613826,
-    "ast_hash": "28a8de30d239044f7f3da4fd84a8e601",
+    "mtime": 1789100823.2566745,
+    "seen": 1789101045.2644534,
+    "ast_hash": "6a740179f7459cd2e04fc99c5262fd32",
     "semantic_hash": ""
   },
   "host/tests/python/test_remote_transfer_lifecycle_source.py": {
@@ -4212,15 +4212,15 @@
     "semantic_hash": ""
   },
   "host/live_tool/js/anatomical-calibration.js": {
-    "mtime": 1789039826.684532,
-    "seen": 1789042765.4612522,
-    "ast_hash": "bfcdb52277e5c1f03d35f56f7fa5a14d",
+    "mtime": 1789100806.4653823,
+    "seen": 1789101045.2642918,
+    "ast_hash": "ae4f79fccaa8bc02a0a78b9d124e9513",
     "semantic_hash": ""
   },
   "host/live_tool/js/arm-avatar.js": {
-    "mtime": 1789041402.6248717,
-    "seen": 1789042765.4612548,
-    "ast_hash": "d77ab2f6477a2edfe462fd9edcae4b97",
+    "mtime": 1789100853.2307656,
+    "seen": 1789101045.2642975,
+    "ast_hash": "092527acc0feae5f13d253e322f5e08a",
     "semantic_hash": ""
   },
   "host/tests/scripts/replay_arm_avatar.mjs": {
@@ -4230,15 +4230,15 @@
     "semantic_hash": ""
   },
   "host/tests/scripts/test_anatomical_calibration.mjs": {
-    "mtime": 1789039743.2240307,
-    "seen": 1789042765.4614172,
-    "ast_hash": "6cb84a8a6191dc9740c79b1e9b777105",
+    "mtime": 1789100791.5518794,
+    "seen": 1789101045.264498,
+    "ast_hash": "8bfee9a8c456567e2a07dd18ac4b8270",
     "semantic_hash": ""
   },
   "host/tests/scripts/test_arm_avatar.mjs": {
-    "mtime": 1789041479.4673262,
-    "seen": 1789042765.461419,
-    "ast_hash": "29dcbee127334c2da9297e84eb600ca0",
+    "mtime": 1789100853.2120855,
+    "seen": 1789101045.2645004,
+    "ast_hash": "fc6219a3a03c2068461d564b55e9e60c",
     "semantic_hash": ""
   },
   "scripts/audit_includes.py": {
@@ -4392,9 +4392,9 @@
     "semantic_hash": ""
   },
   "docs/architecture/motion-engine-contract.md": {
-    "mtime": 1789042466.2708526,
-    "seen": 1789042765.4614713,
-    "ast_hash": "5b8ee5a1e056aec62ca492e9704675b1",
+    "mtime": 1789100932.9882326,
+    "seen": 1789101045.2645829,
+    "ast_hash": "e24d68dcaf3d94ab795a0be15e8d0b7e",
     "semantic_hash": ""
   },
   "docs/architecture/project-details.html": {

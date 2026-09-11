@@ -3708,9 +3708,9 @@
     "semantic_hash": "96c676c6159d5204f2cc734f2b1f7458"
   },
   "host/live_tool/js/live-inference.js": {
-    "mtime": 1789100885.6732996,
-    "seen": 1789101045.2643087,
-    "ast_hash": "5f0cfe003be7e87453848892f5ff5488",
+    "mtime": 1789102969.625771,
+    "seen": 1789103094.7007751,
+    "ast_hash": "28d8e1b680557f96a60b420be16e27e2",
     "semantic_hash": ""
   },
   "host/live_tool/js/main.js": {
@@ -3726,9 +3726,9 @@
     "semantic_hash": "9aeeaaede294841007026969e625151d"
   },
   "host/live_tool/js/motion-engine.js": {
-    "mtime": 1789100806.4949899,
-    "seen": 1789101045.2643182,
-    "ast_hash": "8d30bd59a0d04ed1e4f2b1fa72b6021c",
+    "mtime": 1789102912.6506054,
+    "seen": 1789103094.7007842,
+    "ast_hash": "ddf2100b394ce05c4732bf5fc36cb6ab",
     "semantic_hash": ""
   },
   "host/live_tool/js/rep-analyzer.js": {
@@ -4002,15 +4002,15 @@
     "semantic_hash": "dca9d1186264ef3c6bb83d40e3086fc1"
   },
   "host/tests/python/test_live_tool_invariants.py": {
-    "mtime": 1789100885.6460268,
-    "seen": 1789101045.2644508,
-    "ast_hash": "549290fdee24224c6c77d6c73e3ea790",
+    "mtime": 1789102969.6498227,
+    "seen": 1789103094.7008934,
+    "ast_hash": "ed2963ca3c0ea685373ab3894974f472",
     "semantic_hash": ""
   },
   "host/tests/python/test_motion_engine.py": {
-    "mtime": 1789100823.2566745,
-    "seen": 1789101045.2644534,
-    "ast_hash": "6a740179f7459cd2e04fc99c5262fd32",
+    "mtime": 1789102783.9251616,
+    "seen": 1789103094.7008958,
+    "ast_hash": "9aeaa288830919976fb912a4e68b3780",
     "semantic_hash": ""
   },
   "host/tests/python/test_remote_transfer_lifecycle_source.py": {
@@ -4392,9 +4392,9 @@
     "semantic_hash": ""
   },
   "docs/architecture/motion-engine-contract.md": {
-    "mtime": 1789100932.9882326,
-    "seen": 1789101045.2645829,
-    "ast_hash": "e24d68dcaf3d94ab795a0be15e8d0b7e",
+    "mtime": 1789102969.6016617,
+    "seen": 1789103094.7010012,
+    "ast_hash": "5a345898524cb699519a03009b6d1510",
     "semantic_hash": ""
   },
   "docs/architecture/project-details.html": {

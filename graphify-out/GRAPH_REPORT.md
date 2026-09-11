@@ -1,16 +1,16 @@
 # Graph Report - Vantare_Vantage_Suit  (2026-09-11)
 
 ## Corpus Check
-- 745 files · ~2,419,979 words
+- 745 files · ~2,420,609 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 16397 nodes · 38870 edges · 631 communities (440 shown, 117 thin omitted)
+- 16405 nodes · 38890 edges · 622 communities (437 shown, 111 thin omitted)
 - Extraction: 89% EXTRACTED · 11% INFERRED · 0% AMBIGUOUS · INFERRED: 4314 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `91186e2c`
+- Built from commit: `a2e03099`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -50,7 +50,7 @@
 - Bno85Stm32
 - NEOWAY
 - Osal_MemSet
-- Osal_MemSet
+- hci_send_req
 - Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_usart.h
 - __STATIC_INLINE
 - USART_TypeDef
@@ -68,14 +68,14 @@
 - Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_bus.h
 - Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_spi.h
 - Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_bus.h
-- Error_Handler
+- main
 - Master/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/tl_mbox.c
 - Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart.c
 - MasterTrainingCsvLogger
 - Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_pwr_ex.c
 - TIM_TypeDef
 - TIM_TypeDef
-- Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_spi.c
+- HAL_GetTick
 - HAL_GetTick
 - Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_pwr_ex.c
 - Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_dmamux.h
@@ -87,7 +87,7 @@
 - Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_cortex.c
 - stm32wbxx_hal_usart.c
 - ort-wasm-simd-threaded.mjs
-- hci_send_req
+- Osal_MemCpy
 - Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_tim_ex.c
 - Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_tim_ex.c
 - Node/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gap_aci.c
@@ -112,7 +112,7 @@
 - __STATIC_INLINE
 - USART_TypeDef
 - Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_ll_rcc.c
-- MasterNodeTransferWindow
+- RecordReliableFrameHeader
 - cjson.h
 - inv_imu_driver_advanced.c
 - G
@@ -120,7 +120,7 @@
 - shci_send
 - shci_send
 - includer.h
-- Osal_MemCpy
+- Master/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gatt_aci.c
 - Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal.c
 - Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart.c
 - sh2_SensorValue.c
@@ -224,7 +224,7 @@
 - Master/Drivers/CMSIS/Include/cmsis_armcc.h
 - Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_gpio.h
 - Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_hsem.h
-- LL_C1_IPCC_SetFlag_CHx
+- Node/Core/Src/ble/custom_app.cpp
 - Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_dma.c
 - Node/Drivers/CMSIS/Include/cmsis_armcc.h
 - Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_gpio.h
@@ -246,11 +246,10 @@
 - Node/Drivers/CMSIS/Include/core_cm3.h
 - Node/Drivers/CMSIS/Include/core_cm4.h
 - Node/Drivers/CMSIS/Include/core_sc300.h
-- _tBLEProfileGlobalContext
+- Master/Core/Src/ble/app_ble.cpp
 - HAL_DMA_Abort_IT
 - 5. Firmware risk review (current tree, re-verified 2026-09-07)
 - LL_RCC_DeInit
-- CJsonObject
 - LatencyStat
 - Master/Drivers/CMSIS/Include/mpu_armv8.h
 - Four-Node Live Preview and Training CSV Design
@@ -288,7 +287,7 @@
 - Node/Drivers/CMSIS/Include/core_cm0plus.h
 - Node/Drivers/CMSIS/Include/core_cm1.h
 - HAL_ADC_ConfigChannel
-- node_recording_app.h
+- hub_sensor_test_app.h
 - RecordTransferTuningWire
 - TrainingCsvRowContext
 - print_control
@@ -301,14 +300,14 @@
 - master_imu_csv_logger_test.cpp
 - master_training_csv_logger_test.cpp
 - .begin
-- build_session_one
+- HAL_GPIO_Init
 - __weak
 - Node/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/shci_tl.c
 - TIM_Base_SetConfig
 - test_coderabbit_csv_logger_regressions.cpp
 - MotionFixtureBuilder
 - c_math_parser.h
-- RecordDoneMessage
+- hub_leaf_ble_manager.h
 - DebugInfo
 - HubRecordingApp
 - master_node_session_stager_test.cpp
@@ -329,13 +328,13 @@
 - Node/Core/Src/ble/blepipe_proto.cpp
 - Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_exti.c
 - test_master_node_session_stager_sequential.cpp
-- .on_request_status
+- __weak
 - BleNotificationGate
-- HAL_GPIO_WritePin
+- LiveSample
 - cJSON_bool
 - sh2_util.c
-- FakeState
-- HubSensorSnapshot
+- Node/Core/Src/stm32_lpm_if.cpp
+- RecordReliableManifestPayload
 - MasterSessionTimestampLedger
 - UART_ESP
 - FRESULT
@@ -343,7 +342,7 @@
 - DoubleBatchBuffer
 - .accept
 - NodeRecordingConfig
-- Icm45686SampleV2
+- recording_types.h
 - SWO_PRINTER
 - aci_gatt_update_char_value
 - Master/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_l2cap_aci.c
@@ -351,8 +350,8 @@
 - aci_gatt_update_char_value
 - Node/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_l2cap_aci.c
 - checkFloat32Blend
-- test_motion_engine.py
-- master_training_csv_coordinator.h
+- q_mul
+- NodeTransferChunkCounters
 - HAL_PWR_EnableBkUpAccess
 - RecordTransferRuntimeConfig
 - Master/Drivers/CMSIS/Include/mpu_armv7.h
@@ -361,7 +360,7 @@
 - syscall.c
 - Node/Drivers/CMSIS/Include/mpu_armv7.h
 - Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_dma_ex.c
-- HAL_StatusTypeDef
+- MX_I2C3_Init
 - inv_imu_selftest
 - SessionLog
 - RecordStopSyncState
@@ -377,7 +376,7 @@
 - validate_training_csv.py
 - BnoDerivedFeatures
 - UART_ReceiveStringToIdle
-- RecordReliableVerifyPayload
+- TrainingPendingVerifyOk
 - ReliableTxState
 - HAL_ADC_Init
 - NoCacheHandler
@@ -407,7 +406,7 @@
 - LL_VREFBUF_SetTrimming
 - HAL_SPIEx_FlushRxFifo
 - Init_Smps
-- LiveSample
+- LiveSlot
 - LL_RTC_ALMA_GetTime
 - LL_RTC_ALMB_GetTime
 - LL_VREFBUF_SetTrimming
@@ -429,9 +428,9 @@
 - hci_le_advertising_report_event
 - hci_le_directed_advertising_report_event
 - hci_number_of_completed_packets_event
-- w25qxx_read
+- w25qxx_write
 - w25qxx_set_read_parameters
-- recording_types.h
+- RecordReliableAckWindowPayload
 - test_remote_transfer_lifecycle_source.py
 - T_UINT32
 - T_UINT32
@@ -542,14 +541,14 @@
 - plan-sess_cfe75341-d976-4cc1-a97a-1fa8ecf90d24.md
 - Issue 2 — Node ICM: ~50 % duplicate samples + synthetic timestamps (FIXED)
 - Master + Four-Node Integration Test Plan
-- Icm45686SampleV4
+- RecordReliableManifestAckPayload
 - Issue 1 — BLE communication path not working
 - Issue 5 — Node→Master transfer throughput ~1.8 KB/s (FIXED in firmware — awaiting hardware verification)
 - Fixes applied 2026-08-21 (Issues 3, 4, 5)
 - Bicep-curl training dataset
 - Issue 3 — Master BNO: ~78 % sample loss (FIXED in firmware — awaiting hardware verification)
 - LL_RCC_LSI2_IsReady
-- .send_reliable_frame
+- .scenario_anatomical_with_heading_offsets
 - Vantage Binary Recording Workflow
 - audit_includes.py
 - api/README.md
@@ -559,19 +558,11 @@
 - format.sh script
 - lint.sh script
 - setup.sh script
-- hub_sensor_test_app.h
-- Icm45686SampleV3
-- MicroClock
-- PendingChunk
+- Init_Rtc
+- .flush_write_buffer
 - JSON_EXTRACTER
 - BleGetBdAddress
-- LL_DBGMCU_DisableDBGStandbyMode
-- LL_DBGMCU_EnableDBGStandbyMode
-- LL_DBGMCU_GetDeviceID
-- LL_SYSCFG_DisableAnalogBooster
-- LL_SYSCFG_EnableAnalogBooster
-- LL_SYSCFG_IsEnabledSecurityAccess
-- LL_VREFBUF_Disable
+- APPD_Init
 
 ## God Nodes (most connected - your core abstractions)
 1. `r()` - 314 edges
@@ -600,7 +591,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (631 total, 117 thin omitted)
+## Communities (622 total, 111 thin omitted)
 
 ### Community 0 - "ort.min.js"
 Cohesion: 0.01
@@ -664,7 +655,7 @@ Nodes (133): __CLREX(), __CLZ(), __cmsis_start(), __disable_fault_irq(), __enabl
 
 ### Community 16 - "MasterTrainingCsvCoordinator"
 Cohesion: 0.03
-Nodes (44): FlushTimeFn, FRESULT, NodeSessionStageOperation, SendFn, SessionHeader, TrainingCsvLogOperation, MasterTrainingCsvCoordinator, chunk_counters_ (+36 more)
+Nodes (45): FlushTimeFn, FRESULT, NodeSessionStageOperation, SendFn, SessionHeader, TrainingCsvLogOperation, MasterTrainingCsvCoordinator, chunk_counters_ (+37 more)
 
 ### Community 17 - "Master/Drivers/CMSIS/Include/cmsis_armclang_ltm.h"
 Cohesion: 0.04
@@ -696,14 +687,14 @@ Nodes (96): HAL_DMA_Start_IT(), DMA_HandleTypeDef, FlagStatus, HAL_I2C_CallbackI
 
 ### Community 24 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_i2c.c"
 Cohesion: 0.09
-Nodes (97): HAL_DMA_Start_IT(), HAL_GetTick(), DMA_HandleTypeDef, FlagStatus, HAL_I2C_CallbackIDTypeDef, HAL_I2C_ModeTypeDef, HAL_I2C_StateTypeDef, HAL_StatusTypeDef (+89 more)
+Nodes (96): HAL_DMA_Start_IT(), DMA_HandleTypeDef, FlagStatus, HAL_I2C_CallbackIDTypeDef, HAL_I2C_ModeTypeDef, HAL_I2C_StateTypeDef, HAL_StatusTypeDef, I2C_HandleTypeDef (+88 more)
 
 ### Community 25 - "sh2.c"
 Cohesion: 0.05
 Nodes (95): CommandResp_t, clearDcdAndResetOnReset(), clearDcdAndResetStart(), executableDeviceHdlr(), finishCalRx(), finishCalStart(), forceFlushRx(), forceFlushStart() (+87 more)
 
 ### Community 26 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_dmamux.h"
-Cohesion: 0.05
+Cohesion: 0.09
 Nodes (67): DMAMUX_Channel_TypeDef, __STATIC_INLINE, LL_DMAMUX_ClearFlag_RGO0(), LL_DMAMUX_ClearFlag_RGO1(), LL_DMAMUX_ClearFlag_RGO2(), LL_DMAMUX_ClearFlag_RGO3(), LL_DMAMUX_ClearFlag_SO0(), LL_DMAMUX_ClearFlag_SO1() (+59 more)
 
 ### Community 27 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_system.h"
@@ -711,8 +702,8 @@ Cohesion: 0.04
 Nodes (94): __STATIC_INLINE, LL_C2_DBGMCU_APB1_GRP1_FreezePeriph(), LL_C2_DBGMCU_APB1_GRP1_UnFreezePeriph(), LL_C2_DBGMCU_APB1_GRP2_FreezePeriph(), LL_C2_DBGMCU_APB1_GRP2_UnFreezePeriph(), LL_C2_DBGMCU_APB2_GRP1_FreezePeriph(), LL_C2_DBGMCU_APB2_GRP1_UnFreezePeriph(), LL_C2_SYSCFG_GRP1_DisableIT() (+86 more)
 
 ### Community 28 - "Master/Core/Src/main.cpp"
-Cohesion: 0.05
-Nodes (98): HAL_Delay(), APP_BLE_Get_Server_Connection_Status(), APP_BLE_RequestServerFastConnInterval(), APP_BLE_ConnStatus_t, exo_hub_central_client_broadcast_blepipe(), exo_hub_central_client_init(), exo_hub_central_client_request_scan(), exo_hub_central_client_reset_leaf_live_diag() (+90 more)
+Cohesion: 0.04
+Nodes (89): RecordDoneMessage, actual_duration_ms, command, node_id, payload_crc32, session_id, total_size, RecordReliableVerifyPayload (+81 more)
 
 ### Community 29 - "NodeRecordingApp"
 Cohesion: 0.02
@@ -738,9 +729,9 @@ Nodes (46): LOOP_CONT, NEOWAY, aws_connected, ble_init, ble_resp, clientcert_nam
 Cohesion: 0.07
 Nodes (88): exo_node_ble_link_process(), Adv_Set_t, Host_Nb_Of_Completed_Pkt_Pair_t, Init_Param_Phy_t, Scan_Param_Phy_t, tBleStatus, hci_disconnect(), hci_host_buffer_size() (+80 more)
 
-### Community 35 - "Osal_MemSet"
-Cohesion: 0.07
-Nodes (86): Adv_Set_t, Host_Nb_Of_Completed_Pkt_Pair_t, Init_Param_Phy_t, Scan_Param_Phy_t, tBleStatus, hci_disconnect(), hci_host_buffer_size(), hci_host_number_of_completed_packets() (+78 more)
+### Community 35 - "hci_send_req"
+Cohesion: 0.08
+Nodes (87): Adv_Set_t, Host_Nb_Of_Completed_Pkt_Pair_t, Init_Param_Phy_t, Scan_Param_Phy_t, tBleStatus, hci_disconnect(), hci_host_buffer_size(), hci_host_number_of_completed_packets() (+79 more)
 
 ### Community 36 - "Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_usart.h"
 Cohesion: 0.02
@@ -767,16 +758,16 @@ Cohesion: 0.02
 Nodes (84): USART_TypeDef, LL_USART_ClearFlag_FE(), LL_USART_ClearFlag_LBD(), LL_USART_ClearFlag_RTO(), LL_USART_ClearFlag_TC(), LL_USART_ConfigFIFOsThreshold(), LL_USART_ConfigLINMode(), LL_USART_ConfigMultiProcessMode() (+76 more)
 
 ### Community 42 - "exo_hub_central_client.cpp"
-Cohesion: 0.07
-Nodes (85): exo_disc_event_t, exo_leaf_slot_t, Adv_Cancel(), APP_BLE_GetServerConnIntervalRaw(), APP_BLE_LeafClientConnectIdle(), APP_BLE_LeafClientConnecting(), APP_BLE_LeafClientPhoneConnected(), APP_BLE_LeafClientPrepareScan() (+77 more)
+Cohesion: 0.09
+Nodes (73): exo_disc_event_t, exo_leaf_slot_t, APP_BLE_LeafClientPhoneConnected(), APP_BLE_LeafClientScanIdle(), SVCCTL_UserEvtFlowStatus_t, SVCCTL_App_Notification(), aci_att_exchange_mtu_resp_event(), aci_att_read_by_group_type_resp_event() (+65 more)
 
 ### Community 43 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rtc_ex.c"
 Cohesion: 0.07
 Nodes (80): HAL_RTC_CallbackIDTypeDef, HAL_RTCStateTypeDef, HAL_StatusTypeDef, pRTC_CallbackTypeDef, RTC_AlarmTypeDef, RTC_DateTypeDef, RTC_HandleTypeDef, RTC_TimeTypeDef (+72 more)
 
 ### Community 44 - "ble_record_protocol.h"
-Cohesion: 0.02
-Nodes (109): ChunkAckCompactMessage, command, flags, next_offset, proto_version, session_id, ChunkAckCompactSourceMessage, command (+101 more)
+Cohesion: 0.03
+Nodes (76): ChunkAckCompactMessage, command, flags, next_offset, proto_version, session_id, ChunkAckCompactSourceMessage, command (+68 more)
 
 ### Community 45 - "MasterSdSessionRecorder"
 Cohesion: 0.05
@@ -796,11 +787,11 @@ Nodes (75): SPI_TypeDef, __STATIC_INLINE, LL_SPI_ClearFlag_CRCERR(), LL_SPI_Clea
 
 ### Community 49 - "Node/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/tl_mbox.c"
 Cohesion: 0.05
-Nodes (50): TL_BLE_LLD_Config_t, TL_CmdPacket_t, TL_EvtPacket_t, TL_LLD_tests_Config_t, TL_MAC_802_15_4_Config_t, TL_MM_Config_t, TL_TH_Config_t, TL_ZIGBEE_Config_t (+42 more)
+Nodes (59): TL_BLE_LLD_Config_t, TL_CmdPacket_t, TL_EvtPacket_t, TL_LLD_tests_Config_t, TL_MAC_802_15_4_Config_t, TL_MB_PacketType_t, TL_TH_Config_t, TL_ZIGBEE_Config_t (+51 more)
 
 ### Community 50 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_bus.h"
 Cohesion: 0.05
-Nodes (74): __STATIC_INLINE, LL_AHB1_GRP1_DisableClock(), LL_AHB1_GRP1_DisableClockSleep(), LL_AHB1_GRP1_EnableClock(), LL_AHB1_GRP1_EnableClockSleep(), LL_AHB1_GRP1_ForceReset(), LL_AHB1_GRP1_IsEnabledClock(), LL_AHB1_GRP1_ReleaseReset() (+66 more)
+Nodes (75): __STATIC_INLINE, LL_AHB1_GRP1_DisableClock(), LL_AHB1_GRP1_DisableClockSleep(), LL_AHB1_GRP1_EnableClock(), LL_AHB1_GRP1_EnableClockSleep(), LL_AHB1_GRP1_ForceReset(), LL_AHB1_GRP1_IsEnabledClock(), LL_AHB1_GRP1_ReleaseReset() (+67 more)
 
 ### Community 51 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_spi.h"
 Cohesion: 0.08
@@ -810,13 +801,13 @@ Nodes (75): SPI_TypeDef, __STATIC_INLINE, LL_SPI_ClearFlag_CRCERR(), LL_SPI_Clea
 Cohesion: 0.05
 Nodes (75): __STATIC_INLINE, LL_AHB1_GRP1_DisableClock(), LL_AHB1_GRP1_DisableClockSleep(), LL_AHB1_GRP1_EnableClock(), LL_AHB1_GRP1_EnableClockSleep(), LL_AHB1_GRP1_ForceReset(), LL_AHB1_GRP1_IsEnabledClock(), LL_AHB1_GRP1_ReleaseReset() (+67 more)
 
-### Community 53 - "Error_Handler"
-Cohesion: 0.11
-Nodes (24): ADC_HandleTypeDef, HAL_ADC_MspDeInit(), HAL_ADC_MspInit(), MX_ADC1_Init(), I2C_HandleTypeDef, HAL_I2C_MspDeInit(), HAL_I2C_MspInit(), MX_I2C1_Init() (+16 more)
+### Community 53 - "main"
+Cohesion: 0.05
+Nodes (54): ADC_HandleTypeDef, HAL_ADC_MspDeInit(), HAL_ADC_MspInit(), MX_ADC1_Init(), HAL_Delay(), APP_BLE_Get_Server_Connection_Status(), exo_hub_central_client_init(), MX_GPIO_Init() (+46 more)
 
 ### Community 54 - "Master/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/tl_mbox.c"
 Cohesion: 0.05
-Nodes (58): TL_BLE_LLD_Config_t, TL_CmdPacket_t, TL_EvtPacket_t, TL_LLD_tests_Config_t, TL_MAC_802_15_4_Config_t, TL_MB_PacketType_t, TL_TH_Config_t, TL_ZIGBEE_Config_t (+50 more)
+Nodes (54): TL_BLE_LLD_Config_t, TL_CmdPacket_t, TL_EvtPacket_t, TL_LLD_tests_Config_t, TL_MAC_802_15_4_Config_t, TL_MM_Config_t, TL_TH_Config_t, TL_ZIGBEE_Config_t (+46 more)
 
 ### Community 55 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart.c"
 Cohesion: 0.11
@@ -827,8 +818,8 @@ Cohesion: 0.06
 Nodes (34): Bno85Sample, FIL, FRESULT, Icm45686Sample, TrainingCsvLogOperation, MasterTrainingCsvLogger, accepted_rows_, buffered_bytes_ (+26 more)
 
 ### Community 57 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_pwr_ex.c"
-Cohesion: 0.03
-Nodes (39): SystemPower_Config(), LL_C2_PWR_SetPowerMode(), LL_PWR_DisableBootC2(), LL_PWR_DisableSRAM2Retention(), LL_PWR_EnableBootC2(), LL_PWR_EnableSRAM2Retention(), LL_PWR_GetBORConfig(), LL_PWR_SetBORConfig() (+31 more)
+Cohesion: 0.04
+Nodes (36): LL_PWR_DisableBootC2(), LL_PWR_DisableSRAM2Retention(), LL_PWR_EnableBootC2(), LL_PWR_EnableSRAM2Retention(), LL_PWR_GetBORConfig(), LL_PWR_SetBORConfig(), __weak, HAL_StatusTypeDef (+28 more)
 
 ### Community 58 - "TIM_TypeDef"
 Cohesion: 0.03
@@ -838,17 +829,17 @@ Nodes (70): TIM_TypeDef, LL_TIM_CC_SetUpdate(), LL_TIM_ClearFlag_BRK2(), LL_TIM_
 Cohesion: 0.03
 Nodes (70): TIM_TypeDef, LL_TIM_CC_SetUpdate(), LL_TIM_ClearFlag_BRK2(), LL_TIM_ClearFlag_CC2OVR(), LL_TIM_ClearFlag_CC5(), LL_TIM_ClearFlag_SYSBRK(), LL_TIM_ConfigBRK(), LL_TIM_ConfigBRK2() (+62 more)
 
-### Community 60 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_spi.c"
-Cohesion: 0.08
-Nodes (58): DMA_HandleTypeDef, FlagStatus, HAL_SPI_CallbackIDTypeDef, HAL_SPI_StateTypeDef, HAL_StatusTypeDef, pSPI_CallbackTypeDef, SPI_HandleTypeDef, __weak (+50 more)
+### Community 60 - "HAL_GetTick"
+Cohesion: 0.09
+Nodes (59): HAL_GetTick(), DMA_HandleTypeDef, FlagStatus, HAL_SPI_CallbackIDTypeDef, HAL_SPI_StateTypeDef, HAL_StatusTypeDef, pSPI_CallbackTypeDef, SPI_HandleTypeDef (+51 more)
 
 ### Community 61 - "HAL_GetTick"
-Cohesion: 0.08
-Nodes (64): exo_hub_central_client_set_ble_ready(), exo_ble_debug_printf(), exo_hub_leaf_record_frame_ingest(), exo_hub_leaf_stream_ingest(), master_sd_flush_now_ms(), HAL_GetTick(), DMA_HandleTypeDef, FlagStatus (+56 more)
+Cohesion: 0.09
+Nodes (59): exo_hub_central_client_set_ble_ready(), HAL_GetTick(), DMA_HandleTypeDef, FlagStatus, HAL_SPI_CallbackIDTypeDef, HAL_SPI_StateTypeDef, HAL_StatusTypeDef, pSPI_CallbackTypeDef (+51 more)
 
 ### Community 62 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_pwr_ex.c"
 Cohesion: 0.03
-Nodes (40): SystemPower_Config(), LL_C2_PWR_SetPowerMode(), LL_PWR_DisableBootC2(), LL_PWR_DisableSRAM2Retention(), LL_PWR_EnableBootC2(), LL_PWR_EnableSRAM2Retention(), LL_PWR_GetBORConfig(), LL_PWR_SetBORConfig() (+32 more)
+Nodes (39): SystemPower_Config(), LL_C2_PWR_SetPowerMode(), LL_PWR_DisableBootC2(), LL_PWR_DisableSRAM2Retention(), LL_PWR_EnableBootC2(), LL_PWR_EnableSRAM2Retention(), LL_PWR_GetBORConfig(), LL_PWR_SetBORConfig() (+31 more)
 
 ### Community 63 - "Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_dmamux.h"
 Cohesion: 0.09
@@ -886,9 +877,9 @@ Nodes (59): DMA_HandleTypeDef, FlagStatus, HAL_StatusTypeDef, USART_HandleTypeDe
 Cohesion: 0.08
 Nodes (53): a(), aa(), ab(), bb(), cb(), db(), ea(), eb() (+45 more)
 
-### Community 72 - "hci_send_req"
-Cohesion: 0.09
-Nodes (61): Adv_Request(), aci_gap_add_devices_to_list(), aci_gap_additional_beacon_set_data(), aci_gap_additional_beacon_start(), aci_gap_additional_beacon_stop(), aci_gap_adv_clear_sets(), aci_gap_adv_remove_set(), aci_gap_adv_set_adv_data() (+53 more)
+### Community 72 - "Osal_MemCpy"
+Cohesion: 0.07
+Nodes (64): Adv_Request(), APP_BLE_Init(), Ble_Hci_Gap_Gatt_Init(), APP_BLE_ConnStatus_t, aci_gap_add_devices_to_list(), aci_gap_additional_beacon_set_data(), aci_gap_additional_beacon_start(), aci_gap_additional_beacon_stop() (+56 more)
 
 ### Community 73 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_tim_ex.c"
 Cohesion: 0.09
@@ -907,8 +898,8 @@ Cohesion: 0.05
 Nodes (30): addDependency(), buildGraph(), buildGraphFromOnnxFormat(), buildGraphFromOrtFormat(), checkIsAcyclic(), constructor(), decode(), from() (+22 more)
 
 ### Community 77 - "NodeRecorder"
-Cohesion: 0.06
-Nodes (21): EraseStep, RecorderState, SessionHeader, NodeRecorder, base_address_, bno85_cursor_, bno85_region_size_, capacity_ (+13 more)
+Cohesion: 0.05
+Nodes (22): EraseStep, RecorderState, SessionHeader, NodeRecorder, base_address_, bno85_cursor_, bno85_region_size_, capacity_ (+14 more)
 
 ### Community 78 - "NodeUploadPump"
 Cohesion: 0.05
@@ -924,7 +915,7 @@ Nodes (56): LL_C1_IPCC_ClearFlag_CHx(), LL_C1_IPCC_EnableReceiveChannel(), __wea
 
 ### Community 81 - "Node/STM32_WPAN/Target/hw_ipcc.c"
 Cohesion: 0.07
-Nodes (56): LL_C1_IPCC_ClearFlag_CHx(), LL_C1_IPCC_EnableReceiveChannel(), __weak, HW_IPCC_BLE_AclDataAckNot(), HW_IPCC_BLE_AclDataEvtHandler(), HW_IPCC_BLE_EvtHandler(), HW_IPCC_BLE_Init(), HW_IPCC_BLE_RxEvtNot() (+48 more)
+Nodes (58): LL_C1_IPCC_ClearFlag_CHx(), LL_C1_IPCC_EnableReceiveChannel(), __weak, HW_IPCC_BLE_AclDataAckNot(), HW_IPCC_BLE_AclDataEvtHandler(), HW_IPCC_BLE_EvtHandler(), HW_IPCC_BLE_Init(), HW_IPCC_BLE_RxEvtNot() (+50 more)
 
 ### Community 82 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_ll_rcc.c"
 Cohesion: 0.11
@@ -948,7 +939,7 @@ Nodes (43): MX_DMA_Init(), HW_TS_InitMode_t, HW_TS_Mode_t, HW_TS_pTimerCb_t, HW_
 
 ### Community 87 - "driver_w25qxx.c"
 Cohesion: 0.13
-Nodes (53): a_w25qxx_erase_sector(), a_w25qxx_qspi_write_read(), a_w25qxx_spi_write_read(), w25qxx_handle_t, w25qxx_block_erase_32k(), w25qxx_block_erase_64k(), w25qxx_chip_erase(), w25qxx_deinit() (+45 more)
+Nodes (53): a_w25qxx_erase_sector(), a_w25qxx_page_program(), a_w25qxx_qspi_write_read(), a_w25qxx_spi_write_read(), w25qxx_handle_t, w25qxx_block_erase_32k(), w25qxx_block_erase_64k(), w25qxx_chip_erase() (+45 more)
 
 ### Community 88 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_ipcc.c"
 Cohesion: 0.06
@@ -986,9 +977,9 @@ Nodes (54): USART_TypeDef, LL_LPUART_ClearFlag_IDLE(), LL_LPUART_ClearFlag_NE(),
 Cohesion: 0.12
 Nodes (52): LL_RCC_GetRTCClockSource(), LL_RCC_GetSMPSPrescaler(), LL_RCC_HSE_IsEnabledDiv2(), LL_RCC_HSI_IsReady(), LL_RCC_LSE_IsReady(), LL_RCC_LSI1_IsReady(), LL_RCC_LSI2_IsReady(), LL_RCC_MSI_GetRange() (+44 more)
 
-### Community 97 - "MasterNodeTransferWindow"
-Cohesion: 0.07
-Nodes (19): MasterNodeTransferWindow, chunk_size_, total_size_, NodeTransferInspection, decision, next_chunk, next_offset, request_chunk (+11 more)
+### Community 97 - "RecordReliableFrameHeader"
+Cohesion: 0.05
+Nodes (31): RecordReliableFrameHeader, byte_offset, chunk_index, command, flags, frame_type, magic, payload_crc16 (+23 more)
 
 ### Community 98 - "cjson.h"
 Cohesion: 0.10
@@ -1018,17 +1009,17 @@ Nodes (48): SHCI_C2_Ble_Init_Cmd_Packet_t, SHCI_C2_CONCURRENT_GetNextBleEvtTime_
 Cohesion: 0.06
 Nodes (20): DIG_PIN, active_edge_time, active_state, curr_state, is_changed, pulse_time, pwrpin, GPIO_TypeDef (+12 more)
 
-### Community 105 - "Osal_MemCpy"
-Cohesion: 0.09
-Nodes (50): SVCCTL_InitCustomSvc(), aci_att_execute_write_req(), aci_att_find_by_type_value_req(), aci_att_find_info_req(), aci_att_prepare_write_req(), aci_att_read_by_group_type_req(), aci_att_read_by_type_req(), aci_gatt_add_char() (+42 more)
+### Community 105 - "Master/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_gatt_aci.c"
+Cohesion: 0.08
+Nodes (47): aci_att_execute_write_req(), aci_att_find_by_type_value_req(), aci_att_find_info_req(), aci_att_prepare_write_req(), aci_att_read_by_group_type_req(), aci_att_read_by_type_req(), aci_gatt_add_char(), aci_gatt_add_char_desc() (+39 more)
 
 ### Community 106 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal.c"
 Cohesion: 0.05
 Nodes (42): SysTick_Handler(), LL_DBGMCU_EnableDBGStandbyMode(), LL_DBGMCU_GetDeviceID(), LL_DBGMCU_GetRevisionID(), LL_SYSCFG_DisableAnalogBooster(), LL_SYSCFG_DisableAnalogGpioSwitch(), LL_SYSCFG_DisableSecurityAccess(), LL_SYSCFG_DisableSRAMFetch() (+34 more)
 
 ### Community 107 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart.c"
-Cohesion: 0.08
-Nodes (60): DMA_HandleTypeDef, HAL_UART_StateTypeDef, pUART_RxEventCallbackTypeDef, UART_HandleTypeDef, __weak, HAL_HalfDuplex_EnableReceiver(), HAL_HalfDuplex_EnableTransmitter(), HAL_LIN_SendBreak() (+52 more)
+Cohesion: 0.10
+Nodes (57): FlagStatus, HAL_StatusTypeDef, HAL_UART_CallbackIDTypeDef, HAL_UART_StateTypeDef, pUART_CallbackTypeDef, pUART_RxEventCallbackTypeDef, UART_HandleTypeDef, HAL_HalfDuplex_EnableReceiver() (+49 more)
 
 ### Community 108 - "sh2_SensorValue.c"
 Cohesion: 0.18
@@ -1063,32 +1054,32 @@ Cohesion: 0.07
 Nodes (44): LL_CRS_ClearFlag_ERR(), LL_CRS_ClearFlag_ESYNC(), LL_CRS_ClearFlag_SYNCOK(), LL_CRS_ClearFlag_SYNCWARN(), LL_RCC_ForceBackupDomainReset(), LL_RCC_GetSAIClockSource(), LL_RCC_LSCO_Disable(), LL_RCC_LSE_DisableCSS() (+36 more)
 
 ### Community 116 - "__DSB"
-Cohesion: 0.11
-Nodes (44): NodeSwo_Init(), __DSB(), __ISB(), __NVIC_SystemReset(), __NVIC_SystemReset(), __NVIC_SystemReset(), __NVIC_SystemReset(), IRQn_Type (+36 more)
+Cohesion: 0.12
+Nodes (43): __DSB(), __ISB(), __NVIC_SystemReset(), __NVIC_SystemReset(), __NVIC_SystemReset(), __NVIC_SystemReset(), IRQn_Type, __STATIC_FORCEINLINE (+35 more)
 
 ### Community 117 - "Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_crs.h"
 Cohesion: 0.09
 Nodes (45): __STATIC_INLINE, LL_CRS_ConfigSynchronization(), LL_CRS_DisableAutoTrimming(), LL_CRS_DisableFreqErrorCounter(), LL_CRS_DisableIT_ERR(), LL_CRS_DisableIT_ESYNC(), LL_CRS_DisableIT_SYNCOK(), LL_CRS_DisableIT_SYNCWARN() (+37 more)
 
 ### Community 118 - "string"
-Cohesion: 0.09
-Nodes (7): string, main(), same_bytes(), vector, main(), number(), split()
+Cohesion: 0.06
+Nodes (22): cJSON_AddObjectToObject(), cJSON_CreateObject(), cJSON_DeleteItemFromObject(), cJSON_DetachItemFromObject(), cJSON_GetNumberValue(), cJSON_GetObjectItem(), cJSON_GetStringValue(), cJSON_HasObjectItem() (+14 more)
 
 ### Community 119 - "Master/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_ipcc.h"
-Cohesion: 0.12
-Nodes (43): Reset_IPCC(), IPCC_TypeDef, __STATIC_INLINE, LL_C1_IPCC_DisableIT_RXO(), LL_C1_IPCC_DisableIT_TXF(), LL_C1_IPCC_DisableReceiveChannel(), LL_C1_IPCC_DisableTransmitChannel(), LL_C1_IPCC_EnableIT_RXO() (+35 more)
+Cohesion: 0.10
+Nodes (47): Reset_IPCC(), IPCC_TypeDef, __STATIC_INLINE, LL_C1_IPCC_DisableIT_RXO(), LL_C1_IPCC_DisableIT_TXF(), LL_C1_IPCC_DisableReceiveChannel(), LL_C1_IPCC_DisableTransmitChannel(), LL_C1_IPCC_EnableIT_RXO() (+39 more)
 
 ### Community 120 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_ipcc.h"
-Cohesion: 0.16
-Nodes (34): Reset_IPCC(), LL_AHB3_GRP1_EnableClock(), IPCC_TypeDef, __STATIC_INLINE, LL_C1_IPCC_DisableIT_RXO(), LL_C1_IPCC_DisableIT_TXF(), LL_C1_IPCC_DisableReceiveChannel(), LL_C1_IPCC_DisableTransmitChannel() (+26 more)
+Cohesion: 0.13
+Nodes (40): Reset_IPCC(), IPCC_TypeDef, __STATIC_INLINE, LL_C1_IPCC_DisableIT_RXO(), LL_C1_IPCC_DisableIT_TXF(), LL_C1_IPCC_DisableReceiveChannel(), LL_C1_IPCC_DisableTransmitChannel(), LL_C1_IPCC_EnableIT_RXO() (+32 more)
 
 ### Community 121 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal.c"
 Cohesion: 0.05
-Nodes (38): SysTick_Handler(), LL_DBGMCU_DisableDBGSleepMode(), LL_DBGMCU_DisableDBGStopMode(), LL_DBGMCU_EnableDBGSleepMode(), LL_DBGMCU_EnableDBGStopMode(), LL_DBGMCU_GetRevisionID(), LL_SYSCFG_DisableAnalogGpioSwitch(), LL_SYSCFG_DisableSecurityAccess() (+30 more)
+Nodes (42): SysTick_Handler(), LL_DBGMCU_EnableDBGStandbyMode(), LL_DBGMCU_GetDeviceID(), LL_DBGMCU_GetRevisionID(), LL_SYSCFG_DisableAnalogBooster(), LL_SYSCFG_DisableAnalogGpioSwitch(), LL_SYSCFG_DisableSecurityAccess(), LL_SYSCFG_DisableSRAMFetch() (+34 more)
 
 ### Community 122 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_exti.h"
 Cohesion: 0.08
-Nodes (45): LL_C2_AHB3_GRP1_EnableClock(), __STATIC_INLINE, LL_C2_EXTI_DisableEvent_0_31(), LL_C2_EXTI_DisableEvent_32_63(), LL_C2_EXTI_DisableIT_0_31(), LL_C2_EXTI_EnableEvent_0_31(), LL_C2_EXTI_EnableEvent_32_63(), LL_C2_EXTI_EnableIT_0_31() (+37 more)
+Nodes (47): LL_C2_AHB3_GRP1_EnableClock(), __STATIC_INLINE, LL_C2_EXTI_DisableEvent_0_31(), LL_C2_EXTI_DisableEvent_32_63(), LL_C2_EXTI_DisableIT_0_31(), LL_C2_EXTI_DisableIT_32_63(), LL_C2_EXTI_EnableEvent_0_31(), LL_C2_EXTI_EnableEvent_32_63() (+39 more)
 
 ### Community 123 - "__DSB"
 Cohesion: 0.12
@@ -1107,12 +1098,12 @@ Cohesion: 0.07
 Nodes (42): Switch_On_HSI(), LL_C2_RCC_GetAHBPrescaler(), LL_C2_RCC_SetAHBPrescaler(), LL_RCC_ConfigMCO(), LL_RCC_GetAHB4Prescaler(), LL_RCC_GetAHBPrescaler(), LL_RCC_GetAPB1Prescaler(), LL_RCC_GetAPB2Prescaler() (+34 more)
 
 ### Community 127 - "Node/Drivers/STM32WBxx_HAL_Driver/Inc/stm32wbxx_ll_cortex.h"
-Cohesion: 0.08
-Nodes (41): EnterLowPower(), ExitLowPower(), PWR_EnterOffMode(), PWR_EnterSleepMode(), PWR_EnterStopMode(), PWR_ExitOffMode(), PWR_ExitSleepMode(), PWR_ExitStopMode() (+33 more)
+Cohesion: 0.14
+Nodes (26): __STATIC_INLINE, LL_CPUID_GetConstant(), LL_CPUID_GetImplementer(), LL_CPUID_GetParNo(), LL_CPUID_GetRevision(), LL_CPUID_GetVariant(), LL_HANDLER_DisableFault(), LL_HANDLER_EnableFault() (+18 more)
 
 ### Community 128 - "master_training_csv_coordinator_test.cpp"
-Cohesion: 0.08
-Nodes (37): BYTE, FIL, FILINFO, FRESULT, FSIZE_t, MasterSdSessionRecorder, TCHAR, UINT (+29 more)
+Cohesion: 0.06
+Nodes (51): Bno85Sample, BYTE, FIL, FILINFO, FRESULT, FSIZE_t, Icm45686Sample, MasterSdSessionRecorder (+43 more)
 
 ### Community 129 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rcc_ex.c"
 Cohesion: 0.05
@@ -1143,8 +1134,8 @@ Cohesion: 0.07
 Nodes (40): aci_att_exchange_mtu_resp_event(), aci_att_exchange_mtu_resp_event_process(), aci_att_read_by_type_resp_event(), aci_att_read_by_type_resp_event_process(), aci_gap_addr_not_resolved_event(), aci_gap_addr_not_resolved_event_process(), aci_gap_bond_lost_event(), aci_gap_bond_lost_event_process() (+32 more)
 
 ### Community 136 - "W25Q256Flash"
-Cohesion: 0.07
-Nodes (22): GPIO_TypeDef, SPI_HandleTypeDef, w25qxx_handle_t, W25Q256Flash, active_, cs_pin_, cs_port_, handle_ (+14 more)
+Cohesion: 0.06
+Nodes (25): GPIO_TypeDef, SPI_HandleTypeDef, w25qxx_handle_t, W25Q256Flash, active_, cs_pin_, cs_port_, handle_ (+17 more)
 
 ### Community 137 - "Master/Drivers/CMSIS/Include/core_armv81mml.h"
 Cohesion: 0.13
@@ -1184,11 +1175,11 @@ Nodes (24): CANJsonIndexEntry, CANMessage, CANSettings, appendToBuf(), boundedSt
 
 ### Community 146 - "MotionEngine"
 Cohesion: 0.06
-Nodes (38): clamp(), columns(), cross(), determinant(), dot(), failure(), finiteVector(), matrixToQuaternion() (+30 more)
+Nodes (39): clamp(), columns(), cross(), determinant(), dot(), failure(), finiteVector(), matrixToQuaternion() (+31 more)
 
 ### Community 147 - "HubSensorTestApp"
-Cohesion: 0.06
-Nodes (6): HAL_StatusTypeDef, I2C_HandleTypeDef, HubSensorTestApp, bno85_, diagnostics_, icm45686_
+Cohesion: 0.05
+Nodes (13): Bno85Sample, HAL_StatusTypeDef, I2C_HandleTypeDef, Icm45686Sample, HubSensorSnapshot, bno85, has_bno85, has_icm45686 (+5 more)
 
 ### Community 148 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rtc.c"
 Cohesion: 0.15
@@ -1207,8 +1198,8 @@ Cohesion: 0.08
 Nodes (15): NodeLiveSample, acquisition_time_ms, payload, payload_len, sensor_id, NodeLiveSampleQueue, enabled_, entries_ (+7 more)
 
 ### Community 152 - "Node/Core/Src/main.cpp"
-Cohesion: 0.06
-Nodes (59): exo_node_ble_dle_status_t, exo_node_ble_dle_status(), Custom_App_ConnHandle_Not_evt_t, Custom_STM_App_Notification_evt_t, Custom_STM_Char_Opcode_t, tBleStatus, __USED, Custom_APP_DisconnectCount() (+51 more)
+Cohesion: 0.12
+Nodes (32): exo_node_ble_dle_status_t, exo_node_ble_dle_status(), exo_node_ble_status_notify_enabled(), blepipe_hdr_t, UART_HandleTypeDef, exo_node_ble_write(), exo_node_flash_test_128b(), HAL_UART_ErrorCallback() (+24 more)
 
 ### Community 153 - "ble-protocol.js"
 Cohesion: 0.07
@@ -1224,7 +1215,7 @@ Nodes (22): buildChannelNames(), columnStatistics(), nearestIndex(), percentileL
 
 ### Community 156 - "MotionEngineTest"
 Cohesion: 0.07
-Nodes (11): MotionEngineTest, skipUnless, The core claim: mount rotations cancel, so the true angle comes back., Plan acceptance check: straight / 45 / 90 / 120 must not overlap., A different strap position + fresh calibration -> same 90 deg., Exercise independence: no classifier, the segment state just moves., The 3D team must not be able to mistake this for trunk-relative data., 45 degrees of bend with both raise magnitudes still ~90: only the mount-… (+3 more)
+Nodes (11): MotionEngineTest, skipUnless, The core claim: mount rotations cancel, so the true angle comes back., Plan acceptance check: straight / 45 / 90 / 120 must not overlap., A different strap position + fresh calibration -> same 90 deg., Exercise independence: no classifier, the segment state just moves., The 3D team must not be able to mistake this for trunk-relative data., 45 degrees of bend with both raise magnitudes still ~90 passes the magnitude… (+3 more)
 
 ### Community 157 - "BinRecord"
 Cohesion: 0.06
@@ -1235,8 +1226,8 @@ Cohesion: 0.15
 Nodes (24): append_blank_fields(), append_common_fields(), append_double(), append_double_or_blank(), append_field_double_or_blank(), CsvRowWriter, capacity_, output_ (+16 more)
 
 ### Community 159 - "Master/Utilities/sequencer/stm32_seq.c"
-Cohesion: 0.10
-Nodes (32): shci_cmd_resp_release(), shci_cmd_resp_wait(), BLE_StatusNot(), HCI_TL_CmdStatus_t, hci_cmd_resp_release(), hci_cmd_resp_wait(), hci_notify_asynch_evt(), SVCCTL_ResumeUserEventFlow() (+24 more)
+Cohesion: 0.12
+Nodes (29): shci_cmd_resp_release(), shci_cmd_resp_wait(), BLE_StatusNot(), HCI_TL_CmdStatus_t, hci_cmd_resp_release(), hci_cmd_resp_wait(), UTIL_SEQ_bm_t, UTIL_SEQ_WARNING (+21 more)
 
 ### Community 160 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_adc.c"
 Cohesion: 0.15
@@ -1256,7 +1247,7 @@ Nodes (33): IRQn_Type, __STATIC_INLINE, __NVIC_ClearPendingIRQ(), NVIC_ClearTarg
 
 ### Community 165 - "AcquisitionDiagnostics"
 Cohesion: 0.06
-Nodes (29): AcquisitionDiagnostics, bno_gap, bno_i2c_errors, bno_reports, bno_sensor_events, bno_service, bno_service_calls, bno_take_latest_ok (+21 more)
+Nodes (37): BnoReportSlot, AcquisitionDiagnostics, bno_gap, bno_i2c_errors, bno_reports, bno_sensor_events, bno_service, bno_service_calls (+29 more)
 
 ### Community 166 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_adc_ex.c"
 Cohesion: 0.16
@@ -1287,16 +1278,16 @@ Cohesion: 0.12
 Nodes (28): shci_cmd_resp_release(), shci_cmd_resp_wait(), BLE_StatusNot(), HCI_TL_CmdStatus_t, hci_cmd_resp_release(), UTIL_SEQ_bm_t, UTIL_SEQ_WARNING, __WEAK (+20 more)
 
 ### Community 175 - "MasterNodeSessionStager"
-Cohesion: 0.06
-Nodes (25): FIL, FlushTimeFn, FRESULT, SessionHeader, MasterNodeSessionStager, discarded_, done_, file_ (+17 more)
+Cohesion: 0.08
+Nodes (22): FIL, FlushTimeFn, SessionHeader, MasterNodeSessionStager, discarded_, done_, file_, file_open_ (+14 more)
 
 ### Community 176 - "f_write"
 Cohesion: 0.13
 Nodes (40): _FDID, BYTE, DRESULT, DSTATUS, DWORD, UINT, __weak, disk_initialize() (+32 more)
 
 ### Community 177 - "Node/Core/Src/app_entry.cpp"
-Cohesion: 0.08
-Nodes (29): APPD_EnableCPU2(), APPE_SysEvtError(), APPE_SysEvtReadyProcessing(), APPE_SysStatusNot(), APPE_SysUserEvtRx(), appe_Tl_Init(), Config_HSE(), SHCI_TL_CmdStatus_t (+21 more)
+Cohesion: 0.09
+Nodes (26): APPE_SysEvtError(), APPE_SysEvtReadyProcessing(), APPE_SysStatusNot(), APPE_SysUserEvtRx(), Config_HSE(), SHCI_TL_CmdStatus_t, Init_Exti(), Init_Rtc() (+18 more)
 
 ### Community 179 - "NodeHapticPulse"
 Cohesion: 0.10
@@ -1331,16 +1322,16 @@ Cohesion: 0.14
 Nodes (30): TIM_ClearInputConfigTypeDef, TIM_ClockConfigTypeDef, TIM_IC_InitTypeDef, TIM_OC_InitTypeDef, TIM_OnePulse_InitTypeDef, TIM_SlaveConfigTypeDef, TIM_TypeDef, HAL_TIM_ConfigClockSource() (+22 more)
 
 ### Community 188 - "__disable_irq"
-Cohesion: 0.23
-Nodes (20): __disable_irq(), hci_user_evt_proc(), shci_user_evt_proc(), HW_IPCC_BLE_RxEvtNot(), HW_IPCC_SYS_EvtNot(), HW_IPCC_TRACES_EvtNot(), SendFreeBuf(), TL_MM_EvtDone() (+12 more)
+Cohesion: 0.16
+Nodes (26): __disable_irq(), hci_user_evt_proc(), shci_user_evt_proc(), TL_MB_PacketType_t, HW_IPCC_BLE_AclDataAckNot(), HW_IPCC_BLE_RxEvtNot(), HW_IPCC_SYS_CmdEvtNot(), HW_IPCC_SYS_EvtNot() (+18 more)
 
 ### Community 189 - "Master/Core/Src/app_entry.cpp"
-Cohesion: 0.09
-Nodes (26): APPE_SysEvtError(), APPE_SysEvtReadyProcessing(), APPE_SysStatusNot(), APPE_SysUserEvtRx(), Config_HSE(), SHCI_TL_CmdStatus_t, Init_Exti(), Init_Rtc() (+18 more)
+Cohesion: 0.08
+Nodes (29): APPD_EnableCPU2(), APPE_SysEvtError(), APPE_SysEvtReadyProcessing(), APPE_SysStatusNot(), APPE_SysUserEvtRx(), appe_Tl_Init(), Config_HSE(), SHCI_TL_CmdStatus_t (+21 more)
 
 ### Community 190 - "user_diskio.c"
 Cohesion: 0.16
-Nodes (30): HAL_StatusTypeDef, SPI_HandleTypeDef, HAL_SPI_MspDeInit(), HAL_SPI_MspInit(), MX_SPI1_Init(), SPI1_SD_ChipSelect(), SPI1_SD_ClockIdleBytes(), SPI1_SD_Reinit() (+22 more)
+Nodes (31): HAL_StatusTypeDef, SPI_HandleTypeDef, HAL_SPI_MspDeInit(), HAL_SPI_MspInit(), MX_SPI1_Init(), SPI1_SD_ChipSelect(), SPI1_SD_ClockIdleBytes(), SPI1_SD_Reinit() (+23 more)
 
 ### Community 191 - "App"
 Cohesion: 0.18
@@ -1359,8 +1350,8 @@ Cohesion: 0.10
 Nodes (17): Aws_Config, client_id, clientcert_name, clientkey_name, data_pub_topic, host, meta_pub_topic, rootca_name (+9 more)
 
 ### Community 195 - "Master/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_hal_aci.c"
-Cohesion: 0.17
-Nodes (21): APP_BLE_Init(), Ble_Hci_Gap_Gatt_Init(), aci_hal_ead_encrypt_decrypt(), aci_hal_get_anchor_period(), aci_hal_get_link_status(), aci_hal_le_tx_test_packet_number(), aci_hal_read_config_data(), aci_hal_read_radio_reg() (+13 more)
+Cohesion: 0.19
+Nodes (19): aci_hal_ead_encrypt_decrypt(), aci_hal_get_anchor_period(), aci_hal_get_link_status(), aci_hal_le_tx_test_packet_number(), aci_hal_read_config_data(), aci_hal_read_radio_reg(), aci_hal_read_raw_rssi(), aci_hal_read_rssi() (+11 more)
 
 ### Community 196 - "Node/Middlewares/ST/STM32_WPAN/utilities/dbg_trace.c"
 Cohesion: 0.13
@@ -1370,13 +1361,17 @@ Nodes (16): DbgOutputTraces(), FILE, DbgTrace_TxCpltCallback(), DbgTraceInit(), 
 Cohesion: 0.08
 Nodes (11): frame(), FrameBuilder, skipUnless, Rep analyzer tests (Coach Assist correction loop, plan steps 6-7). The…, Every rep measured on hardware must get the verdict a coach would., The 11.4 s / 90% off-hinge segment is not a rep at any verdict., Upper-arm deviation is the metric that carries the judgement., One motion packet, carrying only the fields the analyzer reads. (+3 more)
 
+### Community 198 - ".fail"
+Cohesion: 0.11
+Nodes (8): MasterSdSessionRecorder, initial_credit_ready_fn_, PendingChunk, byte_offset, data, len, node_id, session_id
+
 ### Community 199 - "shtp.c"
-Cohesion: 0.09
+Cohesion: 0.11
 Nodes (21): sh2_Hal_t, sh2_close(), sh2_open(), sh2_setSensorCallback(), sh2_Hal_t, getInstance(), min_u16(), rxAssemble() (+13 more)
 
 ### Community 200 - "main"
-Cohesion: 0.26
-Nodes (4): Bno85Sample, Icm45686Sample, NodeSessionStageOperation, main()
+Cohesion: 0.15
+Nodes (6): Bno85Sample, FRESULT, Icm45686Sample, NodeSessionStageOperation, validate_incrementally(), main()
 
 ### Community 201 - "String"
 Cohesion: 0.13
@@ -1384,15 +1379,15 @@ Nodes (16): refresh_counter(), AT_Command, cmd, ex_resp, no, timeout, try_count,
 
 ### Community 202 - "Master/Core/Src/ble/custom_app.cpp"
 Cohesion: 0.19
-Nodes (21): Custom_App_ConnHandle_Not_evt_t, Custom_STM_App_Notification_evt_t, Custom_STM_Char_Opcode_t, tBleStatus, Custom_APP_Init(), Custom_APP_Notification(), Custom_APP_NotificationCompleteCount(), Custom_APP_SendCmdAck() (+13 more)
+Nodes (21): Custom_App_ConnHandle_Not_evt_t, Custom_STM_App_Notification_evt_t, Custom_STM_Char_Opcode_t, tBleStatus, Custom_APP_Init(), Custom_APP_Notification(), Custom_APP_SendCmdAck(), Custom_APP_SendCmdNotify() (+13 more)
 
 ### Community 203 - "Master/Middlewares/ST/STM32_WPAN/ble/svc/Src/svc_ctl.c"
 Cohesion: 0.19
 Nodes (25): BAS_Init(), BLS_Init(), BVOPUS_STM_Init(), SVC_CTL_p_EvtHandler_t, __WEAK, CRS_STM_Init(), DIS_Init(), EDS_STM_Init() (+17 more)
 
 ### Community 204 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart_ex.c"
-Cohesion: 0.19
-Nodes (26): DbgOutputInit(), MX_LPUART1_UART_Init(), MX_USART1_UART_Init(), HAL_StatusTypeDef, HAL_UART_RxEventTypeTypeDef, UART_HandleTypeDef, UART_WakeUpTypeDef, __weak (+18 more)
+Cohesion: 0.18
+Nodes (27): DbgOutputInit(), MX_LPUART1_UART_Init(), MX_USART1_UART_Init(), HAL_StatusTypeDef, HAL_UART_RxEventTypeTypeDef, UART_HandleTypeDef, UART_WakeUpTypeDef, __weak (+19 more)
 
 ### Community 205 - "cJSON"
 Cohesion: 0.08
@@ -1422,9 +1417,9 @@ Nodes (25): GPIO_TypeDef, __STATIC_INLINE, LL_GPIO_GetAFPin_0_7(), LL_GPIO_GetAF
 Cohesion: 0.21
 Nodes (25): HSEM_TypeDef, __STATIC_INLINE, LL_HSEM_1StepLock(), LL_HSEM_2StepLock(), LL_HSEM_ClearFlag_C1ICR(), LL_HSEM_ClearFlag_C2ICR(), LL_HSEM_DisableIT_C1IER(), LL_HSEM_DisableIT_C2IER() (+17 more)
 
-### Community 212 - "LL_C1_IPCC_SetFlag_CHx"
-Cohesion: 0.09
-Nodes (24): LL_C1_IPCC_SetFlag_CHx(), TL_MB_PacketType_t, HW_IPCC_BLE_AclDataAckNot(), HW_IPCC_SYS_CmdEvtNot(), OutputDbgTrace(), TL_BLE_SendAclData(), TL_BLE_SendCmd(), TL_CLI_SendCmd() (+16 more)
+### Community 212 - "Node/Core/Src/ble/custom_app.cpp"
+Cohesion: 0.11
+Nodes (27): Custom_App_ConnHandle_Not_evt_t, Custom_STM_App_Notification_evt_t, Custom_STM_Char_Opcode_t, tBleStatus, __USED, Custom_APP_DisconnectCount(), Custom_APP_Init(), Custom_APP_LastTxPoolBuffers() (+19 more)
 
 ### Community 213 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_dma.c"
 Cohesion: 0.17
@@ -1448,7 +1443,7 @@ Nodes (25): BAS_Init(), BLS_Init(), BVOPUS_STM_Init(), SVC_CTL_p_EvtHandler_t, _
 
 ### Community 218 - "Request"
 Cohesion: 0.10
-Nodes (15): Request, dle_octets, dle_time_us, generation, handle, interval, interval_max, interval_min (+7 more)
+Nodes (16): State, Request, dle_octets, dle_time_us, generation, handle, interval, interval_max (+8 more)
 
 ### Community 219 - "master_imu_csv_formatter.h"
 Cohesion: 0.19
@@ -1510,9 +1505,9 @@ Nodes (23): IRQn_Type, __STATIC_INLINE, ITM_CheckChar(), ITM_ReceiveChar(), ITM_
 Cohesion: 0.19
 Nodes (23): IRQn_Type, __STATIC_INLINE, ITM_CheckChar(), ITM_ReceiveChar(), ITM_SendChar(), __NVIC_ClearPendingIRQ(), NVIC_DecodePriority(), __NVIC_DisableIRQ() (+15 more)
 
-### Community 234 - "_tBLEProfileGlobalContext"
-Cohesion: 0.13
-Nodes (15): _tBLEProfileGlobalContext, advtServUUID, advtServUUIDlen, appearanceCharHandle, bleSecurityParam, connectionHandle, devNameCharHandle, gapServiceHandle (+7 more)
+### Community 234 - "Master/Core/Src/ble/app_ble.cpp"
+Cohesion: 0.07
+Nodes (32): Adv_Cancel(), APP_BLE_GetServerConnIntervalRaw(), APP_BLE_LeafClientConnectIdle(), APP_BLE_LeafClientConnecting(), APP_BLE_LeafClientPrepareScan(), APP_BLE_RequestServerFastConnInterval(), BLE_UserEvtRx(), _tBLEProfileGlobalContext (+24 more)
 
 ### Community 235 - "HAL_DMA_Abort_IT"
 Cohesion: 0.26
@@ -1526,13 +1521,9 @@ Nodes (30): 1. Project truth, 2. System architecture, 3.1 GATT service (identica
 Cohesion: 0.14
 Nodes (18): LL_RCC_ClearResetFlags(), LL_RCC_GetADCClockSource(), LL_RCC_HSI48_Disable(), LL_RCC_HSI_SetCalibTrimming(), LL_RCC_MSI_DisablePLLMode(), LL_RCC_MSI_Enable(), LL_RCC_MSI_IsReady(), LL_RCC_MSI_SetCalibTrimming() (+10 more)
 
-### Community 238 - "CJsonObject"
-Cohesion: 0.11
-Nodes (15): cJSON_AddObjectToObject(), cJSON_CreateObject(), cJSON_DeleteItemFromObject(), cJSON_DetachItemFromObject(), cJSON_GetNumberValue(), cJSON_GetObjectItem(), cJSON_GetStringValue(), cJSON_HasObjectItem() (+7 more)
-
 ### Community 239 - "LatencyStat"
-Cohesion: 0.10
-Nodes (20): GapStat, count, have_last, last_us, max_gap_us, LatencyStat, count, max_us (+12 more)
+Cohesion: 0.07
+Nodes (25): GapStat, count, have_last, last_us, max_gap_us, LatencyStat, count, max_us (+17 more)
 
 ### Community 240 - "Master/Drivers/CMSIS/Include/mpu_armv8.h"
 Cohesion: 0.23
@@ -1543,8 +1534,8 @@ Cohesion: 0.07
 Nodes (28): 1. Full-fidelity acquisition and recording, 2. Preview bundles, 3. Preview rates and adaptation, 4. Fair Master scheduler, 5. Browser behavior, Architecture, BNO85 raw and calibrated columns, Common columns (+20 more)
 
 ### Community 242 - "Node/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_pwr.c"
-Cohesion: 0.12
-Nodes (8): node_prepare_touch_wakeup_before_poweroff(), LL_C2_EXTI_DisableIT_32_63(), LL_EXTI_DisableIT_32_63(), HAL_StatusTypeDef, PWR_PVDTypeDef, HAL_PWR_ConfigPVD(), HAL_PWR_DisableWakeUpPin(), HAL_PWR_EnableWakeUpPin()
+Cohesion: 0.14
+Nodes (6): node_prepare_touch_wakeup_before_poweroff(), HAL_StatusTypeDef, PWR_PVDTypeDef, HAL_PWR_ConfigPVD(), HAL_PWR_DisableWakeUpPin(), HAL_PWR_EnableWakeUpPin()
 
 ### Community 243 - "ui.js"
 Cohesion: 0.12
@@ -1563,8 +1554,8 @@ Cohesion: 0.09
 Nodes (28): Diskio_drvTypeDef, DWORD, get_fattime(), MX_FATFS_Init(), FATFS_LinkDriver(), FATFS_LinkDriverEx(), FATFS_UnLinkDriver(), FATFS_UnLinkDriverEx() (+20 more)
 
 ### Community 247 - "Entry"
-Cohesion: 0.14
-Nodes (14): Entry, connected, connected_at_ms, deadline_ms, fast_interval, fast_preparation_pending, had_unconfirmed_procedure, interval (+6 more)
+Cohesion: 0.11
+Nodes (15): Entry, connected, connected_at_ms, deadline_ms, fast_interval, fast_preparation_pending, had_unconfirmed_procedure, interval (+7 more)
 
 ### Community 248 - "f_open"
 Cohesion: 0.15
@@ -1575,8 +1566,8 @@ Cohesion: 0.10
 Nodes (21): aci_att_find_info_resp_event(), aci_att_find_info_resp_event_process(), aci_gap_numeric_comparison_value_event(), aci_gap_numeric_comparison_value_event_process(), aci_gap_proc_complete_event(), aci_gap_proc_complete_event_process(), aci_gatt_notification_ext_event(), aci_gatt_notification_ext_event_process() (+13 more)
 
 ### Community 250 - "Master/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/shci_tl.c"
-Cohesion: 0.07
-Nodes (29): APPD_EnableCPU2(), appe_Tl_Init(), shci_notify_asynch_evt(), TL_CmdPacket_t, tHciIO, hci_register_io_bus(), TlInit(), SHCI_TL_CmdStatus_t (+21 more)
+Cohesion: 0.17
+Nodes (15): shci_notify_asynch_evt(), SHCI_TL_CmdStatus_t, TL_CmdPacket_t, TL_EvtPacket_t, __WEAK, Cmd_SetStatus(), tSHciIO, shci_register_io_bus() (+7 more)
 
 ### Community 251 - "__WEAK"
 Cohesion: 0.10
@@ -1623,8 +1614,8 @@ Cohesion: 0.13
 Nodes (11): build_channel_names(), build_feature_names(), build_fixture(), PreprocessingParity, skipUnless, _Random, Python-to-browser preprocessing parity test (design Section 12). Generates a…, Nearest-sample and linear interpolation must differ on this fixture. Without… (+3 more)
 
 ### Community 265 - ".build_all"
-Cohesion: 0.14
-Nodes (11): The replay CLI must audit a session through the production avatar path:…, q_axis_angle(), q_mul(), Common opening: neutral pose held still long enough to calibrate., Neutral upper arm; forearm flexed by `degrees` about a segment axis., Whole rigid arm about a world-fixed axis (physical locked elbow). The raise…, Range calibration: a few reps must recover the true hinge axis. The whole point…, Incoherent motion must NOT yield a hinge axis. (+3 more)
+Cohesion: 0.17
+Nodes (7): The replay CLI must audit a session through the production avatar path:…, Common opening: neutral pose held still long enough to calibrate., Whole rigid arm about a world-fixed axis (physical locked elbow). The raise…, Range calibration: a few reps must recover the true hinge axis. The whole point…, Incoherent motion must NOT yield a hinge axis., A 45-degree elbow bend during the side raise is invisible to the magnitude…, A side raise 30 degrees forward of the coronal plane puts the two observed axes…
 
 ### Community 266 - "MasterTransferTelemetryWire"
 Cohesion: 0.12
@@ -1651,8 +1642,8 @@ Cohesion: 0.16
 Nodes (18): ADC_Common_TypeDef, LL_ADC_GetCommonClock(), LL_ADC_GetCommonPathInternalCh(), LL_ADC_GetOffsetChannel(), LL_ADC_REG_SetSequencerChAdd(), LL_ADC_REG_SetSequencerChRem(), LL_ADC_REG_SetSequencerRanks(), LL_ADC_SetChannelSamplingTime() (+10 more)
 
 ### Community 272 - "main"
-Cohesion: 0.05
-Nodes (55): ADC_HandleTypeDef, HAL_ADC_MspDeInit(), HAL_ADC_MspInit(), MX_ADC1_Init(), APPD_BleDtbCfg(), APPD_Init(), APPD_SetCPU2GpioConfig(), HAL_Delay() (+47 more)
+Cohesion: 0.12
+Nodes (25): MX_ADC1_Init(), HAL_Delay(), MX_GPIO_Init(), MX_I2C1_Init(), MX_IPCC_Init(), HAL_StatusTypeDef, I2C_HandleTypeDef, Error_Handler() (+17 more)
 
 ### Community 273 - "Node/Drivers/CMSIS/Include/core_cm0.h"
 Cohesion: 0.25
@@ -1670,9 +1661,9 @@ Nodes (17): IRQn_Type, __STATIC_INLINE, __NVIC_ClearPendingIRQ(), NVIC_DecodePri
 Cohesion: 0.16
 Nodes (18): ADC_Common_TypeDef, LL_ADC_GetCommonClock(), LL_ADC_GetCommonPathInternalCh(), LL_ADC_GetOffsetChannel(), LL_ADC_REG_SetSequencerChAdd(), LL_ADC_REG_SetSequencerChRem(), LL_ADC_REG_SetSequencerRanks(), LL_ADC_SetChannelSamplingTime() (+10 more)
 
-### Community 277 - "node_recording_app.h"
-Cohesion: 0.18
-Nodes (5): append_sample(), append_samples(), Bno85Sample, Icm45686Sample, Sample
+### Community 277 - "hub_sensor_test_app.h"
+Cohesion: 0.09
+Nodes (10): LogFileHeader, created_ms, magic, record_size, version, append_sample(), append_samples(), Bno85Sample (+2 more)
 
 ### Community 278 - "RecordTransferTuningWire"
 Cohesion: 0.14
@@ -1688,7 +1679,7 @@ Nodes (3): print_control, ble_print_arr, uart_print_arr
 
 ### Community 282 - "record_sync_begin"
 Cohesion: 0.08
-Nodes (37): StartRecordMessage, command, requested_duration_ms, session_id, start_timestamp_us, exo_hub_central_client_transport_ready_node_count(), is_duplicate_start_record(), is_probable_replay_start_record() (+29 more)
+Nodes (39): StartRecordMessage, command, requested_duration_ms, session_id, start_timestamp_us, exo_hub_central_client_transport_ready_node_count(), is_duplicate_start_record(), is_probable_replay_start_record() (+31 more)
 
 ### Community 283 - "Master/Drivers/CMSIS/Include/core_sc000.h"
 Cohesion: 0.26
@@ -1719,20 +1710,20 @@ Cohesion: 0.23
 Nodes (14): training_csv_log_operation_name(), TrainingCsvFatFsOps, BYTE, FIL, FILINFO, FRESULT, TCHAR, fake_close() (+6 more)
 
 ### Community 290 - ".begin"
-Cohesion: 0.13
-Nodes (13): w25qxx_get_address_mode(), w25qxx_get_dual_quad_spi(), w25qxx_get_interface(), w25qxx_get_jedec_id(), w25qxx_get_type(), w25qxx_set_address_mode(), w25qxx_set_dual_quad_spi(), w25qxx_set_interface() (+5 more)
+Cohesion: 0.12
+Nodes (14): w25qxx_get_address_mode(), w25qxx_get_dual_quad_spi(), w25qxx_get_interface(), w25qxx_get_jedec_id(), w25qxx_get_type(), w25qxx_init(), w25qxx_set_address_mode(), w25qxx_set_dual_quad_spi() (+6 more)
 
-### Community 291 - "build_session_one"
-Cohesion: 0.23
-Nodes (8): BnoReportSlot, bno_slot_for_report(), build_session_one(), build_session_two(), claim_attempts(), claim_without_session(), end_without_begin(), two_session_summaries()
+### Community 291 - "HAL_GPIO_Init"
+Cohesion: 0.12
+Nodes (21): ADC_HandleTypeDef, HAL_ADC_MspDeInit(), HAL_ADC_MspInit(), I2C_HandleTypeDef, HAL_I2C_MspDeInit(), HAL_I2C_MspInit(), NodeSwo_Init(), SPI_HandleTypeDef (+13 more)
 
 ### Community 292 - "__weak"
 Cohesion: 0.16
 Nodes (21): DMA_HandleTypeDef, __weak, HAL_UART_AbortCpltCallback(), HAL_UART_ErrorCallback(), HAL_UART_RxCpltCallback(), HAL_UART_RxHalfCpltCallback(), HAL_UART_TxCpltCallback(), HAL_UART_TxHalfCpltCallback() (+13 more)
 
 ### Community 293 - "Node/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/shci_tl.c"
-Cohesion: 0.17
-Nodes (15): shci_notify_asynch_evt(), SHCI_TL_CmdStatus_t, TL_CmdPacket_t, TL_EvtPacket_t, __WEAK, Cmd_SetStatus(), tSHciIO, shci_register_io_bus() (+7 more)
+Cohesion: 0.10
+Nodes (25): APPD_EnableCPU2(), appe_Tl_Init(), shci_notify_asynch_evt(), SHCI_TL_CmdStatus_t, TL_CmdPacket_t, TL_EvtPacket_t, __WEAK, Cmd_SetStatus() (+17 more)
 
 ### Community 294 - "TIM_Base_SetConfig"
 Cohesion: 0.17
@@ -1743,16 +1734,12 @@ Cohesion: 0.23
 Nodes (15): close_ok(), BYTE, FIL, FILINFO, FRESULT, SessionHeader, TCHAR, UINT (+7 more)
 
 ### Community 296 - "MotionFixtureBuilder"
-Cohesion: 0.13
-Nodes (4): MotionFixtureBuilder, Accumulates fixture steps with a monotonically advancing fake clock., One flexion rep about `axis`. A frame is emitted after every pose because the…, One 25 Hz tick: every node reports its pose, then the clock advances. `skew_ms`…
+Cohesion: 0.11
+Nodes (6): MotionFixtureBuilder, Accumulates fixture steps with a monotonically advancing fake clock., One flexion rep about `axis`. A frame is emitted after every pose because the…, One 25 Hz tick: every node reports its pose, then the clock advances. `skew_ms`…, The subset of BNO columns the Motion Engine reads., to_values()
 
 ### Community 297 - "c_math_parser.h"
 Cohesion: 0.33
 Nodes (14): CMathResult_t, CMathParser_parse_c(), CMathResult, error, ok, value, parse(), parseExpression() (+6 more)
-
-### Community 298 - "RecordDoneMessage"
-Cohesion: 0.16
-Nodes (12): RecordDoneMessage, actual_duration_ms, command, node_id, payload_crc32, session_id, total_size, exo_hub_leaf_record_done_ingest() (+4 more)
 
 ### Community 299 - "DebugInfo"
 Cohesion: 0.13
@@ -1763,12 +1750,12 @@ Cohesion: 0.14
 Nodes (9): SessionHeader, HubRecordingApp, assembler_, kMaxPayloadSize, payload_, root_dir_, SessionHeader, HubSessionStore (+1 more)
 
 ### Community 301 - "master_node_session_stager_test.cpp"
-Cohesion: 0.21
-Nodes (13): Bno85Sample, Icm45686Sample, main(), make_session(), reset_fs(), SessionImage, bno, bytes (+5 more)
+Cohesion: 0.25
+Nodes (12): Bno85Sample, Icm45686Sample, main(), make_session(), reset_fs(), SessionImage, bno, bytes (+4 more)
 
 ### Community 302 - "Master/Middlewares/ST/STM32_WPAN/interface/patterns/ble_thread/tl/hci_tl.c"
-Cohesion: 0.22
-Nodes (10): Ble_Tl_Init(), HCI_TL_CmdStatus_t, TL_EvtPacket_t, __WEAK, hci_cmd_resp_release(), hci_cmd_resp_wait(), hci_init(), NotifyCmdStatus() (+2 more)
+Cohesion: 0.12
+Nodes (17): Ble_Tl_Init(), hci_notify_asynch_evt(), SVCCTL_ResumeUserEventFlow(), HCI_TL_CmdStatus_t, TL_CmdPacket_t, TL_EvtPacket_t, __WEAK, hci_cmd_resp_release() (+9 more)
 
 ### Community 303 - "Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_pwr.c"
 Cohesion: 0.14
@@ -1787,7 +1774,7 @@ Cohesion: 0.20
 Nodes (8): column_statistics(), columns_for(), nearest_index(), percentile_linear(), Dependency-free reference implementation of the live preprocessing pipeline.…, Independent implementation of the browser Preprocessor emission rules., Mirror decimate_stream_to_grid: clip(searchsorted(times, target), 1, n-1) then…, ReferencePreprocessor
 
 ### Community 307 - "TransferLinkRearmState"
-Cohesion: 0.14
+Cohesion: 0.15
 Nodes (4): array, TransferLinkRearmState, armed_, armed_generation_
 
 ### Community 308 - "CAN"
@@ -1834,13 +1821,17 @@ Nodes (13): EXTI_CallbackIDTypeDef, EXTI_ConfigTypeDef, EXTI_HandleTypeDef, HAL_
 Cohesion: 0.26
 Nodes (12): BYTE, FIL, FRESULT, FSIZE_t, TCHAR, UINT, seq_close(), seq_lseek() (+4 more)
 
+### Community 319 - "__weak"
+Cohesion: 0.14
+Nodes (23): DMA_HandleTypeDef, __weak, HAL_UART_AbortCpltCallback(), HAL_UART_ErrorCallback(), HAL_UART_RxCpltCallback(), HAL_UART_RxHalfCpltCallback(), HAL_UART_TxCpltCallback(), HAL_UART_TxHalfCpltCallback() (+15 more)
+
 ### Community 320 - "BleNotificationGate"
 Cohesion: 0.24
 Nodes (4): BleNotificationGate, closed_at_ms_, kWatchdogMs, main()
 
-### Community 321 - "HAL_GPIO_WritePin"
-Cohesion: 0.20
-Nodes (13): MX_GPIO_Init(), poweroff_pcb_and_wait_for_release(), GPIO_PinState, GPIO_TypeDef, HAL_StatusTypeDef, __weak, HAL_GPIO_EXTI_Callback(), HAL_GPIO_EXTI_IRQHandler() (+5 more)
+### Community 321 - "LiveSample"
+Cohesion: 0.14
+Nodes (6): LiveSample, node_id, payload, payload_len, recv_ms, sensor_id
 
 ### Community 322 - "cJSON_bool"
 Cohesion: 0.17
@@ -1850,13 +1841,13 @@ Nodes (28): cJSON_bool, buffer_skip_whitespace(), cJSON_Compare(), cJSON_ParseWi
 Cohesion: 0.15
 Nodes (5): sh2_setReorientation(), toQ14(), readu32(), writeu16(), sh2_Quaternion_t
 
-### Community 324 - "FakeState"
-Cohesion: 0.14
-Nodes (14): Bno85Sample, Icm45686Sample, SessionHeader, FakeState, close_calls, close_result, csv, csv_size (+6 more)
+### Community 324 - "Node/Core/Src/stm32_lpm_if.cpp"
+Cohesion: 0.19
+Nodes (15): EnterLowPower(), ExitLowPower(), PWR_EnterOffMode(), PWR_EnterSleepMode(), PWR_EnterStopMode(), PWR_ExitOffMode(), PWR_ExitSleepMode(), PWR_ExitStopMode() (+7 more)
 
-### Community 325 - "HubSensorSnapshot"
-Cohesion: 0.18
-Nodes (7): Bno85Sample, Icm45686Sample, HubSensorSnapshot, bno85, has_bno85, has_icm45686, icm45686
+### Community 325 - "RecordReliableManifestPayload"
+Cohesion: 0.17
+Nodes (12): RecordReliableManifestPayload, chunk_size, duration_ms, file_crc32, file_size, flags, protocol_version, reserved0 (+4 more)
 
 ### Community 326 - "MasterSessionTimestampLedger"
 Cohesion: 0.26
@@ -1871,7 +1862,7 @@ Cohesion: 0.26
 Nodes (12): BYTE, FIL, FRESULT, FSIZE_t, TCHAR, UINT, fake_close(), fake_lseek() (+4 more)
 
 ### Community 330 - "DoubleBatchBuffer"
-Cohesion: 0.16
+Cohesion: 0.15
 Nodes (7): DoubleBatchBuffer, active, count, data, drops, pending, Sample
 
 ### Community 331 - ".accept"
@@ -1882,17 +1873,17 @@ Nodes (7): LiveStreamGate, initialized_, last_accepted_ms_, first_fresh_sample_i
 Cohesion: 0.18
 Nodes (10): GPIO_TypeDef, I2C_HandleTypeDef, SPI_HandleTypeDef, NodeRecordingConfig, bno85_address, bno85_region_size, flash_base_address, flash_capacity (+2 more)
 
-### Community 333 - "Icm45686SampleV2"
-Cohesion: 0.15
-Nodes (13): Icm45686SampleV2, accel_x, accel_y, accel_z, data_valid, gyro_x, gyro_y, gyro_z (+5 more)
+### Community 333 - "recording_types.h"
+Cohesion: 0.06
+Nodes (32): crc32(), crc32_update(), Icm45686SampleV2, accel_x, accel_y, accel_z, data_valid, gyro_x (+24 more)
 
 ### Community 334 - "SWO_PRINTER"
 Cohesion: 0.31
 Nodes (4): exo_swo_send_char(), String, SWO_PRINTER, control
 
 ### Community 335 - "aci_gatt_update_char_value"
-Cohesion: 0.31
-Nodes (10): __USED, Custom_Pipedatatx_Update_Char(), Custom_STM_Char_Opcode_t, tBleStatus, Custom_STM_App_Update_Char(), Custom_STM_App_Update_Char_Ext(), Custom_STM_App_Update_Char_Variable_Length(), Generic_STM_App_Update_Char_Ext() (+2 more)
+Cohesion: 0.27
+Nodes (11): __USED, Custom_Pipedatatx_Update_Char(), Custom_STM_Char_Opcode_t, tBleStatus, Custom_STM_App_Update_Char(), Custom_STM_App_Update_Char_Ext(), Custom_STM_App_Update_Char_Variable_Length(), Generic_STM_App_Update_Char_Ext() (+3 more)
 
 ### Community 336 - "Master/Middlewares/ST/STM32_WPAN/ble/core/auto/ble_l2cap_aci.c"
 Cohesion: 0.33
@@ -1914,13 +1905,9 @@ Nodes (10): aci_l2cap_coc_connect(), aci_l2cap_coc_connect_confirm(), aci_l2cap_
 Cohesion: 0.22
 Nodes (11): checkFloat32Blend(), checkFloat32Download(), checkFloatTextureAttachableToFrameBuffer(), checkRenderFloat32(), compileShader(), createFramebuffer(), createProgram(), deleteProgram() (+3 more)
 
-### Community 341 - "test_motion_engine.py"
-Cohesion: 0.20
-Nodes (11): packet_to_q(), q_angle_deg(), q_conj(), q_norm(), Motion Engine correctness tests (Coach Assist Milestone 4). These tests exist…, q_n = S_n * conj(M_n) - what the BNO would report for this true pose., The solver's exact promise, checked on physical poses: after the three-pose…, The subset of BNO columns the Motion Engine reads. (+3 more)
-
-### Community 342 - "master_training_csv_coordinator.h"
-Cohesion: 0.19
-Nodes (5): default_master_read(), default_master_ready(), MasterRecordingOps, NodeTransferChunkCounters, source_chunk_counter_reset_contract()
+### Community 341 - "q_mul"
+Cohesion: 0.16
+Nodes (14): packet_to_q(), q_angle_deg(), q_axis_angle(), q_conj(), q_mul(), q_norm(), Motion Engine correctness tests (Coach Assist Milestone 4). These tests exist…, q_n = S_n * conj(M_n) - what the BNO would report for this true pose. (+6 more)
 
 ### Community 343 - "HAL_PWR_EnableBkUpAccess"
 Cohesion: 0.22
@@ -1954,17 +1941,17 @@ Nodes (9): ARM_MPU_ClrRegion(), ARM_MPU_Disable(), ARM_MPU_Enable(), ARM_MPU_Loa
 Cohesion: 0.36
 Nodes (9): DMA_HandleTypeDef, HAL_DMA_MuxRequestGeneratorConfigTypeDef, HAL_DMA_MuxSyncConfigTypeDef, HAL_StatusTypeDef, HAL_DMAEx_ConfigMuxRequestGenerator(), HAL_DMAEx_ConfigMuxSync(), HAL_DMAEx_DisableMuxRequestGenerator(), HAL_DMAEx_EnableMuxRequestGenerator() (+1 more)
 
-### Community 351 - "HAL_StatusTypeDef"
-Cohesion: 0.22
-Nodes (21): FlagStatus, HAL_StatusTypeDef, HAL_UART_CallbackIDTypeDef, pUART_CallbackTypeDef, HAL_RS485Ex_Init(), HAL_HalfDuplex_Init(), HAL_LIN_Init(), HAL_MultiProcessor_DisableMuteMode() (+13 more)
+### Community 351 - "MX_I2C3_Init"
+Cohesion: 0.36
+Nodes (7): MX_I2C3_Init(), HAL_StatusTypeDef, I2C_HandleTypeDef, HAL_I2CEx_ConfigAnalogFilter(), HAL_I2CEx_ConfigDigitalFilter(), HAL_I2CEx_DisableWakeUp(), HAL_I2CEx_EnableWakeUp()
 
 ### Community 352 - "inv_imu_selftest"
 Cohesion: 0.44
 Nodes (9): inv_imu_adv_power_up_sram(), inv_imu_device_t, get_selftest_output(), inv_imu_selftest(), inv_imu_selftest_init_params(), run_internal_selftest(), set_selftest_parameters(), inv_imu_selftest_output_t (+1 more)
 
 ### Community 354 - "RecordStopSyncState"
-Cohesion: 0.17
-Nodes (12): StopRecordMessage, command, session_id, RecordStopSyncState, ack_mask, active, ever_sent_mask, last_send_ms (+4 more)
+Cohesion: 0.13
+Nodes (17): StopRecordMessage, command, session_id, record_stop_sync_begin(), record_stop_sync_pending_mask(), record_stop_sync_process(), record_stop_sync_send_pending(), RecordStopSyncState (+9 more)
 
 ### Community 355 - "RecoveryJob"
 Cohesion: 0.20
@@ -2014,9 +2001,9 @@ Nodes (7): BnoDerivedFeatures, gravity_magnitude, gyro_magnitude, linear_accel_m
 Cohesion: 0.33
 Nodes (6): HAL_StatusTypeDef, String, UART_HandleTypeDef, USART_TypeDef, UART_Init(), UART_ReceiveStringToIdle()
 
-### Community 369 - "RecordReliableVerifyPayload"
-Cohesion: 0.15
-Nodes (13): RecordReliableVerifyPayload, file_crc32, first_bad_chunk, flags, session_id, source_id, TrainingPendingVerifyOk, attempts (+5 more)
+### Community 369 - "TrainingPendingVerifyOk"
+Cohesion: 0.29
+Nodes (7): TrainingPendingVerifyOk, attempts, frame, last_attempt_ms, length, valid, verify
 
 ### Community 370 - "ReliableTxState"
 Cohesion: 0.29
@@ -2126,9 +2113,9 @@ Nodes (3): HAL_StatusTypeDef, SPI_HandleTypeDef, HAL_SPIEx_FlushRxFifo()
 Cohesion: 0.50
 Nodes (4): Init_Smps(), LL_PWR_SMPS_Enable(), LL_PWR_SMPS_SetOutputVoltageLevel(), LL_PWR_SMPS_SetStartupCurrent()
 
-### Community 401 - "LiveSample"
-Cohesion: 0.12
-Nodes (11): LiveSample, node_id, payload, payload_len, recv_ms, sensor_id, LiveSlot, count (+3 more)
+### Community 401 - "LiveSlot"
+Cohesion: 0.27
+Nodes (5): LiveSlot, count, dropped, head, samples
 
 ### Community 402 - "LL_RTC_ALMA_GetTime"
 Cohesion: 0.50
@@ -2210,17 +2197,17 @@ Nodes (3): Direct_Advertising_Report_t, hci_le_directed_advertising_report_event
 Cohesion: 0.67
 Nodes (3): Handle_Packets_Pair_Entry_t, hci_number_of_completed_packets_event(), hci_number_of_completed_packets_event_process()
 
-### Community 430 - "w25qxx_read"
-Cohesion: 0.18
-Nodes (7): a_w25qxx_page_program(), a_w25qxx_read(), a_w25qxx_write_no_check(), w25qxx_read(), w25qxx_sector_erase_4k(), w25qxx_write(), w25qxx_write_no_check()
+### Community 430 - "w25qxx_write"
+Cohesion: 0.67
+Nodes (3): a_w25qxx_read(), a_w25qxx_write_no_check(), w25qxx_write()
 
 ### Community 431 - "w25qxx_set_read_parameters"
 Cohesion: 0.67
 Nodes (3): w25qxx_set_read_parameters(), w25qxx_qspi_read_dummy_t, w25qxx_qspi_read_wrap_length_t
 
-### Community 432 - "recording_types.h"
-Cohesion: 0.31
-Nodes (4): read, crc32(), crc32_update(), session_header_crc()
+### Community 432 - "RecordReliableAckWindowPayload"
+Cohesion: 0.29
+Nodes (7): RecordReliableAckWindowPayload, credit, flags, next_chunk_index, reserved0, session_id, source_id
 
 ### Community 486 - "HAL_DMA_Abort"
 Cohesion: 0.31
@@ -2302,9 +2289,9 @@ Nodes (6): Evidence (session 1 converted CSVs), Expected result, Fix, Issue 2 �
 Cohesion: 0.33
 Nodes (5): Fault-injection validation, Host-test coverage, Implemented branch behavior, Master + Four-Node Integration Test Plan, Required hardware validation
 
-### Community 597 - "Icm45686SampleV4"
-Cohesion: 0.22
-Nodes (9): Icm45686SampleV4, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, offset_us (+1 more)
+### Community 597 - "RecordReliableManifestAckPayload"
+Cohesion: 0.33
+Nodes (6): RecordReliableManifestAckPayload, accepted_chunk_size, credit, session_id, source_id, status
 
 ### Community 598 - "Issue 1 — BLE communication path not working"
 Cohesion: 0.40
@@ -2338,21 +2325,9 @@ Nodes (3): Client demo workflow, Demo acceptance checklist, Vantage Binary Recor
 Cohesion: 0.67
 Nodes (3): main(), Static include-resolution audit for first-party firmware/host code. Verifies…, system_headers()
 
-### Community 617 - "hub_sensor_test_app.h"
-Cohesion: 0.25
-Nodes (5): LogFileHeader, created_ms, magic, record_size, version
-
-### Community 618 - "Icm45686SampleV3"
-Cohesion: 0.29
-Nodes (7): Icm45686SampleV3, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z
-
-### Community 619 - "MicroClock"
-Cohesion: 0.29
-Nodes (5): MicroClock, accumulated_us_, carry_cycles_, cycles_per_us_, last_cycles_
-
-### Community 620 - "PendingChunk"
-Cohesion: 0.33
-Nodes (6): PendingChunk, byte_offset, data, len, node_id, session_id
+### Community 617 - "Init_Rtc"
+Cohesion: 0.50
+Nodes (4): Init_Rtc(), LL_RTC_DisableWriteProtection(), LL_RTC_EnableWriteProtection(), LL_RTC_WAKEUP_SetClock()
 
 ### Community 621 - "JSON_EXTRACTER"
 Cohesion: 0.40
@@ -2362,19 +2337,23 @@ Nodes (5): cJSON_Parse(), cJSON_ParseWithOpts(), LOOP_CONT, String, JSON_EXTRACT
 Cohesion: 0.50
 Nodes (4): BleGetBdAddress(), LL_FLASH_GetDeviceID(), LL_FLASH_GetSTCompanyID(), LL_FLASH_GetUDN()
 
+### Community 624 - "APPD_Init"
+Cohesion: 0.15
+Nodes (13): APPD_BleDtbCfg(), APPD_Init(), APPD_SetCPU2GpioConfig(), LL_DBGMCU_DisableDBGSleepMode(), LL_DBGMCU_DisableDBGStandbyMode(), LL_DBGMCU_DisableDBGStopMode(), LL_DBGMCU_EnableDBGSleepMode(), LL_DBGMCU_EnableDBGStopMode() (+5 more)
+
 ## Knowledge Gaps
 - **1534 isolated node(s):** `ioCapability`, `mitm_mode`, `bonding_mode`, `encryptionKeySizeMin`, `encryptionKeySizeMax` (+1529 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 3113 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **117 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 3117 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **111 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `string` connect `string` to `master_training_csv_coordinator_test.cpp`, `Node/Core/Inc/main.h`, `settings.h`, `node_recording_app.h`, `NodeLiveSampleQueue`, `Node/Core/Src/main.cpp`, `Master/Core/Inc/main.h`, `sh2.c`, `BleV2EnvelopeHeader`, `master_training_csv_formatter.h`, `MasterSdSessionRecorder`, `master_imu_csv_logger_test.cpp`, `master_training_csv_logger_test.cpp`, `Osal_MemSet`, `master_imu_csv_formatter_test.cpp`, `test_master_training_csv_logger_v2.cpp`, `c_math_parser.h`, `RecordDoneMessage`, `exo_hub_central_client.cpp`, `HubRecordingApp`, `MasterSdSessionRecorder`, `master_node_session_stager_test.cpp`, `MasterNodeSessionStager`, `Master/Core/Src/ble/blepipe_proto.cpp`, `FakeRecorderFs`, `Node/Core/Src/ble/blepipe_proto.cpp`, `user_diskio.c`, `neoway.h`, `Node/Middlewares/ST/STM32_WPAN/utilities/dbg_trace.c`, `shtp.c`, `Master/Core/Src/ble/custom_app.cpp`, `cJSON`, `master_training_csv_coordinator.h`, `Master/Middlewares/ST/STM32_WPAN/utilities/dbg_trace.c`, `node_runtime_config.h`, `cjson.h`, `includer.h`, `hub_sensor_test_app.h`, `Osal_MemCpy`, `CJsonObject`, `f_open`?**
-  _High betweenness centrality (0.122) - this node is a cross-community bridge._
-- **Why does `HAL_GetTick()` connect `HAL_GetTick` to `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_i2c.c`, `record_sync_begin`, `LL_RCC_DeInit`, `Master/Core/Src/main.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_adc.c`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_adc_ex.c`, `exo_hub_central_client.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rtc_ex.c`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart.c`, `user_diskio.c`, `HAL_GPIO_WritePin`, `stm32wbxx_hal_usart.c`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_tim_ex.c`, `Master/Core/Src/ble/custom_app.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart_ex.c`, `RecoveryJob`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal.c`, `HAL_DMA_Abort_IT`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_flash_ex.c`, `HAL_RCC_ClockConfig`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rcc_ex.c`?**
+- **Why does `string` connect `string` to `master_training_csv_coordinator_test.cpp`, `Node/Core/Inc/main.h`, `settings.h`, `hub_sensor_test_app.h`, `NodeLiveSampleQueue`, `Master/Core/Inc/main.h`, `sh2.c`, `BleV2EnvelopeHeader`, `master_training_csv_formatter.h`, `MasterSdSessionRecorder`, `master_imu_csv_logger_test.cpp`, `master_training_csv_logger_test.cpp`, `Osal_MemSet`, `master_imu_csv_formatter_test.cpp`, `test_master_training_csv_logger_v2.cpp`, `c_math_parser.h`, `hub_leaf_ble_manager.h`, `exo_hub_central_client.cpp`, `ble_record_protocol.h`, `HubRecordingApp`, `MasterSdSessionRecorder`, `master_node_session_stager_test.cpp`, `Master/Core/Src/ble/blepipe_proto.cpp`, `FakeRecorderFs`, `Node/Core/Src/ble/blepipe_proto.cpp`, `user_diskio.c`, `neoway.h`, `Node/Middlewares/ST/STM32_WPAN/utilities/dbg_trace.c`, `shtp.c`, `Osal_MemCpy`, `Master/Core/Src/ble/custom_app.cpp`, `cJSON`, `Node/Core/Src/ble/custom_app.cpp`, `driver_w25qxx.c`, `Master/Middlewares/ST/STM32_WPAN/utilities/dbg_trace.c`, `node_runtime_config.h`, `cjson.h`, `includer.h`, `Master/Core/Src/ble/app_ble.cpp`, `f_open`?**
+  _High betweenness centrality (0.121) - this node is a cross-community bridge._
+- **Why does `HAL_GetTick()` connect `HAL_GetTick` to `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_i2c.c`, `record_sync_begin`, `LL_RCC_DeInit`, `Master/Core/Src/main.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_adc.c`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_adc_ex.c`, `exo_hub_central_client.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rtc_ex.c`, `main`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart.c`, `user_diskio.c`, `stm32wbxx_hal_usart.c`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_tim_ex.c`, `Master/Core/Src/ble/custom_app.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_uart_ex.c`, `RecordStopSyncState`, `RecoveryJob`, `Master/Core/Src/ble/app_ble.cpp`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal.c`, `HAL_DMA_Abort_IT`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_flash_ex.c`, `HAL_RCC_ClockConfig`, `Master/Drivers/STM32WBxx_HAL_Driver/Src/stm32wbxx_hal_rcc_ex.c`?**
   _High betweenness centrality (0.071) - this node is a cross-community bridge._
-- **Why does `NodeSwo_Init()` connect `__DSB` to `Node/Core/Src/main.cpp`, `main`?**
+- **Why does `NodeSwo_Init()` connect `HAL_GPIO_Init` to `Node/Core/Src/main.cpp`, `main`, `__DSB`?**
   _High betweenness centrality (0.068) - this node is a cross-community bridge._
 - **What connects `ioCapability`, `mitm_mode`, `bonding_mode` to the rest of the system?**
   _1534 weakly-connected nodes found - possible documentation gaps or missing edges._
