@@ -2,10 +2,13 @@
 
 Status: **validated on hardware 2026-09-10.** Neutral + hinge calibration and
 signed flexion all confirmed on a real arm; see "Field results" below. The
-three-pose anatomical calibration (below) is implemented and host-verified;
-**it has not yet had its physical acceptance run** — that is the documented
-handoff at the end of this document. Remaining gap: an isolated yaw-drift
-measurement.
+three-pose anatomical calibration completed its first physical run on
+2026-09-11 (05:58): the solve installed, but the captured raises were 65.8°
+and 73.6° apart instead of ~90°, so the forward render was 23.5° off. Live
+separation coaching and a post-solve geometry warning were added in response
+(below). The full physical acceptance run is still outstanding — that is the
+documented handoff at the end of this document. Remaining gap: an isolated
+yaw-drift measurement.
 Implementation: `host/live_tool/js/motion-engine.js`,
 `host/live_tool/js/anatomical-calibration.js` (pure TRIAD solver),
 `host/live_tool/js/arm-avatar.js` (nested display rig)
@@ -322,10 +325,16 @@ carries the reason.
 | Check | Threshold | On fault |
 |---|---|---|
 | Stillness | gyro < 0.2 rad/s, orientation spread ≤ 3° | restart window |
-| Raise magnitude (per node) | 60–120° from neutral | restart window |
+| Raise magnitude (per node) | 75–105° from neutral (aim band; live readout) | restart window |
 | Segment mismatch (straight elbow) | \|N4 angle − N2 angle\| ≤ 15° | restart window |
 | Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms | restart window |
-| Solver | axes 60–120° apart, matrix finite, orthonormal, det ≈ +1 | fail attempt (reports the measured separation) |
+| Solver | axes 60–120° apart, matrix finite, orthonormal, det ≈ +1 | forward stage rejected, side kept |
+
+The 75–105° row is the *aim band*, not the solver window: the solve still
+accepts 60–120° separations, but the closer both raises are to 90°, the closer
+the solved mount is to the truth. Mismatch is checked before the magnitude
+band so a bent side raise is answered with "keep the elbow straight" rather
+than "raise higher" — the two faults have different fixes.
 
 **Why there is no elbow-relative capture gate** (2026-09-11 field lesson).
 An inter-sensor quantity such as `conj(q_upper) · q_fore` looks like the
@@ -345,18 +354,93 @@ people raise sideways in the scapular plane, 20–30° forward of pure lateral,
 landing at 60–75° of observed separation. The TRIAD solve is well-conditioned
 anywhere in 60–120°; the trade-off is plane fidelity IF the demo raise uses a
 different plane than the capture. Mitigations: the failure message and the
-`anatomical_failed` event report the measured separation, the success quality
-carries `axisSeparationDeg` per node (≈90° is the target to check), and the
-acceptance run instructs deliberate in-plane raises. A bent-elbow side raise
+`anatomical_forward_rejected` event report the measured separation, the live
+`anatomicalLive.separationDeg` readout lets the wearer steer to ~90° before
+holding, the success quality carries `axisSeparationDeg` per node (≈90° is the
+target to check), and a solved pair under 80° raises `anatomicalWarning`.
+A bent-elbow side raise
 presents the same geometry as a scapular raise and is therefore accepted too
 — the upper arm's mount stays exact, the forearm's absorbs the bend and shows
 it in the render; closing that gap needs the gravity-vector cross-check, not
 a tighter window.
 
+### First physical three-pose run — 2026-09-11 05:58
+
+`tmp/vantage_live_2026-09-11T05-58-28-925Z.ndjson`, 4363 motion rows at
+25.0 Hz. The solve completed on the fifth forward attempt; the replay audit
+(re-run against the accepted side capture) reported `axisFrame: anatomical`
+with side direction error **1.13°** and forward direction error **23.49°**.
+
+| Metric | Value |
+|---|---|
+| Side captures that passed | 7 |
+| Forward attempts rejected for separation | 6 (1 / 0 / 44 / 1 / 57 / 60°) |
+| Accepted capture pair (N2 / N4 separation) | 73.6° / 65.8° |
+| Accepted forward raise magnitude (N2 / N4) | 115.5° / 118.1° |
+| Accepted side raise magnitude (N2 / N4) | 83.1° / 97.1° |
+| `motion_anatomical_hold_restarted` events | 492 |
+
+Reads on this:
+
+- **The solve is only as good as the capture pair.** A pair `s` degrees apart
+  maps the second axis `90 − s` off target: 65.8° measured, 23.5° forward
+  error observed. The side axis landed within ~1°, exactly as TRIAD promises,
+  which makes the failure easy to misread as broken math.
+- **The wearer was flying blind.** Three of the six rejections were 0–1°
+  separations — the "forward" attempt repeated the side direction — and the
+  accepted attempt over-raised to 115–118°, ~25° past horizontal. Nothing on
+  screen said which plane or how high until the 1 s hold failed.
+- **The event log flooded.** The old restart dedup keyed on a reason string
+  containing live spread numbers, so one unsettled pose logged hundreds of
+  events. Restarts now dedup on a stable `code` (`motion`, `spread`,
+  `raise_range`, `mismatch`, `sync`, `stale`) and carry the actionable
+  message once per capture.
+- **One unsynchronized tail.** From t=196.4 to 212.8 s N2's device time sat
+  8–14 s from N4 (523 rows total across the session), so the avatar correctly
+  reported tracking unavailable rather than rendering stale data. This is a
+  time-base/transport anomaly, not a calibration defect, and is tracked
+  separately.
+
+Changes made in response: live raise-angle and separation readout during the
+capture, the 75–105° aim band, side-preserving forward rejection, and the
+post-solve geometry warning. None of these substitutes for the physical
+acceptance run below — they make it possible to pass.
+
 **Pose conventions.** The neutral pose is arms hanging, palms facing the
 thighs. From there the natural no-twist raises are **side → palm down** and
 **forward → thumb up**; the UI instructions say exactly that, because asking
 for any other hand orientation forces a forearm rotation into the capture.
+
+**Live capture feedback (2026-09-11 05:58 lesson).** The raise *magnitude*
+alone cannot tell the wearer whether the raise is in the plane the solver
+needs; the *separation between the live raise axis and the stored side axis*
+can, and it is exactly what the solver will test. During a capture the packet
+therefore carries `diagnostics.anatomicalLive` — per required node
+`{ raiseDeg, separationDeg }`, with `separationDeg` present during the
+forward stage only. The UI shows both (`N4 91° · sep 88°`) and coaches toward
+~90° separation. There is no separate gate on it beyond the solve window: the
+wearer is expected to watch the number, exactly as they watch the raise
+angle.
+
+**Forward rejection preserves the side (same lesson).** When the two captured
+axes are not independent (`< 60°` apart), the engine no longer discards the
+side capture and fails the workflow. It clears only the forward attempt,
+returns `anatomicalState` to `side_ready`, and logs
+`anatomical_forward_rejected` with the measured per-node `separationsDeg`.
+The wearer presses step 3 again with the live separation readout instead of
+redoing the side raise; if the side itself is off-plane, they can still choose
+to redo step 2. In the 05:58 session four side captures were wasted because
+every forward failure reset the whole workflow.
+
+**Post-solve geometry warning.** A capture pair under 80° apart still solves,
+but the map is a proper rotation only up to the separation error: the second
+captured axis lands `90 − separation` degrees off its anatomical target, and
+everything near that direction is skewed by the same amount. The engine sets
+`diagnostics.anatomicalWarning` (and appends it to `anatomicalMessage`) with
+the measured separation and the expected skew — "geometry 66° (ideal 90):
+expect about 24° of forward tracking skew; redo steps 2-3". The 05:58 solve
+was accepted at 65.8° and rendered the forward raise 23.5° off (replay audit),
+silently, which is the failure mode this warning removes.
 
 **What capture validation still cannot see: whole-arm twist.** If the arm
 rotates about its own long axis during a raise, N4 and N2 rotate together:
@@ -380,12 +464,17 @@ replacement; switching the internal computation to it is its own change.
 **Diagnostics added:** `anatomicalState`
 (`none / side_capturing / side_ready / forward_capturing / calibrated / failed`),
 `anatomicalMessage` (next instruction or rejection reason), `anatomicalQuality`
-(per-node capture angles, spreads, solver determinant/orthogonality), and
-`axisFrame`: `"anatomical"` only when both corrections are installed. Events
+(per-node capture angles, spreads, solver determinant/orthogonality),
+`anatomicalSideAnglesDeg` (accepted side raise magnitude per node),
+`anatomicalLive` (per required node `{ raiseDeg, separationDeg }` while a
+capture is running), `anatomicalWarning` (set when a solved capture pair was
+under 80° apart), and `axisFrame`: `"anatomical"` only when both corrections
+are installed. Events
 `anatomical_side_started / _side_complete / _forward_started / anatomical_complete /
-anatomical_failed` go to the session log as Tier 1 `motion_anatomical_*` events
-carrying the accepted axes, mount quaternions, capture angles and solver
-quality.
+anatomical_forward_rejected / anatomical_failed` go to the session log as Tier 1
+`motion_anatomical_*` events carrying the accepted axes, mount quaternions,
+capture angles and solver quality; a forward rejection carries the measured
+per-node `separationsDeg` and preserves the side capture.
 
 ### Display kinematics (arm-avatar.js)
 
@@ -403,12 +492,24 @@ direction, and a rigid straight-arm raise leaves the elbow at identity. While
 `anatomical_calibration_required` and renders no directional pose. Scalar
 `elbow_flexion_deg` remains in numeric diagnostics and rep analysis only.
 
-**Latency policy:** the 540°/s display rate cap is gone. Adaptive
-interpolation uses a ~15 ms time constant during deliberate movement, relaxing
-up to 60 ms only for sub-degree stationary jitter; shortest-hemisphere
-interpolation is mandatory. A missed or unsynchronized frame holds the last
-valid pose for **120 ms**, then the rig reports `tracking_unavailable` while
-*retaining* the last transform — dropout never writes identity or zero.
+**Latency policy (2026-09-11.22):** the rig renders on every N2/N4 BLE arrival
+and snaps to each new pose — no interpolation toward a stale target. At each
+60 Hz paint the displayed pose is extrapolated from the newest target by its
+age (capped at one 25 Hz interval, 40 ms) using the BNO gyro's instantaneous
+rate expressed in the corrected delta frame (`displayPose`), so the rig shows
+the arm's estimated CURRENT orientation between samples rather than a 20-40 ms
+old one; the gyro also sees rep turnarounds that a finite-difference estimate
+misses by a whole sample. Rates are clamped at 15 rad/s and the lead never
+runs beyond 40 ms, which bounds any overshoot. The old ~15 ms interpolation
+time constant is gone, and the N4-only shoulder fast path is replaced by a
+full-pose path on every N2/N4 arrival: measured added display latency on the
+06:44 session replay dropped from 16.7 ms to **0 ms**, on top of removing the
+up-to-40 ms wait for the analytics tick. Transport latency between sensor
+capture and BLE arrival is not yet compensated — that needs a stable
+device-to-host clock offset estimate. A missed or unsynchronized frame holds
+the last valid pose for **120 ms**, then the rig reports
+`tracking_unavailable` while *retaining* the last transform — dropout never
+writes identity or zero.
 
 ### Replay audit
 
@@ -432,6 +533,10 @@ perform, slowly first, then at normal speed:
 4. elbow curl with the upper arm still;
 5. side raise with elbow flexion;
 6. one slow circular shoulder movement.
+
+During steps 2–3 watch the live readout: hold the forward raise until the
+separation reads ~90°. If the solved calibration shows a geometry warning
+(capture pair under 80°), redo steps 2–3 before recording the rest.
 
 Acceptance: held side/forward display directions within 10° of the instructed
 plane; no zero-angle snap on an isolated dropped frame; added display latency

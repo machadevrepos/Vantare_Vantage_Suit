@@ -17,6 +17,7 @@
  *   directionValidation    "available" | "unavailable"
  *   sideDirectionErrorDeg  best calibrated upper-arm axis error vs [0,0,-1]
  *   forwardDirectionErrorDeg  ... vs [1,0,0]
+ *   calibrationWarning      post-solve geometry warning, when the log has one
  *
  * Missing calibration information is reported, never repaired: a legacy log
  * without motion_anatomical_complete events replays as axisFrame
@@ -97,15 +98,34 @@ function percentile(sorted, fraction) {
   return Number(sorted[index].toFixed(2));
 }
 
-/** Directional capture angles the events recorded (N4 = upper arm). */
+/** Directional capture angles the events recorded (N4 = upper arm).
+ *
+ * Uses the LAST completed solve and the side capture immediately before it:
+ * a retry workflow can log several side captures between the first failure
+ * and the accepted solve, and the first one is not the pair that was used.
+ */
 function captureAnglesFromEvents(events) {
-  const sideEvent = events.find((e) => e.kind === "motion_anatomical_side_complete");
-  const complete = events.find((e) => e.kind === "motion_anatomical_complete");
-  if (!sideEvent || !complete) return null;
+  let completeIndex = -1;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    if (events[i].kind === "motion_anatomical_complete") {
+      completeIndex = i;
+      break;
+    }
+  }
+  if (completeIndex < 0) return null;
+  const complete = events[completeIndex];
+  let sideEvent = null;
+  for (let i = completeIndex - 1; i >= 0; i -= 1) {
+    if (events[i].kind === "motion_anatomical_side_complete") {
+      sideEvent = events[i];
+      break;
+    }
+  }
+  if (!sideEvent) return null;
   const sideAngleDeg = sideEvent.anglesDeg?.["4"];
   const forwardAngleDeg = complete.quality?.nodes?.["4"]?.forwardAngleDeg;
   if (!Number.isFinite(sideAngleDeg) || !Number.isFinite(forwardAngleDeg)) return null;
-  return { sideAngleDeg, forwardAngleDeg };
+  return { sideAngleDeg, forwardAngleDeg, warning: complete.warning ?? null };
 }
 
 /**
@@ -166,7 +186,10 @@ function replay(rows, axisFrame) {
       const frame = frameForRow(row, axisFrame);
       const pose = armPoseForMotion(frame);
       if (pose.state !== "live") invalidFrames += 1;
-      smoother.pushFrame(frame, tMs);
+      // Stamp the target with the row's own time, as a live BLE arrival
+      // would: the 60 Hz sample() calls after it then exercise the same
+      // age-based extrapolation the production fast path uses.
+      smoother.pushFrame(frame, (row[COL.T] - firstS) * 1000);
       currentTarget = { shoulder: pose.shoulder, forearmRelative: pose.forearmRelative };
       rowIdx += 1;
     }
@@ -257,6 +280,7 @@ function main() {
     metrics.forwardDirectionErrorDeg = Number(
       (directionErrorDeg(rows, angles.forwardAngleDeg, FORWARD_AXIS) ?? NaN).toFixed(2)
     );
+    if (angles.warning) metrics.calibrationWarning = angles.warning;
   }
 
   process.stdout.write(JSON.stringify(metrics, (_key, value) => (Number.isNaN(value) ? null : value)));

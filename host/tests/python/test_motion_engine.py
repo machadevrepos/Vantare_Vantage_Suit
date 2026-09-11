@@ -80,6 +80,27 @@ def q_angle_deg(q):
     return 2.0 * math.degrees(math.acos(min(abs(q[0]), 1.0)))
 
 
+def q_rotate_vector(v, q):
+    """Rotate a 3-vector by a quaternion: q v q^-1."""
+    return q_mul(q_mul(q, (0.0, v[0], v[1], v[2])), q_conj(q))[1:]
+
+
+def q_from_rotation_vector(rotation_vector, seconds):
+    """Rotation vector (rad/s) integrated over `seconds` -> unit quaternion."""
+    rate = math.sqrt(sum(c * c for c in rotation_vector))
+    angle = rate * seconds
+    if angle < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    half = angle / 2.0
+    scale = math.sin(half) / rate
+    return (
+        math.cos(half),
+        rotation_vector[0] * scale,
+        rotation_vector[1] * scale,
+        rotation_vector[2] * scale,
+    )
+
+
 def packet_to_q(packet):
     return (packet["qw"], packet["qx"], packet["qy"], packet["qz"])
 
@@ -133,6 +154,14 @@ def reported(node, segment_orientation):
     return q_norm(q_mul(segment_orientation, q_conj(MOUNTS[node])))
 
 
+def body_rates(poses, world_rate):
+    """Sensor-frame gyro per node for a rigid world rotation at `world_rate`."""
+    return {
+        node: q_rotate_vector(world_rate, q_conj(reported(node, segment)))
+        for node, segment in poses.items()
+    }
+
+
 class MotionFixtureBuilder:
     """Accumulates fixture steps with a monotonically advancing fake clock."""
 
@@ -183,9 +212,12 @@ class MotionFixtureBuilder:
         """One 25 Hz tick: every node reports its pose, then the clock advances.
 
         `skew_ms` offsets the forearm's device timestamp only, which is what the
-        engine's synchronization check looks at.
+        engine's synchronization check looks at. `gyro` may be a per-node dict
+        when nodes move differently (or carry different body rates under one
+        rigid world rotation).
         """
         for node, segment in poses.items():
+            node_gyro = gyro[node] if isinstance(gyro, dict) else gyro
             device_s = self.now_ms / 1000.0
             if node == FOREARM:
                 device_s += skew_ms / 1000.0
@@ -193,12 +225,16 @@ class MotionFixtureBuilder:
                 {
                     "op": "sample",
                     "node": node,
-                    "values": to_values(reported(node, segment), gyro),
+                    "values": to_values(reported(node, segment), node_gyro),
                     "deviceS": device_s,
                     "nowMs": self.now_ms,
                 }
             )
         self.advance(SAMPLE_PERIOD_MS)
+
+    def display_pose(self, label):
+        """Ask the engine for the display fast-path pose at the current clock."""
+        self.steps.append({"op": "displayPose", "label": label, "nowMs": self.now_ms})
 
     def hold(self, poses, seconds, gyro=(0.0, 0.0, 0.0)):
         for _ in range(int(seconds * 1000 / SAMPLE_PERIOD_MS)):
@@ -258,6 +294,10 @@ class MotionEngineTest(unittest.TestCase):
             MotionEngineTest.scenario_anatomical_with_heading_offsets(),
             MotionEngineTest.scenario_anatomical_rejects_sync_loss(),
             MotionEngineTest.scenario_anatomical_reset(),
+            MotionEngineTest.scenario_anatomical_retries_forward_after_rejection(),
+            MotionEngineTest.scenario_anatomical_live_feedback(),
+            MotionEngineTest.scenario_anatomical_quality_warning(),
+            MotionEngineTest.scenario_display_prediction(),
         ]
 
     @staticmethod
@@ -650,6 +690,75 @@ class MotionEngineTest(unittest.TestCase):
         builder.frame("after_clear")
         return builder.build()
 
+    @staticmethod
+    def scenario_anatomical_retries_forward_after_rejection():
+        """After a not-independent rejection the accepted side capture must
+        survive: pressing forward again and raising correctly calibrates
+        without a fresh side hold (the 05:58 session redid the side raise four
+        times because every forward failure reset the whole workflow)."""
+        builder = MotionEngineTest.calibrated_builder("anatomical_retry")
+        side = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
+        builder.begin_side()
+        builder.hold(side, 1.2)
+        builder.begin_forward()
+        builder.hold(side, 1.2)  # same direction: not independent
+        builder.frame("after_rejection")
+        builder.begin_forward()
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
+        builder.frame("after_retry")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_live_feedback():
+        """Mid-capture diagnostics must expose the live raise angle AND the
+        separation from the stored side axis, so the wearer can aim the
+        forward raise instead of guessing (the 05:58 failure mode: four
+        forward attempts rejected with 0-57 degree separations)."""
+        builder = MotionEngineTest.calibrated_builder("anatomical_live")
+        builder.begin_side()
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.begin_forward()
+        # 20 degrees forward of the pure side direction: separation reads 70
+        # while the raise magnitude stays 90 on both segments. Stop at 0.4 s,
+        # before the 1 s hold completes, so the frame sees a live capture.
+        off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 0.4)
+        builder.frame("forward_live")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_quality_warning():
+        """A 70-degree capture pair still solves (the window is 60-120) but
+        must warn: the second axis lands ~20 degrees off its target, so the
+        render is skewed and the wearer should redo steps 2-3."""
+        builder = MotionEngineTest.calibrated_builder("anatomical_warning")
+        off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
+        builder.begin_side()
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.begin_forward()
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 1.2)
+        builder.frame("after_solve")
+        return builder.build()
+
+    @staticmethod
+    def scenario_display_prediction():
+        """The display fast path must reconstruct the true pose at its own
+        timestamp: with the BNO gyro, extrapolating by omega * lead must land
+        on the pose the arm actually reaches one sample interval later."""
+        builder = MotionEngineTest.calibrated_builder("display_prediction")
+        MotionEngineTest.capture_anatomical(builder)
+        axis = (0.2, -0.3, 0.93)
+        world_rate = tuple(c * math.radians(120.0) for c in axis)
+        start_deg = 40.0
+        start_pose = MotionEngineTest.rigid_arm_pose(axis, start_deg)
+        for _ in range(2):
+            builder.push_pose(start_pose, gyro=body_rates(start_pose, world_rate))
+        builder.display_pose("moving")
+        advanced = MotionEngineTest.rigid_arm_pose(axis, start_deg + 120.0 * 0.04)
+        builder.push_pose(advanced, gyro=body_rates(advanced, world_rate))
+        builder.frame("after")
+        return builder.build()
+
     # ----------------------------------------------------------------- tests
 
     def frames(self, scenario):
@@ -780,22 +889,33 @@ class MotionEngineTest(unittest.TestCase):
         self.assertEqual(frames["side_again"]["frame"]["diagnostics"]["axisFrame"], "anatomical")
         self.assertEqual(set(scenario["mountCorrections"]), {"2", "4"})
 
-    def test_collinear_directional_poses_are_rejected_atomically(self):
+    def test_collinear_directional_poses_are_rejected_and_side_kept(self):
+        """A repeat of the side direction cannot define a plane. The forward
+        stage is rejected, the accepted side capture survives so a retry is
+        one raise away, and no mounts are installed."""
         scenario = self.results["anatomical_collinear"]
-        self.assertEqual(scenario["anatomicalState"], "failed")
+        self.assertEqual(scenario["anatomicalState"], "side_ready")
         self.assertEqual(scenario["mountCorrections"], {})
         frame = self.frames("anatomical_collinear")["after_rejection"]["frame"]
         self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
         self.assertIn("independent", scenario["anatomicalMessage"].lower())
+        rejected = next(
+            e for e in scenario["events"] if e["kind"] == "anatomical_forward_rejected"
+        )
+        self.assertEqual(
+            {n: round(d) for n, d in rejected["separationsDeg"].items()}, {"2": 0, "4": 0}
+        )
 
     def test_offplane_side_raise_is_rejected_at_solve_time(self):
         scenario = self.results["anatomical_offplane"]
-        self.assertEqual(scenario["anatomicalState"], "failed", scenario["anatomicalMessage"])
+        self.assertEqual(scenario["anatomicalState"], "side_ready", scenario["anatomicalMessage"])
         self.assertIn("independent", scenario["anatomicalMessage"].lower())
         self.assertIn("50", scenario["anatomicalMessage"], "measured separation must be reported")
         self.assertIn("60-120", scenario["anatomicalMessage"])
         self.assertEqual(scenario["mountCorrections"], {})
-        failed = next(e for e in scenario["events"] if e["kind"] == "anatomical_failed")
+        failed = next(
+            e for e in scenario["events"] if e["kind"] == "anatomical_forward_rejected"
+        )
         self.assertEqual(
             {n: round(d) for n, d in failed["separationsDeg"].items()}, {"2": 50, "4": 50}
         )
@@ -809,6 +929,67 @@ class MotionEngineTest(unittest.TestCase):
         frame = self.frames("anatomical_reset")["after_clear"]["frame"]
         self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
 
+    def test_failed_forward_solve_keeps_the_side_for_a_retry(self):
+        """The side capture must survive an independent-axes rejection so the
+        wearer only repeats the forward raise (05:58 field lesson)."""
+        scenario = self.results["anatomical_retry"]
+        rejected = self.frames("anatomical_retry")["after_rejection"]["frame"]
+        self.assertEqual(rejected["diagnostics"]["anatomicalState"], "side_ready")
+        retried = self.frames("anatomical_retry")["after_retry"]["frame"]
+        self.assertEqual(retried["diagnostics"]["axisFrame"], "anatomical")
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        self.assertEqual(set(scenario["mountCorrections"]), {"2", "4"})
+
+    def test_live_capture_feedback_reports_raise_and_separation(self):
+        """During the forward capture the engine must expose both the raise
+        magnitude and the separation from the stored side axis, the quantity
+        the solver will test."""
+        frame = self.frames("anatomical_live")["forward_live"]["frame"]
+        self.assertEqual(frame["diagnostics"]["anatomicalState"], "forward_capturing")
+        live = frame["diagnostics"]["anatomicalLive"]
+        self.assertIsNotNone(live)
+        for node_id in ("2", "4"):
+            self.assertAlmostEqual(live[node_id]["raiseDeg"], 90.0, delta=1e-3)
+            self.assertAlmostEqual(live[node_id]["separationDeg"], 70.0, delta=1e-3)
+
+    def test_poor_capture_geometry_is_reported_after_the_solve(self):
+        """A solve accepted inside the 60-120 window but off the ideal right
+        angle must carry a visible warning with the expected skew."""
+        scenario = self.results["anatomical_warning"]
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        for quality in scenario["anatomicalQuality"]["nodes"].values():
+            self.assertAlmostEqual(quality["axisSeparationDeg"], 70.0, delta=1e-3)
+        frame = self.frames("anatomical_warning")["after_solve"]["frame"]
+        warning = frame["diagnostics"]["anatomicalWarning"]
+        self.assertIsNotNone(warning)
+        self.assertIn("70", warning)
+        self.assertIn("20", warning)
+        self.assertIn("Capture geometry", scenario["anatomicalMessage"])
+
+    def test_display_prediction_reconstructs_the_true_pose(self):
+        """The avatar's gyro extrapolation, not lagged interpolation: omega
+        times the 40 ms lead from the sampled pose must equal the pose the
+        arm actually reached. Covers the sensor -> delta -> corrected frame
+        chain in segmentOmega()."""
+        scenario = self.results["display_prediction"]
+        pose = scenario["displayPoses"][0]["pose"]
+        self.assertIsNotNone(pose, "anatomically calibrated pose expected")
+        self.assertIsNotNone(pose["omegaShoulder"], "gyro rate expected")
+        self.assertIsNotNone(pose["omegaForearm"], "relative gyro rate expected")
+        frame = self.frames("display_prediction")["after"]["frame"]
+
+        upper = tuple(pose["shoulder"])
+        predicted = q_mul(q_from_rotation_vector(pose["omegaShoulder"], 0.04), upper)
+        actual = packet_to_q(frame["upper_arm_orientation"])
+        error = q_angle_deg(q_mul(q_conj(actual), predicted))
+        self.assertLess(error, 0.5, f"upper prediction error {error} deg")
+
+        relative = tuple(pose["forearmRelative"])
+        predicted_rel = q_mul(q_from_rotation_vector(pose["omegaForearm"], 0.04), relative)
+        actual_rel = q_mul(q_conj(actual), packet_to_q(frame["forearm_orientation"]))
+        error_rel = q_angle_deg(q_mul(q_conj(actual_rel), predicted_rel))
+        self.assertLess(error_rel, 0.5, f"forearm prediction error {error_rel} deg")
+
     def test_directional_capture_rejects_continuous_motion(self):
         scenario = self.results["anatomical_motion"]
         self.assertEqual(scenario["anatomicalState"], "failed")
@@ -817,15 +998,16 @@ class MotionEngineTest(unittest.TestCase):
     def test_directional_capture_rejects_under_raise(self):
         scenario = self.results["anatomical_under_raise"]
         self.assertEqual(scenario["anatomicalState"], "failed")
-        self.assertIn("60-120", scenario["anatomicalMessage"])
+        self.assertIn("75-105", scenario["anatomicalMessage"])
         self.assertNotIn("..", scenario["anatomicalMessage"], "doubled period")
         # Rejections must be auditable (spec section 9): the restarts carry
-        # the reason, not just the final timeout.
+        # the stable code plus the actionable message, not just the timeout.
         restarted = [
             e for e in scenario["events"] if e["kind"] == "anatomical_hold_restarted"
         ]
         self.assertTrue(restarted, "capture restarts must be logged")
-        self.assertTrue(any("60-120" in (e.get("reason") or "") for e in restarted))
+        self.assertTrue(all(e.get("code") == "raise_range" for e in restarted))
+        self.assertTrue(any("75-105" in (e.get("reason") or "") for e in restarted))
 
     def test_directional_capture_rejects_bent_elbow(self):
         scenario = self.results["anatomical_bent"]

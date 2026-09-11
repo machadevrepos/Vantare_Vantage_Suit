@@ -4,6 +4,7 @@ Source-level contracts are checked directly; the node fixture suite
 (host/tests/scripts/test_live_preprocessing.mjs) runs when node is available.
 """
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -275,13 +276,15 @@ class LiveToolInvariants(unittest.TestCase):
         self.assertIn("anatomicalMessage", UI)
 
     def test_avatar_fast_path_is_anatomically_gated(self):
-        """The N4 display fast path consumes segmentDelta(), which falls back
-        to the raw sensor-neutral delta before calibration; the call must be
-        gated so an uncorrected quaternion never drives the directional rig,
-        and the array-format delta must actually reach the smoother (it
-        silently no-oped against packet-shape objects)."""
+        """The display fast path consumes displayPose(), which refuses
+        sensor-neutral axes; the call must be gated so an uncorrected
+        quaternion never drives the directional rig, and it must run for both
+        instrumented segments on every arrival so prediction has fresh gyro
+        rates (the old N4-only shoulder path left the forearm 40 ms behind)."""
         self.assertIn('this.motion.anatomicalState === "calibrated"', MAIN)
-        self.assertIn("renderShoulder(this.motion.segmentDelta(sample.nodeId));", MAIN)
+        self.assertIn("this.motion.displayPose(arrivalMs)", MAIN)
+        self.assertIn("this.armAvatar.renderPose(pose, arrivalMs);", MAIN)
+        self.assertIn("sample.nodeId === this.motion.roles.forearm", MAIN)
 
     def test_avatar_note_requires_the_three_pose_workflow(self):
         """Directional tracking claims must be gated on the workflow in the
@@ -291,7 +294,7 @@ class LiveToolInvariants(unittest.TestCase):
     def test_live_tool_build_bumped_for_anatomical_workflow(self):
         """A stale cached module graph silently runs the old two-pose UI; the
         visible build string must move with this workflow change."""
-        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.20"', INFERENCE)
+        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.22"', INFERENCE)
 
     # --------------------------------------------------- anatomical replay
 
@@ -384,6 +387,32 @@ class LiveToolInvariants(unittest.TestCase):
         self.assertGreater(metrics["replayedSamples"], 40)
         self.assertGreater(metrics["dropoutFrames"], 0, "dropout segment must be visible")
         self.assertIn("p50", metrics["visualStepDistribution"])
+
+    def test_anatomical_replay_reports_a_geometry_warning(self):
+        """A solve from an off-right-angle capture pair must surface its
+        post-solve warning through the replay audit, not only in the UI."""
+        if shutil.which("node") is None:
+            self.skipTest("node not available")
+        sys.path.insert(0, str(ROOT / "host" / "tests" / "python"))
+        try:
+            import test_motion_engine as motion_fixtures
+        finally:
+            sys.path.pop(0)
+        MotionEngineTest = motion_fixtures.MotionEngineTest
+        builder = MotionEngineTest.calibrated_builder("replay_warning")
+        off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
+        builder.begin_side()
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.begin_forward()
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 0.3)
+        builder.frame("after")
+
+        metrics = self._replay_anatomical(builder)
+
+        self.assertEqual(metrics["axisFrame"], "anatomical")
+        self.assertIn("calibrationWarning", metrics)
+        self.assertIn("70", metrics["calibrationWarning"])
 
     def test_replay_reports_legacy_sensor_neutral_logs_honestly(self):
         """A log from before the three-pose workflow has no directional

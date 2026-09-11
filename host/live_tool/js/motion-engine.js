@@ -87,10 +87,22 @@ export const MOTION_DEFAULTS = {
 
   // --- anatomical frame calibration: two held straight-arm directions ---
   anatomicalHoldSeconds: 1.0,
-  anatomicalMinAngleDeg: 60,
-  anatomicalMaxAngleDeg: 120,
+  // Aim band for a directional raise. Tighter than the old 60-120 because
+  // the UI now shows live raise angles during the hold: a forward raise
+  // captured at 115 degrees skewed that node's mount by ~25 degrees and the
+  // whole rig rendered skewed (session 05:58). The solve window itself stays
+  // 60-120 (see anatomical-calibration.js).
+  anatomicalMinAngleDeg: 75,
+  anatomicalMaxAngleDeg: 105,
   anatomicalMaxSegmentMismatchDeg: 15,
   anatomicalTimeoutMs: 15000,
+  /**
+   * Warn after a solve whose capture pair was not a right angle. The second
+   * captured axis lands (90 - separation) degrees off its anatomical target,
+   * so a 70-degree pair predicts ~20 degrees of forward skew. Reported, not
+   * corrected: the fix is redoing steps 2-3 with the live separation readout.
+   */
+  anatomicalAimSeparationMinDeg: 80,
 
   // --- hinge (range) calibration: a few slow reps to find the joint axis ---
   /** Only frames past this flexion contribute; small rotations have noisy axes. */
@@ -152,6 +164,23 @@ export function quatMultiply(a, b) {
     aw * bx + ax * bw + ay * bz - az * by,
     aw * by - ax * bz + ay * bw + az * bx,
     aw * bz + ax * by - ay * bx + az * bw,
+  ];
+}
+
+/**
+ * Rotate a 3-vector by a quaternion: v' = q v q^-1. Used to carry the BNO's
+ * body-frame gyro into the delta frame the display extrapolates in.
+ */
+export function rotateVector(v, q) {
+  if (!v || !q) return null;
+  const [qw, qx, qy, qz] = q;
+  const tx = 2 * (qy * v[2] - qz * v[1]);
+  const ty = 2 * (qz * v[0] - qx * v[2]);
+  const tz = 2 * (qx * v[1] - qy * v[0]);
+  return [
+    v[0] + qw * tx + qy * tz - qz * ty,
+    v[1] + qw * ty + qz * tx - qx * tz,
+    v[2] + qw * tz + qx * ty - qy * tx,
   ];
 }
 
@@ -339,6 +368,8 @@ export class MotionEngine {
     this.anatomicalQuality = null;
     this.anatomicalCapture = null;
     this.anatomicalSide = null;
+    this.anatomicalSideAnglesDeg = null;
+    this.anatomicalWarning = null;
 
     this.state = CAL_STATE.UNCALIBRATED;
     this.calibrationMessage = "Not calibrated.";
@@ -387,12 +418,13 @@ export class MotionEngine {
     if (!values || values.quat_real === undefined) return false;
     const quat = quatNormalize(quatFromBnoValues(values));
     if (!quat) return false;
-    const gyroMag = Math.hypot(
+    const gyro = [
       values.gyro_x_radps || 0,
       values.gyro_y_radps || 0,
-      values.gyro_z_radps || 0
-    );
-    this.latest.set(nodeId, { quat, gyroMag, deviceS, receivedAtMs: nowMs });
+      values.gyro_z_radps || 0,
+    ];
+    const gyroMag = Math.hypot(gyro[0], gyro[1], gyro[2]);
+    this.latest.set(nodeId, { quat, gyro, gyroMag, deviceS, receivedAtMs: nowMs });
     if (this.state === CAL_STATE.CAPTURING) this.accumulateCalibration(nodeId, quat, gyroMag, nowMs);
     if (this.anatomicalCapture && this.requiredNodes.includes(nodeId)) {
       this.accumulateAnatomicalCalibration(nodeId, quat, gyroMag, nowMs);
@@ -568,6 +600,8 @@ export class MotionEngine {
     this.anatomicalQuality = null;
     this.anatomicalCapture = null;
     this.anatomicalSide = null;
+    this.anatomicalSideAnglesDeg = null;
+    this.anatomicalWarning = null;
   }
 
   beginSideCalibration(nowMs = performance.now()) {
@@ -578,7 +612,9 @@ export class MotionEngine {
     }
     this.mountCorrection.clear();
     this.anatomicalSide = null;
+    this.anatomicalSideAnglesDeg = null;
     this.anatomicalQuality = null;
+    this.anatomicalWarning = null;
     this.startAnatomicalCapture("side", nowMs);
     this.onEvent({ kind: "anatomical_side_started" });
     return true;
@@ -617,26 +653,27 @@ export class MotionEngine {
       startedAtMs: nowMs,
       windowStartedAtMs: nowMs,
       samples: new Map(this.requiredNodes.map((id) => [id, []])),
-      lastRejectReason: null,
+      lastRejectCode: null,
     };
   }
 
-  restartAnatomicalHold(nowMs, message, reason = null) {
+  restartAnatomicalHold(nowMs, message, code = "unspecified") {
     const capture = this.anatomicalCapture;
     if (!capture) return;
-    // Audit every rejection (spec section 9), but only when the reason
-    // changes: a continuously-moving pose restarts on every sample and would
-    // flood the Tier-1 event log with duplicates.
-    if (reason !== capture.lastRejectReason) {
+    // Audit rejections (spec section 9), deduplicated by the stable code:
+    // the human-readable reason carries live numbers (gyro, spread) that
+    // change on every sample and flooded the Tier-1 log (session 05:58).
+    if (code !== capture.lastRejectCode) {
       this.onEvent({
         kind: "anatomical_hold_restarted",
         stage: capture.kind,
-        reason: reason ?? message,
+        code,
+        reason: message,
       });
     }
     for (const samples of capture.samples.values()) samples.length = 0;
     capture.windowStartedAtMs = nowMs;
-    capture.lastRejectReason = reason;
+    capture.lastRejectCode = code;
     this.anatomicalMessage = message;
   }
 
@@ -647,8 +684,8 @@ export class MotionEngine {
     if (gyroMag > this.options.stillGyroMaxRadps) {
       this.restartAnatomicalHold(
         nowMs,
-        "Settle into the pose and hold still.",
-        `motion on N${nodeId} (${gyroMag.toFixed(2)} rad/s)`
+        "Too much motion - settle into the pose and hold still.",
+        "motion"
       );
       return;
     }
@@ -669,8 +706,8 @@ export class MotionEngine {
     if (!capture) return;
     if (nowMs - capture.startedAtMs > this.options.anatomicalTimeoutMs) {
       this.failAnatomicalCalibration(
-        capture.lastRejectReason
-          ? `Timed out: ${capture.lastRejectReason.replace(/\.$/, "")}.`
+        capture.lastRejectCode
+          ? `Timed out: ${this.anatomicalMessage.replace(/\.$/, "")}.`
           : `Timed out waiting for the ${capture.kind} pose.`
       );
       return;
@@ -681,7 +718,7 @@ export class MotionEngine {
     for (const nodeId of this.requiredNodes) {
       const entry = this.latest.get(nodeId);
       if (!entry || nowMs - entry.receivedAtMs > this.options.staleMaxMs) {
-        this.restartAnatomicalHold(nowMs, `Waiting for N${nodeId} data.`);
+        this.restartAnatomicalHold(nowMs, `Waiting for N${nodeId} data.`, "stale");
         return;
       }
       deviceTimes.push(entry.deviceS);
@@ -692,7 +729,11 @@ export class MotionEngine {
     }
     const skewMs = (Math.max(...deviceTimes) - Math.min(...deviceTimes)) * 1000;
     if (Math.abs(skewMs) > this.options.syncSkewMaxMs) {
-      this.restartAnatomicalHold(nowMs, "Sensor samples are not synchronized.", "sample skew");
+      this.restartAnatomicalHold(
+        nowMs,
+        "Sensor clock skew - samples are not synchronized.",
+        "sync"
+      );
       return;
     }
 
@@ -707,35 +748,45 @@ export class MotionEngine {
         this.restartAnatomicalHold(
           nowMs,
           "Pose was not steady - keep holding.",
-          `N${nodeId} spread ${spreadDeg.toFixed(1)} deg`
-        );
-        return;
-      }
-      if (
-        angleDeg === null ||
-        angleDeg < this.options.anatomicalMinAngleDeg ||
-        angleDeg > this.options.anatomicalMaxAngleDeg ||
-        !axis
-      ) {
-        // A transient pass-through (e.g. pausing low on the way up) must not
-        // kill the attempt: discard the window and let the wearer keep
-        // holding. The timeout carries the reason if it never settles.
-        this.restartAnatomicalHold(
-          nowMs,
-          `N${nodeId} raise must be ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees.`,
-          `N${nodeId} raise must be ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees`
+          "spread"
         );
         return;
       }
       captured.set(nodeId, { mean, axis, angleDeg, spreadDeg });
     }
 
+    // Diagnose a bent elbow BEFORE the raise-magnitude band: a bent side
+    // raise puts N2 well below the aim band, and answering with "raise
+    // higher" coaches the wrong correction (session 05:58).
     const angles = this.requiredNodes.map((id) => captured.get(id).angleDeg);
     const mismatchDeg = Math.abs(angles[0] - angles[1]);
     if (mismatchDeg > this.options.anatomicalMaxSegmentMismatchDeg) {
-      const message = `Keep the elbow straight; segment raises differed by ${mismatchDeg.toFixed(1)} degrees.`;
-      this.restartAnatomicalHold(nowMs, message, message);
+      this.restartAnatomicalHold(
+        nowMs,
+        `Keep the elbow straight; segment raises differed by ${mismatchDeg.toFixed(1)} degrees.`,
+        "mismatch"
+      );
       return;
+    }
+
+    for (const nodeId of this.requiredNodes) {
+      const { angleDeg, axis } = captured.get(nodeId);
+      if (
+        angleDeg === null ||
+        angleDeg < this.options.anatomicalMinAngleDeg ||
+        angleDeg > this.options.anatomicalMaxAngleDeg ||
+        !axis
+      ) {
+        // A transient pass-through must not kill the attempt, and the live
+        // angle makes the correction actionable: "aim for 75-105" with the
+        // number you actually held (the 05:58 capture took a 115-degree
+        // forward raise and skewed that node's whole mount).
+        const message =
+          `N${nodeId} raise was ${angleDeg === null ? "unreadable" : `${angleDeg.toFixed(0)} degrees`} - ` +
+          `aim for ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees.`;
+        this.restartAnatomicalHold(nowMs, message, "raise_range");
+        return;
+      }
     }
 
     // NOTE: do NOT gate this capture on an inter-sensor quantity such as an
@@ -753,10 +804,17 @@ export class MotionEngine {
       this.anatomicalSide = captured;
       this.anatomicalCapture = null;
       this.anatomicalState = ANATOMICAL_STATE.SIDE_READY;
-      this.anatomicalMessage = "Side pose captured. Next: hold a straight-arm forward raise.";
+      this.anatomicalSideAnglesDeg = Object.fromEntries(
+        [...captured].map(([id, value]) => [id, value.angleDeg])
+      );
+      const summary = Object.entries(this.anatomicalSideAnglesDeg)
+        .map(([id, deg]) => `N${id} ${deg.toFixed(0)}°`)
+        .join(" · ");
+      this.anatomicalMessage =
+        `Side pose captured (${summary}; 90° is ideal). Next: forward raise, thumb up.`;
       this.onEvent({
         kind: "anatomical_side_complete",
-        anglesDeg: Object.fromEntries([...captured].map(([id, value]) => [id, value.angleDeg])),
+        anglesDeg: { ...this.anatomicalSideAnglesDeg },
       });
       return;
     }
@@ -772,6 +830,11 @@ export class MotionEngine {
           );
           return;
         }
+        // The two raised poses were not independent enough to define a
+        // plane. Keep the accepted side capture and send the wearer back to
+        // step 3: with the live separation readout a retry is one raise
+        // away, while discarding the side forced a full redo in the 05:58
+        // field session (four wasted side captures before the solve passed).
         // Report the MEASURED separation: without it a field log shows a
         // rejection with no way to tell a scapular-plane raise from two
         // raises in the same direction (05:14 session had no number).
@@ -782,12 +845,16 @@ export class MotionEngine {
           const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
           separationsDeg[id] = Math.acos(dot) * 180 / Math.PI;
         }
-        const measured = separationsDeg[this.roles.upperArm].toFixed(0);
-        this.failAnatomicalCalibration(
-          `The raises measured ${measured} degrees apart - they were not independent enough ` +
-            "(need 60-120). Raise straight out to the side, then straight ahead.",
-          { separationsDeg }
-        );
+        const measured = Math.min(...Object.values(separationsDeg)).toFixed(0);
+        const message =
+          `The raises measured ${measured} degrees apart - not independent enough for a solve ` +
+          "(need 60-120). Swing the arm to the front; if it will not reach ~90, redo the side raise.";
+        this.anatomicalCapture = null;
+        this.mountCorrection.clear();
+        this.anatomicalQuality = null;
+        this.anatomicalState = ANATOMICAL_STATE.SIDE_READY;
+        this.anatomicalMessage = message;
+        this.onEvent({ kind: "anatomical_forward_rejected", reason: message, separationsDeg });
         return;
       }
       solved.set(nodeId, result.mount);
@@ -802,13 +869,31 @@ export class MotionEngine {
 
     this.mountCorrection = solved;
     this.anatomicalQuality = { nodes: quality, segmentMismatchDeg: mismatchDeg };
+    // A non-right-angle capture pair is a proper rotation only up to the
+    // separation error: the second axis lands (90 - separation) degrees off
+    // its anatomical target, which skews every direction near it. The 05:58
+    // session solved at 65.8 degrees and rendered the forward raise 23.5
+    // degrees off (replay audit). Report it so the wearer can redo steps
+    // 2-3 instead of trusting a mount that is quietly wrong.
+    const minSeparationDeg = Math.min(
+      ...this.requiredNodes.map((id) => quality[id].axisSeparationDeg)
+    );
+    this.anatomicalWarning =
+      minSeparationDeg < this.options.anatomicalAimSeparationMinDeg
+        ? `Capture geometry was ${minSeparationDeg.toFixed(0)} degrees (ideal 90) - ` +
+          `expect about ${(90 - minSeparationDeg).toFixed(0)} degrees of forward tracking skew; ` +
+          "redo steps 2-3 for best tracking."
+        : null;
     this.anatomicalCapture = null;
     this.anatomicalState = ANATOMICAL_STATE.CALIBRATED;
-    this.anatomicalMessage = "Anatomical axes calibrated.";
+    this.anatomicalMessage = this.anatomicalWarning
+      ? `Anatomical axes calibrated. ${this.anatomicalWarning}`
+      : "Anatomical axes calibrated.";
     this.onEvent({
       kind: "anatomical_complete",
       mounts: Object.fromEntries(solved),
       quality: this.anatomicalQuality,
+      warning: this.anatomicalWarning,
     });
   }
 
@@ -919,6 +1004,72 @@ export class MotionEngine {
     const mount = this.mountCorrection.get(nodeId);
     if (!mount) return delta;
     return quatMultiply(quatMultiply(quatConjugate(mount), delta), mount);
+  }
+
+  /**
+   * Angular velocity of a segment's corrected delta, in the delta's own
+   * parent frame, taken from the BNO gyro rather than differenced from 25 Hz
+   * quaternions. The gyro is instantaneous, so it sees the zero crossing at a
+   * rep turnaround that a finite difference misses by a whole sample.
+   *
+   * Frames: sensor body rate -> world (rotate by D) -> corrected delta frame
+   * (rotate by conj M), matching segmentDelta's conj(M) * D * M.
+   */
+  segmentOmega(nodeId) {
+    const entry = this.latest.get(nodeId);
+    const ref = this.reference.get(nodeId);
+    if (!entry || !ref || !entry.gyro) return null;
+    const delta = quatMultiply(quatConjugate(ref), entry.quat);
+    const worldRate = rotateVector(entry.gyro, delta);
+    const mount = this.mountCorrection.get(nodeId);
+    return mount ? rotateVector(worldRate, quatConjugate(mount)) : worldRate;
+  }
+
+  /**
+   * Display-only pose with instantaneous angular velocities, for the avatar's
+   * latency-compensating extrapolator. Returns null until the anatomical
+   * mounts are installed: sensor-neutral axes must never drive the rig.
+   *
+   * The forearm rate is expressed in the upper arm's frame, which is the frame
+   * the nested `forearmRelative` transform lives in: with
+   * D_f = D_u * D_rel, differentiating gives
+   * omega_rel = conj(D_u) * (omega_f - omega_u) * D_u.
+   */
+  displayPose(nowMs = performance.now()) {
+    if (this.state !== CAL_STATE.CALIBRATED) return null;
+    if (!this.requiredNodes.every((id) => this.mountCorrection.has(id))) return null;
+    // Same health rules as the frame path: a fresh pair on one timebase, or
+    // the rig must hold its last pose rather than present stale pair data as
+    // live (the 25 Hz frame tick still owns the tracking_unavailable state).
+    const entries = [];
+    for (const nodeId of this.requiredNodes) {
+      const entry = this.latest.get(nodeId);
+      if (!entry || nowMs - entry.receivedAtMs > this.options.staleMaxMs) return null;
+      entries.push(entry);
+    }
+    const skewMs = (Math.max(...entries.map((e) => e.deviceS)) - Math.min(...entries.map((e) => e.deviceS))) * 1000;
+    if (Math.abs(skewMs) > this.options.syncSkewMaxMs) return null;
+    const upper = this.segmentDelta(this.roles.upperArm);
+    const fore = this.segmentDelta(this.roles.forearm);
+    if (!upper || !fore) return null;
+    const omegaUpper = this.segmentOmega(this.roles.upperArm);
+    const omegaFore = this.segmentOmega(this.roles.forearm);
+    let omegaForearm = null;
+    if (omegaUpper && omegaFore) {
+      const difference = [
+        omegaFore[0] - omegaUpper[0],
+        omegaFore[1] - omegaUpper[1],
+        omegaFore[2] - omegaUpper[2],
+      ];
+      omegaForearm = rotateVector(difference, quatConjugate(upper));
+    }
+    return {
+      shoulder: upper,
+      forearmRelative: quatMultiply(quatConjugate(upper), fore),
+      omegaShoulder: omegaUpper,
+      omegaForearm,
+      atMs: nowMs,
+    };
   }
 
   // ------------------------------------------------------------ drift monitor
@@ -1059,6 +1210,41 @@ export class MotionEngine {
       yawDriftHintDeg = Math.max(0, Math.min(upperDeg, foreDeg) - elbowDeg);
     }
 
+    // Live capture feedback. The raised-delta angle alone cannot tell the
+    // wearer whether the raise is in the right plane; the angle between the
+    // live raise axis and the stored side axis can, and it is exactly the
+    // quantity the solver will test. Headings and mounts cancel because both
+    // axes come from the same conj(reference) delta frame.
+    let anatomicalLive = null;
+    if (calibrated && this.anatomicalCapture) {
+      const live = {};
+      for (const nodeId of this.requiredNodes) {
+        const delta = nodeId === this.roles.upperArm ? upperDelta : foreDelta;
+        if (!delta) continue;
+        const raiseDeg = quatAngleDeg(delta);
+        let separationDeg = null;
+        // Below ~20 degrees the rotation axis is noise, so the separation is
+        // withheld until the arm is genuinely raised; the raise readout still
+        // shows live.
+        if (this.anatomicalCapture.kind === "forward" && raiseDeg !== null && raiseDeg >= 20) {
+          const side = this.anatomicalSide && this.anatomicalSide.get(nodeId);
+          const axis = quatAxis(delta);
+          if (side && axis) {
+            const dot = Math.max(
+              -1,
+              Math.min(
+                1,
+                axis[0] * side.axis[0] + axis[1] * side.axis[1] + axis[2] * side.axis[2]
+              )
+            );
+            separationDeg = (Math.acos(dot) * 180) / Math.PI;
+          }
+        }
+        live[nodeId] = { raiseDeg, separationDeg };
+      }
+      if (Object.keys(live).length > 0) anatomicalLive = live;
+    }
+
     const frame = {
       timestamp_ms: Math.round(nowMs),
       upper_arm_orientation: upperDelta ? quatToPacket(upperDelta) : null,
@@ -1114,6 +1300,9 @@ export class MotionEngine {
         anatomicalState: this.anatomicalState,
         anatomicalMessage: this.anatomicalMessage,
         anatomicalQuality: this.anatomicalQuality,
+        anatomicalSideAnglesDeg: this.anatomicalSideAnglesDeg,
+        anatomicalLive,
+        anatomicalWarning: this.anatomicalWarning,
         axisFrame: this.requiredNodes.every((id) => this.mountCorrection.has(id))
           ? "anatomical"
           : "sensor_neutral",

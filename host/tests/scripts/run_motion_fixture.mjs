@@ -31,6 +31,7 @@ for (const scenario of fixture.scenarios) {
     onEvent: (event) => events.push(event),
   });
   const frames = [];
+  const displayPoses = [];
 
   for (const step of scenario.steps) {
     if (step.op === "beginCalibration") {
@@ -54,6 +55,8 @@ for (const scenario of fixture.scenarios) {
     } else if (step.op === "frame") {
       const frame = engine.computeFrame(step.nowMs);
       frames.push({ label: step.label, frame, logRow: engine.toLogRow(frame) });
+    } else if (step.op === "displayPose") {
+      displayPoses.push({ label: step.label, pose: engine.displayPose(step.nowMs) });
     } else {
       process.stderr.write(`unknown op: ${step.op}\n`);
       process.exit(3);
@@ -63,6 +66,7 @@ for (const scenario of fixture.scenarios) {
   results.push({
     name: scenario.name,
     frames,
+    displayPoses,
     events,
     calibrationState: engine.state,
     calibrationMessage: engine.calibrationMessage,

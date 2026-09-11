@@ -141,9 +141,9 @@ const qZ45 = slerpQuaternion(qIdentity, qZ90, 0.5);
 assert.ok(Math.abs(qZ45.qz - 0.382683432) < 1e-6);
 assert.ok(Math.abs(qZ45.qw - 0.923879533) < 1e-6);
 
-// A fresh anatomical pose feeds both segment targets; the sampled pose must
-// blend toward a 90-degree elbow over a few display frames instead of jumping,
-// while the upper arm stays at its own (independent) target.
+// A fresh live pose is the display at its own timestamp: there is no
+// interpolation lag to pay. A 10-degree step over one 40 ms BLE frame
+// (250 deg/s) must read back exactly.
 const smoother = new ArmPoseSmoother();
 smoother.pushFrame(anatomicalFrame(qIdentity, qIdentity), 0);
 assert.deepEqual(smoother.sample(0), {
@@ -151,45 +151,72 @@ assert.deepEqual(smoother.sample(0), {
   forearmRelative: qIdentity,
   state: "live",
 });
-smoother.pushFrame(anatomicalFrame(qIdentity, qMul(qIdentity, bend)), 40);
-const firstStep = smoother.sample(56);
-assert.ok(firstStep.state === "live");
-const firstStepDeg = separationDeg(firstStep.forearmRelative, qIdentity);
-assert.ok(firstStepDeg > 1 && firstStepDeg < 90, `elbow must blend, saw ${firstStepDeg} deg`);
-let settled = firstStep;
-for (let t = 72; t <= 240; t += 16) settled = smoother.sample(t);
-assertQuatClose(settled.forearmRelative, bend, 1, "settled elbow");
-assertQuatClose(settled.shoulder, qIdentity, 1, "settled upper");
-// Fast enough for movement: after ~3 display frames most of the bend is shown.
-assert.ok(firstStepDeg >= 30, `display lag too heavy at ${firstStepDeg} deg of 90`);
+const qElbow10 = qAxisAngle([0, 0, 1], 10);
+smoother.pushFrame(anatomicalFrame(qIdentity, qElbow10), 40);
+const atTarget = smoother.sample(40);
+assert.ok(atTarget.state === "live");
+assertQuatClose(atTarget.forearmRelative, qElbow10, 0.5, "no-lag elbow at target time");
+assertQuatClose(atTarget.shoulder, qIdentity, 0.5, "no-lag upper at target time");
+
+// Between BLE frames the display leads the newest target by its age using the
+// finite-difference rate (the fallback path; the live app supplies gyro rates).
+// 10 degrees per 40 ms is ~4.36 rad/s, so 20 ms of age adds ~5 degrees.
+const predicted = smoother.sample(60);
+const predictedDeg = separationDeg(predicted.forearmRelative, qIdentity);
+assert.ok(
+  predictedDeg > 13.5 && predictedDeg < 16.5,
+  `prediction must fill the sample gap, saw ${predictedDeg} deg`
+);
+
+// Explicit gyro rates drive the production fast path: omega +Z at 2 rad/s and
+// 25 ms of age must add 2.86 degrees to the target.
+const gyroTracker = new ArmPoseSmoother();
+const qElbow45 = qAxisAngle([0, 0, 1], 45);
+gyroTracker.pushPose({ shoulder: qIdentity, forearmRelative: qIdentity }, 1000);
+gyroTracker.pushPose(
+  { shoulder: qIdentity, forearmRelative: qElbow45, omegaForearm: [0, 0, 2] },
+  1100
+);
+const gyroGuided = separationDeg(gyroTracker.sample(1125).forearmRelative, qIdentity);
+assert.ok(
+  Math.abs(gyroGuided - 47.86) < 0.3,
+  `gyro prediction must lead by omega*age, saw ${gyroGuided} deg`
+);
+// The lead is capped: no runaway extrapolation if samples stop arriving.
+const capped = separationDeg(gyroTracker.sample(1500).forearmRelative, qIdentity);
+assert.ok(Math.abs(capped - 49.58) < 0.3, `lead must cap at 40 ms, saw ${capped} deg`);
 
 // A one-frame synchronization miss must hold the last valid pose for the
 // 120 ms dropout window, then report tracking_unavailable while STILL
 // returning the last transforms - never identity or zero.
-smoother.pushFrame(anatomicalFrame(qIdentity, qMul(qIdentity, bend)), 244);
-smoother.pushFrame(
-  { ...anatomicalFrame(qIdentity, qMul(qIdentity, bend)), health: { ...health, synchronized: false } },
+const holdPose = qAxisAngle([0, 0, 1], 30);
+const holdSmoother = new ArmPoseSmoother();
+holdSmoother.pushFrame(anatomicalFrame(qIdentity, holdPose), 200);
+holdSmoother.pushFrame(anatomicalFrame(qIdentity, holdPose), 240);
+holdSmoother.pushFrame(anatomicalFrame(qIdentity, holdPose), 244);
+holdSmoother.pushFrame(
+  { ...anatomicalFrame(qIdentity, holdPose), health: { ...health, synchronized: false } },
   260
 );
-assert.equal(smoother.sample(300).state, "live");
-const held = smoother.sample(380);
+assert.equal(holdSmoother.sample(300).state, "live");
+const held = holdSmoother.sample(380);
 assert.equal(held.state, "tracking_unavailable");
-assertQuatClose(held.forearmRelative, bend, 1, "held elbow");
+assertQuatClose(held.forearmRelative, holdPose, 1, "held elbow");
 assert.ok(
-  separationDeg(held.forearmRelative, qIdentity) > 45,
+  separationDeg(held.forearmRelative, qIdentity) > 20,
   "dropout must retain the pose, not collapse to identity"
 );
 assertQuatClose(held.shoulder, qIdentity, 0.05, "held upper");
 
-// Recovery resumes blending from the held pose.
-smoother.pushFrame(anatomicalFrame(qIdentity, qIdentity), 384);
-assert.equal(smoother.sample(400).state, "live");
-assert.ok(separationDeg(smoother.sample(400).forearmRelative, bend) < 90);
+// Recovery resumes at the fresh target with no stale interpolation state.
+holdSmoother.pushFrame(anatomicalFrame(qIdentity, holdPose), 384);
+assert.equal(holdSmoother.sample(400).state, "live");
+assertQuatClose(holdSmoother.sample(400).forearmRelative, holdPose, 0.5, "recovered pose");
 
 // Leaving the anatomical frame (new neutral) resets the display rather than
 // freezing stale directional data on screen.
-smoother.pushFrame(sensorNeutralFrame, 500);
-const reset = smoother.sample(500);
+holdSmoother.pushFrame(sensorNeutralFrame, 500);
+const reset = holdSmoother.sample(500);
 assert.equal(reset.state, "anatomical_calibration_required");
 assertQuatClose(reset.shoulder, qIdentity, 1e-6, "reset upper");
 assertQuatClose(reset.forearmRelative, qIdentity, 1e-6, "reset forearm");

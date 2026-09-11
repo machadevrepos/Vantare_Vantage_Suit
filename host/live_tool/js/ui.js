@@ -9,6 +9,7 @@
 import { SourceChart, SIGNAL_GROUPS } from "./charts.js";
 import { FAULT_LABELS } from "./rep-analyzer.js";
 import { MASTER_ID, sourceLabel } from "./ble-protocol.js";
+import { MOTION_DEFAULTS } from "./motion-engine.js";
 
 const STATE_LABELS = {
   disconnected: { text: "Disconnected", cls: "idle" },
@@ -289,11 +290,32 @@ export class Ui {
     this.yawDriftValue.textContent = deg(diagnostics.yawDriftHintDeg);
   }
 
-  /** Instruction line plus the measured three-pose quality, when solved. */
+  /** Instruction line, live capture feedback, and solve quality. */
   anatomicalSummary(diagnostics) {
     const message = diagnostics.anatomicalMessage || "";
+    // The engine carries the live raise angle and (during the forward
+    // capture) the separation from the stored side axis. Separation is the
+    // number that predicts the solve quality, so it leads the correction:
+    // the 05:58 session captured a 115-degree forward raise blind and
+    // skewed that node's whole mount by ~24 degrees.
+    let live = "";
+    const liveValues = diagnostics.anatomicalLive;
+    if (liveValues) {
+      const parts = Object.entries(liveValues).map(([id, value]) => {
+        const raise = Number.isFinite(value.raiseDeg) ? `${value.raiseDeg.toFixed(0)}°` : "—";
+        if (Number.isFinite(value.separationDeg)) {
+          return `N${id} ${raise} · sep ${value.separationDeg.toFixed(0)}°`;
+        }
+        return `N${id} ${raise}`;
+      });
+      const aim =
+        diagnostics.anatomicalState === "forward_capturing"
+          ? "aim ~90° separation"
+          : `aim ${MOTION_DEFAULTS.anatomicalMinAngleDeg}-${MOTION_DEFAULTS.anatomicalMaxAngleDeg}°`;
+      live = ` — live: ${parts.join(" | ")} (${aim})`;
+    }
     const quality = diagnostics.anatomicalQuality;
-    if (!quality || !quality.nodes) return message;
+    if (!quality || !quality.nodes) return message + live;
     const parts = Object.entries(quality.nodes)
       .map(
         ([id, q]) =>
@@ -303,7 +325,7 @@ export class Ui {
     if (typeof quality.segmentMismatchDeg === "number") {
       parts.push(`mismatch ${quality.segmentMismatchDeg.toFixed(1)}°`);
     }
-    return `${message} (${parts.join(" · ")})`;
+    return `${message} (${parts.join(" · ")})${live}`;
   }
 
   // ------------------------------------------------------------------ reps

@@ -170,8 +170,16 @@ class App {
     this.motion.updateAnatomicalCalibration(now);
     const frame = this.motion.computeFrame(now);
     this.lastMotionFrame = frame;
+    // The tick owns health state and the fallback pose; the fast path below
+    // then refreshes targets + gyro rates so prediction uses the freshest
+    // data even when a BLE arrival lands between ticks.
     this.armAvatar.render(frame);
+    const pose = this.motion.displayPose(now);
+    if (pose) this.armAvatar.renderPose(pose, now);
     this.repAnalyzer.pushFrame(frame);
+    // The numeric panel tracks the same 25 Hz signal as the rig; leaving it
+    // on the 250 ms render tick made the angles visibly lag the model.
+    this.ui.renderMotion(frame);
     if (!this.sessionActive) return;
     const row = this.motion.toLogRow(frame);
     if (row) this.sessionLog.logSample(MOTION_LOG_STREAM, row[0], row.slice(1));
@@ -222,6 +230,8 @@ class App {
       this.ui.log("Anatomical step 3: hold your straight arm 90 degrees forward, still.");
     } else if (event.kind === "anatomical_complete") {
       this.ui.log("Anatomical arm axes calibrated — directional tracking is live.");
+    } else if (event.kind === "anatomical_forward_rejected") {
+      this.ui.log(`Forward raise rejected: ${event.reason}`, "warn");
     } else if (event.kind === "anatomical_failed") {
       this.ui.log(`Anatomical calibration failed: ${event.reason}`, "warn");
     }
@@ -509,19 +519,20 @@ class App {
     // streaming alone, with no inference session and no model loaded.
     if (sample.sensorId === SENSOR.BNO) {
       this.motion.pushSample(sample.nodeId, values, sample.mappedMs / 1000);
-      // Visual-only fast path: queue the latest ANATOMICALLY CALIBRATED N4
-      // target so the 60 Hz avatar loop consumes it on the next display frame
-      // instead of waiting up to 40 ms for the analytics tick. The anatomical
-      // gate matters: segmentDelta() falls back to the raw sensor-neutral
-      // delta before calibration, and an uncorrected quaternion must never
-      // drive the directional rig (spec section 7). The forearm-relative
-      // target simply holds its last value between 25 Hz frames - the same
-      // dropout-hold semantics the smoother already applies.
+      // Visual-only fast path: every N2/N4 arrival updates the FULL pose and
+      // its gyro rates, so the 60 Hz avatar extrapolates from the newest data
+      // instead of waiting up to 40 ms for the analytics tick and then
+      // interpolating toward a stale target. The anatomical gate matters:
+      // displayPose() refuses sensor-neutral axes, so an uncorrected
+      // quaternion never drives the directional rig (spec section 7).
       if (
-        sample.nodeId === this.motion.roles.upperArm &&
+        (sample.nodeId === this.motion.roles.upperArm ||
+          sample.nodeId === this.motion.roles.forearm) &&
         this.motion.anatomicalState === "calibrated"
       ) {
-        this.armAvatar.renderShoulder(this.motion.segmentDelta(sample.nodeId));
+        const arrivalMs = performance.now();
+        const pose = this.motion.displayPose(arrivalMs);
+        if (pose) this.armAvatar.renderPose(pose, arrivalMs);
       }
     }
     if (!sample.isModelStream) return;
@@ -836,7 +847,6 @@ class App {
         staleMs: ages.length ? Math.min(...ages) : null,
       });
     }
-    this.ui.renderMotion(this.lastMotionFrame);
     this.ui.renderReps(this.repAnalyzer.summary, this.repAnalyzer.current);
     this.ui.renderStreams(streamSnapshots);
     this.ui.drawCharts(now / 1000, healthBySource);

@@ -67,86 +67,158 @@ export function slerpQuaternion(from, to, amount) {
   };
 }
 
-function quaternionSeparationDeg(a, b) {
-  const qa = normalizeQuaternion(a);
-  const qb = normalizeQuaternion(b);
-  if (!qa || !qb) return 0;
-  const dot = Math.abs(qa.qx * qb.qx + qa.qy * qb.qy + qa.qz * qb.qz + qa.qw * qb.qw);
-  return 2 * Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+/** Never extrapolate further than one 25 Hz sample interval past the last pose. */
+const MAX_DISPLAY_LEAD_MS = 40;
+/** A gyro glitch must not throw the rig across the room (15 rad/s ~ 860 deg/s). */
+const MAX_OMEGA_RADPS = 15;
+
+function clampRotationVector(v) {
+  const magnitude = Math.hypot(v[0], v[1], v[2]);
+  if (!(magnitude > MAX_OMEGA_RADPS)) return [v[0], v[1], v[2]];
+  const scale = MAX_OMEGA_RADPS / magnitude;
+  return [v[0] * scale, v[1] * scale, v[2] * scale];
+}
+
+/** Rotation vector (rad/s) integrated over `seconds` -> unit quaternion. */
+function quatFromRotationVector(rotationVector, seconds) {
+  const [x, y, z] = rotationVector || [0, 0, 0];
+  const rate = Math.hypot(x, y, z);
+  const angle = rate * seconds;
+  if (!(angle > 1e-9)) return { ...IDENTITY_QUATERNION };
+  const scale = Math.sin(angle / 2) / rate;
+  return normalizeQuaternion({
+    qx: x * scale,
+    qy: y * scale,
+    qz: z * scale,
+    qw: Math.cos(angle / 2),
+  }) || { ...IDENTITY_QUATERNION };
+}
+
+/** Angular velocity (rad/s) taking `from` to `to`, in `from`'s parent frame. */
+function rotationVectorBetween(from, to, dtSeconds) {
+  const a = normalizeQuaternion(from);
+  let b = normalizeQuaternion(to);
+  if (!a || !b || !(dtSeconds > 0)) return [0, 0, 0];
+  const dot = a.qx * b.qx + a.qy * b.qy + a.qz * b.qz + a.qw * b.qw;
+  if (dot < 0) b = { qx: -b.qx, qy: -b.qy, qz: -b.qz, qw: -b.qw };
+  const delta = quatMultiply(b, quatConjugate(a));
+  let { qx: x, qy: y, qz: z, qw: w } = delta;
+  if (w < 0) {
+    x = -x;
+    y = -y;
+    z = -z;
+    w = -w;
+  }
+  const s = Math.hypot(x, y, z);
+  if (s < 1e-9) return [0, 0, 0];
+  const angle = 2 * Math.atan2(s, w);
+  return [(x / s) * (angle / dtSeconds), (y / s) * (angle / dtSeconds), (z / s) * (angle / dtSeconds)];
+}
+
+/** Accept both packet ({qx..}) and MotionEngine array ([w,x,y,z]) shapes. */
+function asQuaternion(value) {
+  if (Array.isArray(value)) {
+    return normalizeQuaternion({ qw: value[0], qx: value[1], qy: value[2], qz: value[3] });
+  }
+  return normalizeQuaternion(value);
 }
 
 /**
- * Time-aware display smoothing: a ~15 ms time constant while the pose is
- * clearly moving, relaxing up to 60 ms so sub-degree jitter is damped without
- * adding visible lag to real movement.
- */
-function smoothingAlpha(dtMs, errorDeg) {
-  const activity = Math.max(0, Math.min(1, errorDeg / 10));
-  const timeConstantMs = 15 + 45 * (1 - activity);
-  return 1 - Math.exp(-Math.max(0, Math.min(50, dtMs)) / timeConstantMs);
-}
-
-/**
- * Display-only adaptive pose interpolation. It never changes the MotionEngine
+ * Display-only predictive pose tracker. It never changes the MotionEngine
  * packet used by logging, rep analysis, or qualification.
+ *
+ * The BLE grid is 25 Hz (40 ms), so a freshly received pose is already up to
+ * 40 ms old by the time the next display frame runs. Instead of interpolating
+ * toward it (which adds lag), the display extrapolates from the newest target
+ * by its age using the BNO gyro's instantaneous angular rate: the rig shows
+ * the arm's estimated CURRENT orientation at every 60 Hz paint. Finite
+ * differences between targets are the fallback when no gyro rate is supplied
+ * (session replay, tests).
  */
 export class ArmPoseSmoother {
-  constructor({ dropoutHoldMs = 120 } = {}) {
+  constructor({ dropoutHoldMs = 120, maxLeadMs = MAX_DISPLAY_LEAD_MS } = {}) {
     this.dropoutHoldMs = dropoutHoldMs;
+    this.maxLeadMs = maxLeadMs;
     this.currentUpper = { ...IDENTITY_QUATERNION };
     this.targetUpper = { ...IDENTITY_QUATERNION };
     this.currentForearmRelative = { ...IDENTITY_QUATERNION };
     this.targetForearmRelative = { ...IDENTITY_QUATERNION };
+    this.omegaUpper = [0, 0, 0];
+    this.omegaForearm = [0, 0, 0];
+    this.targetAtMs = null;
     this.hasPose = false;
     this.inputState = "anatomical_calibration_required";
     this.lastLiveState = "live";
     this.lastValidAtMs = null;
-    this.lastSampleAtMs = null;
+  }
+
+  reset() {
+    this.currentUpper = { ...IDENTITY_QUATERNION };
+    this.targetUpper = { ...IDENTITY_QUATERNION };
+    this.currentForearmRelative = { ...IDENTITY_QUATERNION };
+    this.targetForearmRelative = { ...IDENTITY_QUATERNION };
+    this.omegaUpper = [0, 0, 0];
+    this.omegaForearm = [0, 0, 0];
+    this.targetAtMs = null;
+    this.hasPose = false;
+    this.lastValidAtMs = null;
+  }
+
+  /** Set targets, with explicit gyro rates when the caller has them. */
+  setTargets(upper, forearmRelative, nowMs, omegaUpper = null, omegaForearm = null) {
+    const dtS = this.targetAtMs === null ? 0 : (nowMs - this.targetAtMs) / 1000;
+    if (omegaUpper) {
+      this.omegaUpper = clampRotationVector(omegaUpper);
+    } else if (dtS > 0.004 && dtS < 0.25) {
+      this.omegaUpper = clampRotationVector(rotationVectorBetween(this.targetUpper, upper, dtS));
+    }
+    if (omegaForearm) {
+      this.omegaForearm = clampRotationVector(omegaForearm);
+    } else if (dtS > 0.004 && dtS < 0.25) {
+      this.omegaForearm = clampRotationVector(
+        rotationVectorBetween(this.targetForearmRelative, forearmRelative, dtS)
+      );
+    }
+    this.targetUpper = upper;
+    this.targetForearmRelative = forearmRelative;
+    this.targetAtMs = nowMs;
+    if (!this.hasPose) {
+      this.currentUpper = { ...upper };
+      this.currentForearmRelative = { ...forearmRelative };
+      this.hasPose = true;
+    }
   }
 
   pushFrame(frame, nowMs) {
     const pose = armPoseForMotion(frame);
     if (pose.state === "anatomical_calibration_required") {
       this.inputState = pose.state;
-      this.hasPose = false;
-      this.currentUpper = { ...IDENTITY_QUATERNION };
-      this.targetUpper = { ...IDENTITY_QUATERNION };
-      this.currentForearmRelative = { ...IDENTITY_QUATERNION };
-      this.targetForearmRelative = { ...IDENTITY_QUATERNION };
-      this.lastValidAtMs = null;
-      this.lastSampleAtMs = null;
+      this.reset();
       return;
     }
     if (pose.state === "tracking_unavailable") {
       this.inputState = pose.state;
       return;
     }
-    this.targetUpper = pose.shoulder;
-    this.targetForearmRelative = pose.forearmRelative;
+    this.setTargets(pose.shoulder, pose.forearmRelative, nowMs);
     this.inputState = pose.state;
     this.lastLiveState = pose.state;
     this.lastValidAtMs = nowMs;
-    if (!this.hasPose) {
-      this.currentUpper = { ...this.targetUpper };
-      this.currentForearmRelative = { ...this.targetForearmRelative };
-      this.hasPose = true;
-    }
+  }
+
+  /** Fast path: a freshly received pose plus gyro rates, no state change. */
+  pushPose(pose, nowMs) {
+    const upper = asQuaternion(pose.shoulder);
+    const forearmRelative = asQuaternion(pose.forearmRelative);
+    if (!upper || !forearmRelative) return;
+    this.setTargets(upper, forearmRelative, nowMs, pose.omegaShoulder, pose.omegaForearm);
   }
 
   /** Display-only fast path for a freshly received calibrated N4 sample. */
-  pushShoulder(quaternion) {
-    // MotionEngine.segmentDelta() reports [w, x, y, z]; packet-shape objects
-    // also arrive. Normalize both here so the fast path cannot silently no-op.
-    const packet = Array.isArray(quaternion)
-      ? { qw: quaternion[0], qx: quaternion[1], qy: quaternion[2], qz: quaternion[3] }
-      : quaternion;
-    const shoulder = normalizeQuaternion(packet);
+  pushShoulder(quaternion, nowMs = performance.now()) {
+    const shoulder = asQuaternion(quaternion);
     if (!shoulder) return;
-    this.targetUpper = shoulder;
-    if (!this.hasPose) {
-      this.currentUpper = { ...shoulder };
-      this.hasPose = true;
-    }
+    this.setTargets(shoulder, this.targetForearmRelative, nowMs);
   }
 
   sample(nowMs) {
@@ -157,20 +229,12 @@ export class ArmPoseSmoother {
         state: this.inputState,
       };
     }
-    if (this.lastSampleAtMs !== null) {
-      const dtMs = nowMs - this.lastSampleAtMs;
-      const upperError = quaternionSeparationDeg(this.currentUpper, this.targetUpper);
-      const upperAlpha = smoothingAlpha(dtMs, upperError);
-      this.currentUpper = slerpQuaternion(this.currentUpper, this.targetUpper, upperAlpha);
-      const forearmError = quaternionSeparationDeg(
-        this.currentForearmRelative, this.targetForearmRelative
-      );
-      const forearmAlpha = smoothingAlpha(dtMs, forearmError);
-      this.currentForearmRelative = slerpQuaternion(
-        this.currentForearmRelative, this.targetForearmRelative, forearmAlpha
-      );
-    }
-    this.lastSampleAtMs = nowMs;
+    const ageS = this.targetAtMs === null ? 0 : Math.max(0, nowMs - this.targetAtMs) / 1000;
+    const leadS = Math.min(ageS, this.maxLeadMs / 1000);
+    const upperAdvance = quatFromRotationVector(this.omegaUpper, leadS);
+    const forearmAdvance = quatFromRotationVector(this.omegaForearm, leadS);
+    this.currentUpper = quatMultiply(upperAdvance, this.targetUpper);
+    this.currentForearmRelative = quatMultiply(forearmAdvance, this.targetForearmRelative);
     let state = this.inputState;
     if (state === "tracking_unavailable" && this.lastValidAtMs !== null &&
         nowMs - this.lastValidAtMs <= this.dropoutHoldMs) {
@@ -300,6 +364,13 @@ export class ArmAvatar {
   renderShoulder(quaternion, nowMs = performance.now()) {
     if (!this.root || !quaternion) return;
     this.smoother.pushShoulder(quaternion, nowMs);
+    if (typeof requestAnimationFrame !== "function") this.paintAt(nowMs);
+  }
+
+  /** Full-pose fast path: both segments plus gyro rates from one arrival. */
+  renderPose(pose, nowMs = performance.now()) {
+    if (!this.root || !pose) return;
+    this.smoother.pushPose(pose, nowMs);
     if (typeof requestAnimationFrame !== "function") this.paintAt(nowMs);
   }
 
