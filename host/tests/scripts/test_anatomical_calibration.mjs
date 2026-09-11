@@ -67,6 +67,19 @@ assert.deepEqual(solveMountCorrection([0, 0, -1], [0, 0, -2]), {
   reason: "axes_not_independent",
 });
 assert.equal(solveMountCorrection([0, 0, -1], [0.2, 0, -0.98]).reason, "axes_not_independent");
+
+// Off-plane side raises must be rejected, not absorbed into the mount. A
+// raise 10 degrees forward of the coronal plane puts the observed axes 80
+// degrees apart (accepted: the acceptance criterion allows 10 degrees of
+// display error); 15 and 30 degrees land at 75 and 60 and would render
+// exactly that far off the instructed plane if accepted.
+const raisedAxis = (offPlaneDeg) => [
+  Math.sin((offPlaneDeg * Math.PI) / 180), 0, -Math.cos((offPlaneDeg * Math.PI) / 180),
+];
+assert.equal(solveMountCorrection(raisedAxis(10), FORWARD).ok, true);
+assert.equal(solveMountCorrection(raisedAxis(-10), FORWARD).ok, true);
+assert.equal(solveMountCorrection(raisedAxis(15), FORWARD).reason, "axes_not_independent");
+assert.equal(solveMountCorrection(raisedAxis(30), FORWARD).reason, "axes_not_independent");
 assert.equal(solveMountCorrection([Number.NaN, 0, 1], [1, 0, 0]).reason, "non_finite_axis");
 assert.equal(solveMountCorrection([0, 0, 0], [1, 0, 0]).reason, "zero_axis");
 

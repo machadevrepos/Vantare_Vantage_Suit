@@ -135,7 +135,12 @@ export class ArmPoseSmoother {
 
   /** Display-only fast path for a freshly received calibrated N4 sample. */
   pushShoulder(quaternion) {
-    const shoulder = normalizeQuaternion(quaternion);
+    // MotionEngine.segmentDelta() reports [w, x, y, z]; packet-shape objects
+    // also arrive. Normalize both here so the fast path cannot silently no-op.
+    const packet = Array.isArray(quaternion)
+      ? { qw: quaternion[0], qx: quaternion[1], qy: quaternion[2], qz: quaternion[3] }
+      : quaternion;
+    const shoulder = normalizeQuaternion(packet);
     if (!shoulder) return;
     this.targetUpper = shoulder;
     if (!this.hasPose) {

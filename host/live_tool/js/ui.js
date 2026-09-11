@@ -235,12 +235,12 @@ export class Ui {
     this.calibrationBadge.className = `badge ${badge.cls}`;
     this.calibrationNote.textContent = diagnostics.calibrationMessage || "";
 
-    // Ordered workflow: step 2 needs a neutral, step 3 needs the side capture,
-    // step 4 needs the full anatomical solve. Enablement follows the pose the
-    // wearer must hold next, not the click order.
+    // Ordered workflow: step 2 needs a neutral, step 3 needs the side capture.
+    // Step 4 (hinge) needs only the neutral pose - its math is independent of
+    // the anatomical solve, so it stays available from step 1's completion.
     this.setEnabled(this.sideCalibrateBtn, diagnostics.calibrationState === "calibrated");
     this.setEnabled(this.forwardCalibrateBtn, diagnostics.anatomicalState === "side_ready");
-    this.setEnabled(this.hingeBtn, diagnostics.anatomicalState === "calibrated");
+    this.setEnabled(this.hingeBtn, diagnostics.calibrationState === "calibrated");
     this.anatomicalNote.textContent = this.anatomicalSummary(diagnostics);
     this.axisFrameValue.textContent =
       diagnostics.axisFrame === "anatomical" ? "anatomical" : "sensor-neutral";

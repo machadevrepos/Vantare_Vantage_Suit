@@ -115,7 +115,12 @@ These are real and currently unresolved. They are also carried in-band in
    Elbow flexion is largely protected (drift common to both sensors cancels
    exactly out of the relative rotation; there is a test for this). Absolute
    upper-arm heading is not protected. `diagnostics.yawDriftHintDeg` exposes the
-   observable part; it is reported, never silently corrected.
+   observable part; it is reported, never silently corrected. The anatomical
+   avatar makes this limit **visible**: it renders absolute segment
+   orientations, and the measured drift concentrates in the N2-vs-N4
+   inter-sensor offset, so expect the forearm to wander (~10°/min in the
+   05:59 stillness test) while flexion stays protected. Recalibrate when
+   `diagnostics.recalibrationRecommended` flags.
 
 4. **~~Elbow rotation is unsigned.~~ RESOLVED** by the hinge calibration: run a
    range calibration (a few slow full reps) and `elbow_flexion_deg` becomes a
@@ -296,24 +301,56 @@ arm, `+Z` forward. Directional targets: side axis `[0, 0, -1]`, forward axis
 
 1. **Neutral** — as before (~1.5 s of stillness). Starting a new neutral
    calibration invalidates every later stage.
-2. **Right-side raise** — straight arm held ~90° out to the right, still, for
-   the 1 s capture window.
-3. **Forward raise** — straight arm held ~90° forward. After this capture both
-   mount corrections are solved and installed atomically: a failure on either
-   node leaves `mountCorrection` empty and preserves the last completed stage.
-4. **Elbow hinge** — unchanged; still required for signed flexion and rep
-   verdicts, no longer required for the avatar.
+2. **Right-side raise** — straight arm held ~90° out to the right, palm down,
+   still, for the 1 s capture window.
+3. **Forward raise** — straight arm held ~90° forward, palm down. After this
+   capture both mount corrections are solved and installed atomically: a
+   failure on either node leaves `mountCorrection` empty and preserves the
+   last completed stage.
+4. **Elbow hinge** — needs only the neutral pose (its math is independent of
+   the anatomical solve); still required for signed flexion and rep verdicts,
+   no longer required for the avatar.
 
-**Capture validation thresholds** (a pose outside any of these is rejected
-with a specific reason; the window restarts or the attempt fails after 15 s):
+**Capture validation thresholds.** A transient fault — motion, a low raise,
+a bent elbow, unsynchronized data — restarts the 1 s capture window and tells
+the wearer what to fix; only the 15 s timeout or a solver-level failure ends
+the attempt, and the timeout message carries the reason.
 
-| Check | Threshold |
-|---|---|
-| Stillness | gyro < 0.2 rad/s, orientation spread ≤ 3° |
-| Raise magnitude (per node) | 60–120° from neutral |
-| Segment mismatch (straight elbow) | \|N4 angle − N2 angle\| ≤ 15° |
-| Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms |
-| Solver | axes 60–120° apart, mount matrix finite, orthonormal, det ≈ +1 |
+| Check | Threshold | On fault |
+|---|---|---|
+| Stillness | gyro < 0.2 rad/s, orientation spread ≤ 3° | restart window |
+| Raise magnitude (per node) | 60–120° from neutral | restart window |
+| Elbow straight (mount-independent) | elbow-relative rotation ≤ 10° | restart window |
+| Segment mismatch (secondary) | \|N4 angle − N2 angle\| ≤ 15° | restart window |
+| Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms | restart window |
+| Solver | axes 80–100° apart, matrix finite, orthonormal, det ≈ +1 | fail attempt |
+
+Two of these deserve their reasoning recorded (2026-09-11 review):
+
+- **The elbow-straight gate works on the elbow-relative rotation**
+  `conj(neutral) · conj(q_upper) · q_fore`, not on rotation magnitudes. The
+  same unknown mount rotation appears on both sides, so the quantity is
+  mount-independent and reads the true bend exactly — while per-segment
+  *magnitudes* barely move when an elbow bends mid-raise (a 45° bend shifted
+  them by only a few degrees in our fault models). The magnitude comparison
+  is kept as a secondary gate for asymmetric raises.
+- **The 80–100° axis-separation window matches the acceptance criterion**
+  (≤10° of display error). A side raise 15° forward of the coronal plane —
+  how most people naturally raise sideways — puts the observed axes 75°
+  apart; the old 60–120° window accepted it and rendered 15° off, with the
+  whole error landing in the mount because TRIAD treats the side axis as
+  exact and only orthogonalizes the forward one.
+
+**What capture validation still cannot see: whole-arm twist.** If the arm
+rotates about its own long axis during a raise (palm turning up), N4 and N2
+rotate together: elbow-relative 0°, mismatch 0°, every gate passes, and the
+captured axis is contaminated. The solver's determinant/orthogonality check
+cannot catch it — TRIAD always produces a proper rotation. The designed
+remedy is a **gravity-vector cross-check**: the BNO already streams
+`gravity_x/y/z`, which is drift-free and exposes twist, mirrored poses and
+off-plane raises independently of the quaternion path. Not implemented yet;
+until then the UI pins the palm orientation and the acceptance run must
+watch for it.
 
 **Diagnostics added:** `anatomicalState`
 (`none / side_capturing / side_ready / forward_capturing / calibrated / failed`),

@@ -90,6 +90,8 @@ export const MOTION_DEFAULTS = {
   anatomicalMinAngleDeg: 60,
   anatomicalMaxAngleDeg: 120,
   anatomicalMaxSegmentMismatchDeg: 15,
+  /** Mount-independent elbow-relative rotation allowed during a capture. */
+  anatomicalMaxElbowRelDeg: 10,
   anatomicalTimeoutMs: 15000,
 
   // --- hinge (range) calibration: a few slow reps to find the joint axis ---
@@ -605,13 +607,14 @@ export class MotionEngine {
       kind === "side" ? ANATOMICAL_STATE.SIDE_CAPTURING : ANATOMICAL_STATE.FORWARD_CAPTURING;
     this.anatomicalMessage =
       kind === "side"
-        ? "Hold your straight arm 90 degrees to your right side."
-        : "Hold your straight arm 90 degrees forward.";
+        ? "Hold your straight arm 90 degrees to your right side, palm down."
+        : "Hold your straight arm 90 degrees forward, palm down.";
     this.anatomicalCapture = {
       kind,
       startedAtMs: nowMs,
       windowStartedAtMs: nowMs,
       samples: new Map(this.requiredNodes.map((id) => [id, []])),
+      rawSamples: new Map(this.requiredNodes.map((id) => [id, []])),
       lastRejectReason: null,
     };
   }
@@ -620,6 +623,7 @@ export class MotionEngine {
     const capture = this.anatomicalCapture;
     if (!capture) return;
     for (const samples of capture.samples.values()) samples.length = 0;
+    for (const samples of capture.rawSamples.values()) samples.length = 0;
     capture.windowStartedAtMs = nowMs;
     capture.lastRejectReason = reason;
     this.anatomicalMessage = message;
@@ -638,6 +642,7 @@ export class MotionEngine {
       return;
     }
     capture.samples.get(nodeId).push(quatMultiply(quatConjugate(reference), quat));
+    capture.rawSamples.get(nodeId).push(quat);
   }
 
   failAnatomicalCalibration(message) {
@@ -702,19 +707,47 @@ export class MotionEngine {
         angleDeg > this.options.anatomicalMaxAngleDeg ||
         !axis
       ) {
-        this.failAnatomicalCalibration(
-          `N${nodeId} raise must be ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees.`
+        // A transient pass-through (e.g. pausing low on the way up) must not
+        // kill the attempt: discard the window and let the wearer keep
+        // holding. The timeout carries the reason if it never settles.
+        this.restartAnatomicalHold(
+          nowMs,
+          `N${nodeId} raise must be ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees.`,
+          `N${nodeId} raise must be ${this.options.anatomicalMinAngleDeg}-${this.options.anatomicalMaxAngleDeg} degrees`
         );
         return;
       }
-      captured.set(nodeId, { mean, axis, angleDeg, spreadDeg });
+      const rawMean = quatAverage(capture.rawSamples.get(nodeId));
+      captured.set(nodeId, { mean, rawMean, axis, angleDeg, spreadDeg });
     }
 
     const angles = this.requiredNodes.map((id) => captured.get(id).angleDeg);
     const mismatchDeg = Math.abs(angles[0] - angles[1]);
     if (mismatchDeg > this.options.anatomicalMaxSegmentMismatchDeg) {
-      this.failAnatomicalCalibration(
-        `Keep the elbow straight; segment raises differed by ${mismatchDeg.toFixed(1)} degrees.`
+      const message = `Keep the elbow straight; segment raises differed by ${mismatchDeg.toFixed(1)} degrees.`;
+      this.restartAnatomicalHold(nowMs, message, message);
+      return;
+    }
+
+    // Rotation MAGNITUDES cannot see a bent elbow when both segments still
+    // raise ~90 degrees (a 45-degree bend shifts them by only a few degrees).
+    // conj(neutral) * conj(q_upper) * q_fore is the elbow-relative rotation:
+    // the same unknown mount rotation appears on both sides, so its angle is
+    // mount-independent and reads the true bend exactly.
+    const elbowRelative = quatMultiply(
+      quatConjugate(this.neutralElbow),
+      quatMultiply(
+        quatConjugate(captured.get(this.roles.upperArm).rawMean),
+        captured.get(this.roles.forearm).rawMean
+      )
+    );
+    const elbowRelDeg = quatAngleDeg(elbowRelative);
+    if (elbowRelDeg !== null && elbowRelDeg > this.options.anatomicalMaxElbowRelDeg) {
+      const message = "Keep the elbow straight - hold the raise without bending it.";
+      this.restartAnatomicalHold(
+        nowMs,
+        message,
+        `${message} (elbow ${elbowRelDeg.toFixed(0)} degrees)`
       );
       return;
     }
@@ -738,7 +771,7 @@ export class MotionEngine {
       if (!result.ok) {
         const message =
           result.reason === "axes_not_independent"
-            ? "Side and forward poses were not independent; repeat the directional captures."
+            ? "The raises were not independent - hold the side raise straight out to the side and the forward raise straight ahead."
             : `Could not solve anatomical mapping for N${nodeId} (${result.reason}).`;
         this.failAnatomicalCalibration(message);
         return;

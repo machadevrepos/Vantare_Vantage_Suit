@@ -111,8 +111,11 @@ function failure(reason) {
 export function solveMountCorrection(sourceSide, sourceForward, {
   targetSide = [0, 0, -1],
   targetForward = [1, 0, 0],
-  minSeparationDeg = 60,
-  maxSeparationDeg = 120,
+  // Tight enough that an off-plane raise cannot be absorbed into the mount:
+  // the acceptance criterion allows 10 degrees of display error, so the two
+  // observed axes must sit within 10 degrees of a true right angle.
+  minSeparationDeg = 80,
+  maxSeparationDeg = 100,
 } = {}) {
   if (![sourceSide, sourceForward, targetSide, targetForward].every(finiteVector)) {
     return failure("non_finite_axis");

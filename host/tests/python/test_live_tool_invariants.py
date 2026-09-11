@@ -262,11 +262,26 @@ class LiveToolInvariants(unittest.TestCase):
         self.assertIn('event.kind === "anatomical_complete"', MAIN)
         self.assertIn('event.kind === "anatomical_failed"', MAIN)
 
-        # UI renders the ordered enablement and the honest axis frame.
+        # UI renders the ordered enablement and the honest axis frame. The
+        # hinge needs only the neutral pose - its math is independent of the
+        # anatomical solve, so gating it behind step 3 was pure friction
+        # (review finding, 2026-09-11).
         self.assertIn('anatomicalState === "side_ready"', UI)
-        self.assertIn('anatomicalState === "calibrated"', UI)
+        self.assertIn(
+            'this.setEnabled(this.hingeBtn, diagnostics.calibrationState === "calibrated");',
+            UI,
+        )
         self.assertIn("axisFrame", UI)
         self.assertIn("anatomicalMessage", UI)
+
+    def test_avatar_fast_path_is_anatomically_gated(self):
+        """The N4 display fast path consumes segmentDelta(), which falls back
+        to the raw sensor-neutral delta before calibration; the call must be
+        gated so an uncorrected quaternion never drives the directional rig,
+        and the array-format delta must actually reach the smoother (it
+        silently no-oped against packet-shape objects)."""
+        self.assertIn('this.motion.anatomicalState === "calibrated"', MAIN)
+        self.assertIn("renderShoulder(this.motion.segmentDelta(sample.nodeId));", MAIN)
 
     def test_avatar_note_requires_the_three_pose_workflow(self):
         """Directional tracking claims must be gated on the workflow in the
@@ -276,7 +291,7 @@ class LiveToolInvariants(unittest.TestCase):
     def test_live_tool_build_bumped_for_anatomical_workflow(self):
         """A stale cached module graph silently runs the old two-pose UI; the
         visible build string must move with this workflow change."""
-        self.assertIn('LIVE_TOOL_BUILD = "2026-09-10.17"', INFERENCE)
+        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.18"', INFERENCE)
 
     # --------------------------------------------------- anatomical replay
 

@@ -509,11 +509,18 @@ class App {
     // streaming alone, with no inference session and no model loaded.
     if (sample.sensorId === SENSOR.BNO) {
       this.motion.pushSample(sample.nodeId, values, sample.mappedMs / 1000);
-      // Visual-only fast path: queue the latest calibrated N4 target here so
-      // the 60 Hz avatar loop can consume it on the next display frame instead
-      // of waiting up to 40 ms for the analytics tick. The smoother prevents
-      // direct sample-to-CSS jumps; logging and rep analysis remain at 25 Hz.
-      if (sample.nodeId === this.motion.roles.upperArm) {
+      // Visual-only fast path: queue the latest ANATOMICALLY CALIBRATED N4
+      // target so the 60 Hz avatar loop consumes it on the next display frame
+      // instead of waiting up to 40 ms for the analytics tick. The anatomical
+      // gate matters: segmentDelta() falls back to the raw sensor-neutral
+      // delta before calibration, and an uncorrected quaternion must never
+      // drive the directional rig (spec section 7). The forearm-relative
+      // target simply holds its last value between 25 Hz frames - the same
+      // dropout-hold semantics the smoother already applies.
+      if (
+        sample.nodeId === this.motion.roles.upperArm &&
+        this.motion.anatomicalState === "calibrated"
+      ) {
         this.armAvatar.renderShoulder(this.motion.segmentDelta(sample.nodeId));
       }
     }

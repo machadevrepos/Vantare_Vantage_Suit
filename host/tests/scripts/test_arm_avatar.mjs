@@ -212,6 +212,22 @@ assert.equal(
 const identityMatrix = "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)";
 assert.equal(styleValues.get("--forearm-matrix"), identityMatrix);
 
+// MotionEngine.segmentDelta() reports [w, x, y, z]; the fast path must accept
+// that shape. It silently no-oped when it only understood packet objects
+// (review finding, 2026-09-11), so the latency path never ran.
+const arrayStyle = new Map();
+const arrayAvatar = new ArmAvatar({
+  dataset: {},
+  querySelector: () => null,
+  style: { setProperty: (name, value) => arrayStyle.set(name, value) },
+});
+arrayAvatar.renderShoulder([Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
+assert.equal(
+  arrayStyle.get("--upper-matrix"),
+  "matrix3d(0,1,0,0,-1,0,0,0,0,0,1,0,0,0,0,1)",
+  "array-format quaternion must drive the fast path",
+);
+
 avatar.render(anatomicalFrame(qIdentity, qMul(qIdentity, bend)), 1000);
 avatar.paintAt(1000);
 const forearmMatrix = styleValues.get("--forearm-matrix");
