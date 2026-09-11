@@ -90,8 +90,6 @@ export const MOTION_DEFAULTS = {
   anatomicalMinAngleDeg: 60,
   anatomicalMaxAngleDeg: 120,
   anatomicalMaxSegmentMismatchDeg: 15,
-  /** Mount-independent elbow-relative rotation allowed during a capture. */
-  anatomicalMaxElbowRelDeg: 10,
   anatomicalTimeoutMs: 15000,
 
   // --- hinge (range) calibration: a few slow reps to find the joint axis ---
@@ -415,7 +413,7 @@ export class MotionEngine {
     this.driftDeg = 0;
     this.stillSinceMs = null;
     this.state = CAL_STATE.CAPTURING;
-    this.calibrationMessage = "Hold the neutral pose still.";
+    this.calibrationMessage = "Stand relaxed - arms hanging, palms facing your thighs.";
     this.capture = {
       startedAtMs: nowMs,
       /** Restarted whenever motion is seen, so the hold must be contiguous. */
@@ -605,16 +603,20 @@ export class MotionEngine {
   startAnatomicalCapture(kind, nowMs) {
     this.anatomicalState =
       kind === "side" ? ANATOMICAL_STATE.SIDE_CAPTURING : ANATOMICAL_STATE.FORWARD_CAPTURING;
+    // The palm/thumb cues are the no-twist end states: from a neutral with
+    // the palms facing the thighs, a pure side raise lands palm down and a
+    // pure forward raise lands thumb up. Asking for any other orientation
+    // forces a forearm rotation into the capture, which trips the straight-
+    // elbow gates (2026-09-11 field session).
     this.anatomicalMessage =
       kind === "side"
         ? "Hold your straight arm 90 degrees to your right side, palm down."
-        : "Hold your straight arm 90 degrees forward, palm down.";
+        : "Hold your straight arm 90 degrees forward, thumb up.";
     this.anatomicalCapture = {
       kind,
       startedAtMs: nowMs,
       windowStartedAtMs: nowMs,
       samples: new Map(this.requiredNodes.map((id) => [id, []])),
-      rawSamples: new Map(this.requiredNodes.map((id) => [id, []])),
       lastRejectReason: null,
     };
   }
@@ -622,8 +624,17 @@ export class MotionEngine {
   restartAnatomicalHold(nowMs, message, reason = null) {
     const capture = this.anatomicalCapture;
     if (!capture) return;
+    // Audit every rejection (spec section 9), but only when the reason
+    // changes: a continuously-moving pose restarts on every sample and would
+    // flood the Tier-1 event log with duplicates.
+    if (reason !== capture.lastRejectReason) {
+      this.onEvent({
+        kind: "anatomical_hold_restarted",
+        stage: capture.kind,
+        reason: reason ?? message,
+      });
+    }
     for (const samples of capture.samples.values()) samples.length = 0;
-    for (const samples of capture.rawSamples.values()) samples.length = 0;
     capture.windowStartedAtMs = nowMs;
     capture.lastRejectReason = reason;
     this.anatomicalMessage = message;
@@ -642,7 +653,6 @@ export class MotionEngine {
       return;
     }
     capture.samples.get(nodeId).push(quatMultiply(quatConjugate(reference), quat));
-    capture.rawSamples.get(nodeId).push(quat);
   }
 
   failAnatomicalCalibration(message) {
@@ -660,7 +670,7 @@ export class MotionEngine {
     if (nowMs - capture.startedAtMs > this.options.anatomicalTimeoutMs) {
       this.failAnatomicalCalibration(
         capture.lastRejectReason
-          ? `Timed out: ${capture.lastRejectReason}.`
+          ? `Timed out: ${capture.lastRejectReason.replace(/\.$/, "")}.`
           : `Timed out waiting for the ${capture.kind} pose.`
       );
       return;
@@ -717,8 +727,7 @@ export class MotionEngine {
         );
         return;
       }
-      const rawMean = quatAverage(capture.rawSamples.get(nodeId));
-      captured.set(nodeId, { mean, rawMean, axis, angleDeg, spreadDeg });
+      captured.set(nodeId, { mean, axis, angleDeg, spreadDeg });
     }
 
     const angles = this.requiredNodes.map((id) => captured.get(id).angleDeg);
@@ -729,28 +738,16 @@ export class MotionEngine {
       return;
     }
 
-    // Rotation MAGNITUDES cannot see a bent elbow when both segments still
-    // raise ~90 degrees (a 45-degree bend shifts them by only a few degrees).
-    // conj(neutral) * conj(q_upper) * q_fore is the elbow-relative rotation:
-    // the same unknown mount rotation appears on both sides, so its angle is
-    // mount-independent and reads the true bend exactly.
-    const elbowRelative = quatMultiply(
-      quatConjugate(this.neutralElbow),
-      quatMultiply(
-        quatConjugate(captured.get(this.roles.upperArm).rawMean),
-        captured.get(this.roles.forearm).rawMean
-      )
-    );
-    const elbowRelDeg = quatAngleDeg(elbowRelative);
-    if (elbowRelDeg !== null && elbowRelDeg > this.options.anatomicalMaxElbowRelDeg) {
-      const message = "Keep the elbow straight - hold the raise without bending it.";
-      this.restartAnatomicalHold(
-        nowMs,
-        message,
-        `${message} (elbow ${elbowRelDeg.toFixed(0)} degrees)`
-      );
-      return;
-    }
+    // NOTE: do NOT gate this capture on an inter-sensor quantity such as an
+    // elbow-relative rotation conj(q_upper)*q_fore. Mount rotations cancel
+    // out of it, but each BNO085 Game Rotation Vector carries its own
+    // arbitrary power-up heading, and once the upper arm rotates the N2-vs-N4
+    // heading offset leaks straight into the product (~5 degrees of error per
+    // 5 degrees of heading offset on a perfectly straight arm). That gate
+    // rejected real straight-arm raises in the field and could never pass
+    // (session 2026-09-11T04:44). The magnitude and axis-separation gates
+    // above are conjugation-invariant and carry the straight-elbow coverage;
+    // twist detection needs the gravity vector instead.
 
     if (capture.kind === "side") {
       this.anatomicalSide = captured;

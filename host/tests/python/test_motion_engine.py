@@ -106,6 +106,19 @@ MOUNTS = {
     AUX: q_axis_angle((0.44, 0.44, -0.78), 21.0),
 }
 
+# Each Game Rotation Vector powers up with an arbitrary heading. These are
+# explicit, large, per-sensor reference-frame offsets applied on the LEFT of
+# the reported quaternion (the reported frame is the true world frame rotated
+# by the sensor's own heading). They are NOT part of the default scenarios:
+# an engine quantity that cancels them (single shared world frame) but not
+# the headings is exactly the bug class the anatomical scenarios must never
+# reintroduce - see scenario_anatomical_with_heading_offsets.
+HEADINGS = {
+    UPPER_ARM: q_axis_angle((0.0, 0.0, 1.0), 37.0),
+    FOREARM: q_axis_angle((0.0, 0.0, 1.0), -112.0),
+    AUX: q_axis_angle((0.0, 0.0, 1.0), 71.0),
+}
+
 # Arbitrary neutral body pose, and an arbitrary world yaw offset per sensor to
 # stand in for the Game Rotation Vector's unreferenced heading.
 NEUTRAL = {
@@ -242,6 +255,7 @@ class MotionEngineTest(unittest.TestCase):
             MotionEngineTest.scenario_anatomical_rejects_bent_elbow(),
             MotionEngineTest.scenario_anatomical_rejects_bent_elbow_hidden(),
             MotionEngineTest.scenario_anatomical_rejects_offplane_side_raise(),
+            MotionEngineTest.scenario_anatomical_with_heading_offsets(),
             MotionEngineTest.scenario_anatomical_rejects_sync_loss(),
             MotionEngineTest.scenario_anatomical_reset(),
         ]
@@ -535,23 +549,60 @@ class MotionEngineTest(unittest.TestCase):
         return builder.build()
 
     @staticmethod
-    def scenario_anatomical_rejects_bent_elbow_hidden():
-        """A 45-degree elbow bend during the side raise that the per-segment
-        magnitude gate cannot see: both segments still read ~90 degrees of
-        raise (review finding, 2026-09-11). The elbow-relative rotation
-        conj(neutral) * conj(q_u) * q_f is mount-independent by construction
-        and must catch it."""
-        builder = MotionEngineTest.calibrated_builder(
-            "anatomical_bent_hidden", {"anatomicalTimeoutMs": 1800}
+    def headed(node, world):
+        """Report a world pose through node's own GRV heading offset."""
+        return q_mul(HEADINGS[node], world)
+
+    @staticmethod
+    def hold_headed(builder, pose, seconds):
+        builder.hold(
+            {n: MotionEngineTest.headed(n, pose[n]) for n in (UPPER_ARM, FOREARM, AUX)},
+            seconds,
         )
-        upper_world = q_mul(NEUTRAL[UPPER_ARM], q_axis_angle((0.2, -0.3, 0.93), 90.0))
+
+    @staticmethod
+    def scenario_anatomical_rejects_bent_elbow_hidden():
+        """A 45-degree elbow bend during the side raise is invisible to the
+        magnitude gates (both segments still read ~90 degrees of raise), but
+        it contaminates the observed side axis, so the forward solve sees
+        axes far from a right angle and must reject. An inter-sensor
+        elbow-relative gate cannot provide this coverage: GRV heading
+        offsets leak into conj(qu)*qf once the upper arm rotates."""
+        builder = MotionEngineTest.calibrated_builder(
+            "anatomical_bent_hidden", {"anatomicalTimeoutMs": 8000}
+        )
+        upper_world = q_mul(q_axis_angle((0.2, -0.3, 0.93), 90.0), NEUTRAL[UPPER_ARM])
         elbow_offset = q_mul(q_conj(NEUTRAL[UPPER_ARM]), NEUTRAL[FOREARM])
         fore_world = q_mul(
             q_mul(upper_world, elbow_offset), q_axis_angle((0.0, 1.0, 0.0), 45.0)
         )
         builder.begin_side()
-        builder.hold({UPPER_ARM: upper_world, FOREARM: fore_world, AUX: NEUTRAL[AUX]}, 2.2)
+        builder.hold({UPPER_ARM: upper_world, FOREARM: fore_world, AUX: NEUTRAL[AUX]}, 1.2)
+        builder.begin_forward()
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
         builder.frame("after_rejection")
+        return builder.build()
+
+    @staticmethod
+    def scenario_anatomical_with_heading_offsets():
+        """The 2026-09-11 field failure: every real GRV carries its own
+        power-up heading, and a straight side raise would not calibrate.
+        Headings of +37/-112/+71 degrees must not block the capture, the
+        solve must map each node's observed axes onto the anatomical targets
+        exactly, and the axis separation must stay near a right angle."""
+        builder = MotionFixtureBuilder("anatomical_headings")
+        neutral = {n: MotionEngineTest.headed(n, NEUTRAL[n]) for n in NEUTRAL}
+        builder.hold(neutral, 0.4)
+        builder.begin_calibration()
+        builder.hold(neutral, 2.0)
+        side = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
+        forward = MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0)
+        builder.begin_side()
+        MotionEngineTest.hold_headed(builder, side, 1.2)
+        builder.begin_forward()
+        MotionEngineTest.hold_headed(builder, forward, 1.2)
+        MotionEngineTest.hold_headed(builder, side, 0.3)
+        builder.frame("side_again")
         return builder.build()
 
     @staticmethod
@@ -753,6 +804,14 @@ class MotionEngineTest(unittest.TestCase):
         scenario = self.results["anatomical_under_raise"]
         self.assertEqual(scenario["anatomicalState"], "failed")
         self.assertIn("60-120", scenario["anatomicalMessage"])
+        self.assertNotIn("..", scenario["anatomicalMessage"], "doubled period")
+        # Rejections must be auditable (spec section 9): the restarts carry
+        # the reason, not just the final timeout.
+        restarted = [
+            e for e in scenario["events"] if e["kind"] == "anatomical_hold_restarted"
+        ]
+        self.assertTrue(restarted, "capture restarts must be logged")
+        self.assertTrue(any("60-120" in (e.get("reason") or "") for e in restarted))
 
     def test_directional_capture_rejects_bent_elbow(self):
         scenario = self.results["anatomical_bent"]
@@ -760,12 +819,37 @@ class MotionEngineTest(unittest.TestCase):
         self.assertIn("elbow straight", scenario["anatomicalMessage"].lower())
 
     def test_directional_capture_catches_bent_elbow_the_magnitude_gate_misses(self):
-        """45 degrees of bend with both raise magnitudes still ~90: only the
-        mount-independent elbow-relative rotation sees this fault."""
+        """45 degrees of bend with both raise magnitudes still ~90 passes the
+        magnitude gates, but the contaminated side axis fails the 80-100
+        degree separation check at the forward solve."""
         scenario = self.results["anatomical_bent_hidden"]
-        self.assertEqual(scenario["anatomicalState"], "failed")
-        self.assertIn("elbow straight", scenario["anatomicalMessage"].lower())
+        self.assertEqual(scenario["anatomicalState"], "failed", scenario["anatomicalMessage"])
+        self.assertIn("independent", scenario["anatomicalMessage"].lower())
         self.assertEqual(scenario["mountCorrections"], {})
+
+    def test_anatomical_capture_completes_despite_heading_offsets(self):
+        """GRV headings do NOT cancel in inter-sensor products, so every
+        capture gate must be conjugation-invariant. Headings of
+        +37/-112/+71 degrees must not block calibration, the solve must map
+        the observed axes onto the anatomical targets exactly, and the
+        reported axis separation must stay near 90 degrees."""
+        scenario = self.results["anatomical_headings"]
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        complete = next(
+            e for e in scenario["events"] if e["kind"] == "anatomical_complete"
+        )
+        for node_id, quality in complete["quality"]["nodes"].items():
+            self.assertGreater(
+                quality["axisSeparationDeg"], 85.0, f"N{node_id} separation"
+            )
+            self.assertLess(quality["axisSeparationDeg"], 95.0, f"N{node_id} separation")
+        frame = self.frames("anatomical_headings")["side_again"]["frame"]
+        target = q_axis_angle((0.0, 0.0, -1.0), 90.0)
+        for field in ("upper_arm_orientation", "forearm_orientation"):
+            measured = packet_to_q(frame[field])
+            error = q_angle_deg(q_mul(q_conj(target), measured))
+            self.assertLess(error, 1e-3, f"{field} error under heading offsets {error}")
+        self.assertEqual(frame["diagnostics"]["axisFrame"], "anatomical")
 
     def test_directional_capture_rejects_unsynchronized_nodes(self):
         scenario = self.results["anatomical_sync"]
