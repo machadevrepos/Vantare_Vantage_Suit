@@ -655,13 +655,13 @@ export class MotionEngine {
     capture.samples.get(nodeId).push(quatMultiply(quatConjugate(reference), quat));
   }
 
-  failAnatomicalCalibration(message) {
+  failAnatomicalCalibration(message, details = null) {
     this.anatomicalState = ANATOMICAL_STATE.FAILED;
     this.anatomicalMessage = message;
     this.anatomicalCapture = null;
     this.mountCorrection.clear();
     this.anatomicalQuality = null;
-    this.onEvent({ kind: "anatomical_failed", reason: message });
+    this.onEvent({ kind: "anatomical_failed", reason: message, ...(details ?? {}) });
   }
 
   updateAnatomicalCalibration(nowMs = performance.now()) {
@@ -766,11 +766,28 @@ export class MotionEngine {
     for (const nodeId of this.requiredNodes) {
       const result = solveMountCorrection(this.anatomicalSide.get(nodeId).axis, captured.get(nodeId).axis);
       if (!result.ok) {
-        const message =
-          result.reason === "axes_not_independent"
-            ? "The raises were not independent - hold the side raise straight out to the side and the forward raise straight ahead."
-            : `Could not solve anatomical mapping for N${nodeId} (${result.reason}).`;
-        this.failAnatomicalCalibration(message);
+        if (result.reason !== "axes_not_independent") {
+          this.failAnatomicalCalibration(
+            `Could not solve anatomical mapping for N${nodeId} (${result.reason}).`
+          );
+          return;
+        }
+        // Report the MEASURED separation: without it a field log shows a
+        // rejection with no way to tell a scapular-plane raise from two
+        // raises in the same direction (05:14 session had no number).
+        const separationsDeg = {};
+        for (const id of this.requiredNodes) {
+          const a = this.anatomicalSide.get(id).axis;
+          const b = captured.get(id).axis;
+          const dot = Math.max(-1, Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2]));
+          separationsDeg[id] = Math.acos(dot) * 180 / Math.PI;
+        }
+        const measured = separationsDeg[this.roles.upperArm].toFixed(0);
+        this.failAnatomicalCalibration(
+          `The raises measured ${measured} degrees apart - they were not independent enough ` +
+            "(need 60-120). Raise straight out to the side, then straight ahead.",
+          { separationsDeg }
+        );
         return;
       }
       solved.set(nodeId, result.mount);

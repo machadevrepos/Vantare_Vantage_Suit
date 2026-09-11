@@ -563,24 +563,32 @@ class MotionEngineTest(unittest.TestCase):
     @staticmethod
     def scenario_anatomical_rejects_bent_elbow_hidden():
         """A 45-degree elbow bend during the side raise is invisible to the
-        magnitude gates (both segments still read ~90 degrees of raise), but
-        it contaminates the observed side axis, so the forward solve sees
-        axes far from a right angle and must reject. An inter-sensor
-        elbow-relative gate cannot provide this coverage: GRV heading
-        offsets leak into conj(qu)*qf once the upper arm rotates."""
+        magnitude gates (both segments still read ~90 degrees of raise) and
+        presents the same geometry as a natural scapular-plane raise, so the
+        60-120 solve window accepts it - a deliberately documented trade-off
+        from the 2026-09-11 field sessions: a calibration that always fails
+        is worse than one the wearer can complete. The upper arm's mount
+        stays exact; the forearm's mount absorbs the bend. Closing this gap
+        needs the gravity-vector cross-check, not a tighter window."""
         builder = MotionEngineTest.calibrated_builder(
             "anatomical_bent_hidden", {"anatomicalTimeoutMs": 8000}
         )
-        upper_world = q_mul(q_axis_angle((0.2, -0.3, 0.93), 90.0), NEUTRAL[UPPER_ARM])
+        raise_axis = (0.2, -0.3, 0.93)
+        upper_world = q_mul(q_axis_angle(raise_axis, 90.0), NEUTRAL[UPPER_ARM])
         elbow_offset = q_mul(q_conj(NEUTRAL[UPPER_ARM]), NEUTRAL[FOREARM])
         fore_world = q_mul(
             q_mul(upper_world, elbow_offset), q_axis_angle((0.0, 1.0, 0.0), 45.0)
         )
+        bent = {UPPER_ARM: upper_world, FOREARM: fore_world, AUX: NEUTRAL[AUX]}
         builder.begin_side()
-        builder.hold({UPPER_ARM: upper_world, FOREARM: fore_world, AUX: NEUTRAL[AUX]}, 1.2)
+        builder.hold(bent, 1.2)
         builder.begin_forward()
         builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
-        builder.frame("after_rejection")
+        # Repeat the STRAIGHT side raise: the corrected upper segment must
+        # read the anatomical target exactly (its axes were never bent); the
+        # forearm reads off-target because its mount absorbed the bend.
+        builder.hold(MotionEngineTest.rigid_arm_pose(raise_axis, 90.0), 0.3)
+        builder.frame("straight_check")
         return builder.build()
 
     @staticmethod
@@ -607,16 +615,16 @@ class MotionEngineTest(unittest.TestCase):
 
     @staticmethod
     def scenario_anatomical_rejects_offplane_side_raise():
-        """A side raise 30 degrees forward of the coronal plane puts the two
-        observed axes 60 degrees apart: inside the old 60-120 window, outside
-        the tightened 80-100 one. Acceptance (spec 11.3) allows 10 degrees of
-        display error; accepting this fault would render 30 degrees off."""
+        """A side raise 40 degrees forward of the coronal plane puts the two
+        observed axes 50 degrees apart - outside the 60-120 solve window.
+        The failure must carry the measured separation so a field log alone
+        explains the rejection (the 05:14 session failed with no number)."""
         builder = MotionEngineTest.calibrated_builder(
             "anatomical_offplane", {"anatomicalTimeoutMs": 4000}
         )
-        offplane = MotionEngineTest.rigid_arm_pose((0.5, 0.0, -0.866), 90.0)
+        off_axis = (math.sin(math.radians(40)), 0.0, -math.cos(math.radians(40)))
         builder.begin_side()
-        builder.hold(offplane, 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 1.2)
         builder.begin_forward()
         builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
         builder.frame("after_rejection")
@@ -784,7 +792,13 @@ class MotionEngineTest(unittest.TestCase):
         scenario = self.results["anatomical_offplane"]
         self.assertEqual(scenario["anatomicalState"], "failed", scenario["anatomicalMessage"])
         self.assertIn("independent", scenario["anatomicalMessage"].lower())
+        self.assertIn("50", scenario["anatomicalMessage"], "measured separation must be reported")
+        self.assertIn("60-120", scenario["anatomicalMessage"])
         self.assertEqual(scenario["mountCorrections"], {})
+        failed = next(e for e in scenario["events"] if e["kind"] == "anatomical_failed")
+        self.assertEqual(
+            {n: round(d) for n, d in failed["separationsDeg"].items()}, {"2": 50, "4": 50}
+        )
         frame = self.frames("anatomical_offplane")["after_rejection"]["frame"]
         self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
 
@@ -819,13 +833,19 @@ class MotionEngineTest(unittest.TestCase):
         self.assertIn("elbow straight", scenario["anatomicalMessage"].lower())
 
     def test_directional_capture_catches_bent_elbow_the_magnitude_gate_misses(self):
-        """45 degrees of bend with both raise magnitudes still ~90 passes the
-        magnitude gates, but the contaminated side axis fails the 80-100
-        degree separation check at the forward solve."""
+        """A 45-degree bent side raise calibrates (documented trade-off: it
+        is geometrically identical to a natural scapular-plane raise), but
+        the damage is contained and visible: the upper arm's mount stays
+        exact on a later straight raise while the forearm's mount - which
+        absorbed the bend - reads off-target in the render."""
         scenario = self.results["anatomical_bent_hidden"]
-        self.assertEqual(scenario["anatomicalState"], "failed", scenario["anatomicalMessage"])
-        self.assertIn("independent", scenario["anatomicalMessage"].lower())
-        self.assertEqual(scenario["mountCorrections"], {})
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        frame = self.frames("anatomical_bent_hidden")["straight_check"]["frame"]
+        target = q_axis_angle((0.0, 0.0, -1.0), 90.0)
+        upper_error = q_angle_deg(q_mul(q_conj(target), packet_to_q(frame["upper_arm_orientation"])))
+        fore_error = q_angle_deg(q_mul(q_conj(target), packet_to_q(frame["forearm_orientation"])))
+        self.assertLess(upper_error, 1.0, "upper mount must stay exact")
+        self.assertGreater(fore_error, 5.0, "forearm mount must show the absorbed bend")
 
     def test_anatomical_capture_completes_despite_heading_offsets(self):
         """GRV headings do NOT cancel in inter-sensor products, so every

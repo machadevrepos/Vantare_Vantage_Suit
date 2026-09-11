@@ -111,11 +111,12 @@ function failure(reason) {
 export function solveMountCorrection(sourceSide, sourceForward, {
   targetSide = [0, 0, -1],
   targetForward = [1, 0, 0],
-  // Tight enough that an off-plane raise cannot be absorbed into the mount:
-  // the acceptance criterion allows 10 degrees of display error, so the two
-  // observed axes must sit within 10 degrees of a true right angle.
-  minSeparationDeg = 80,
-  maxSeparationDeg = 100,
+  // Wide enough to accept a naturally-raised arm (the scapular plane sits
+  // 20-30 degrees forward of the coronal, landing at 60-75 degree
+  // separation), tight enough to refuse degenerate pairs. The engine reports
+  // the measured separation so the wearer can still straighten toward 90.
+  minSeparationDeg = 60,
+  maxSeparationDeg = 120,
 } = {}) {
   if (![sourceSide, sourceForward, targetSide, targetForward].every(finiteVector)) {
     return failure("non_finite_axis");

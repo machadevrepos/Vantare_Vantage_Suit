@@ -325,7 +325,7 @@ carries the reason.
 | Raise magnitude (per node) | 60–120° from neutral | restart window |
 | Segment mismatch (straight elbow) | \|N4 angle − N2 angle\| ≤ 15° | restart window |
 | Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms | restart window |
-| Solver | axes 80–100° apart, matrix finite, orthonormal, det ≈ +1 | fail attempt |
+| Solver | axes 60–120° apart, matrix finite, orthonormal, det ≈ +1 | fail attempt (reports the measured separation) |
 
 **Why there is no elbow-relative capture gate** (2026-09-11 field lesson).
 An inter-sensor quantity such as `conj(q_upper) · q_fore` looks like the
@@ -335,10 +335,23 @@ and those do **not** cancel once the upper arm rotates: a perfectly straight
 arm reads roughly 1° of phantom bend per 1° of N2-vs-N4 heading offset, which
 rejected every real side raise in the 04:44 session. Every gate that runs
 during a directional capture is therefore conjugation-invariant (magnitudes,
-axis angles), and the straight-elbow coverage is shared between the magnitude
-gate (asymmetric raises) and the 80–100° solver window, which catches ≥25°
-bends and pronation because they contaminate the observed axes. Twist remains
-undetectable until the gravity-vector cross-check exists.
+axis angles). Twist remains undetectable until the gravity-vector cross-check
+exists.
+
+**Why the solve window is 60–120°, not tighter** (second 2026-09-11 field
+lesson). An 80–100° window — chosen to match the ≤10° acceptance criterion —
+blocked the next session entirely (05:14, "raises were not independent"):
+people raise sideways in the scapular plane, 20–30° forward of pure lateral,
+landing at 60–75° of observed separation. The TRIAD solve is well-conditioned
+anywhere in 60–120°; the trade-off is plane fidelity IF the demo raise uses a
+different plane than the capture. Mitigations: the failure message and the
+`anatomical_failed` event report the measured separation, the success quality
+carries `axisSeparationDeg` per node (≈90° is the target to check), and the
+acceptance run instructs deliberate in-plane raises. A bent-elbow side raise
+presents the same geometry as a scapular raise and is therefore accepted too
+— the upper arm's mount stays exact, the forearm's absorbs the bend and shows
+it in the render; closing that gap needs the gravity-vector cross-check, not
+a tighter window.
 
 **Pose conventions.** The neutral pose is arms hanging, palms facing the
 thighs. From there the natural no-twist raises are **side → palm down** and

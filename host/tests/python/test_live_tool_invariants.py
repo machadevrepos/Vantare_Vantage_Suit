@@ -291,7 +291,7 @@ class LiveToolInvariants(unittest.TestCase):
     def test_live_tool_build_bumped_for_anatomical_workflow(self):
         """A stale cached module graph silently runs the old two-pose UI; the
         visible build string must move with this workflow change."""
-        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.19"', INFERENCE)
+        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.20"', INFERENCE)
 
     # --------------------------------------------------- anatomical replay
 

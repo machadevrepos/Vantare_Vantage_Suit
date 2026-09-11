@@ -295,7 +295,11 @@ export class Ui {
     const quality = diagnostics.anatomicalQuality;
     if (!quality || !quality.nodes) return message;
     const parts = Object.entries(quality.nodes)
-      .map(([id, q]) => `N${id} side ${q.sideAngleDeg.toFixed(0)}° / fwd ${q.forwardAngleDeg.toFixed(0)}°`);
+      .map(
+        ([id, q]) =>
+          `N${id} side ${q.sideAngleDeg.toFixed(0)}° / fwd ${q.forwardAngleDeg.toFixed(0)}°` +
+          ` (sep ${q.axisSeparationDeg.toFixed(0)}°)`
+      );
     if (typeof quality.segmentMismatchDeg === "number") {
       parts.push(`mismatch ${quality.segmentMismatchDeg.toFixed(1)}°`);
     }
