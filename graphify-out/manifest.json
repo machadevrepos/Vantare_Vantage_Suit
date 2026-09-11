@@ -3708,9 +3708,9 @@
     "semantic_hash": "96c676c6159d5204f2cc734f2b1f7458"
   },
   "host/live_tool/js/live-inference.js": {
-    "mtime": 1789102969.625771,
-    "seen": 1789103094.7007751,
-    "ast_hash": "28d8e1b680557f96a60b420be16e27e2",
+    "mtime": 1789104240.5753167,
+    "seen": 1789104383.2841291,
+    "ast_hash": "9bfd88bdad264c47cffb7fa8a1f6c0e7",
     "semantic_hash": ""
   },
   "host/live_tool/js/main.js": {
@@ -3726,9 +3726,9 @@
     "semantic_hash": "9aeeaaede294841007026969e625151d"
   },
   "host/live_tool/js/motion-engine.js": {
-    "mtime": 1789102912.6506054,
-    "seen": 1789103094.7007842,
-    "ast_hash": "ddf2100b394ce05c4732bf5fc36cb6ab",
+    "mtime": 1789104068.949839,
+    "seen": 1789104383.2841377,
+    "ast_hash": "6d5740289b100d015e1f24c688bb19bd",
     "semantic_hash": ""
   },
   "host/live_tool/js/rep-analyzer.js": {
@@ -3744,9 +3744,9 @@
     "semantic_hash": "30cfcda7e9e7de380723325c010f6685"
   },
   "host/live_tool/js/ui.js": {
-    "mtime": 1789100885.594972,
-    "seen": 1789101045.2643263,
-    "ast_hash": "324d86da256b19b5128b1bbe80c9433e",
+    "mtime": 1789104087.1819456,
+    "seen": 1789104383.284145,
+    "ast_hash": "ea9a1fde36492e0a58ae013630aae53c",
     "semantic_hash": ""
   },
   "host/live_tool/model/feature_names.json": {
@@ -4002,15 +4002,15 @@
     "semantic_hash": "dca9d1186264ef3c6bb83d40e3086fc1"
   },
   "host/tests/python/test_live_tool_invariants.py": {
-    "mtime": 1789102969.6498227,
-    "seen": 1789103094.7008934,
-    "ast_hash": "ed2963ca3c0ea685373ab3894974f472",
+    "mtime": 1789104240.5995145,
+    "seen": 1789104383.2842653,
+    "ast_hash": "7bf208280754ca5a2b0f0a0ccfb7d9db",
     "semantic_hash": ""
   },
   "host/tests/python/test_motion_engine.py": {
-    "mtime": 1789102783.9251616,
-    "seen": 1789103094.7008958,
-    "ast_hash": "9aeaa288830919976fb912a4e68b3780",
+    "mtime": 1789104213.0340855,
+    "seen": 1789104383.2842677,
+    "ast_hash": "812d936b05c39d99d6967178d1d49af3",
     "semantic_hash": ""
   },
   "host/tests/python/test_remote_transfer_lifecycle_source.py": {
@@ -4212,9 +4212,9 @@
     "semantic_hash": ""
   },
   "host/live_tool/js/anatomical-calibration.js": {
-    "mtime": 1789100806.4653823,
-    "seen": 1789101045.2642918,
-    "ast_hash": "ae4f79fccaa8bc02a0a78b9d124e9513",
+    "mtime": 1789104018.152128,
+    "seen": 1789104383.284111,
+    "ast_hash": "c2181427305ee421f5aca9424d75eb6d",
     "semantic_hash": ""
   },
   "host/live_tool/js/arm-avatar.js": {
@@ -4230,9 +4230,9 @@
     "semantic_hash": ""
   },
   "host/tests/scripts/test_anatomical_calibration.mjs": {
-    "mtime": 1789100791.5518794,
-    "seen": 1789101045.264498,
-    "ast_hash": "8bfee9a8c456567e2a07dd18ac4b8270",
+    "mtime": 1789104018.1238716,
+    "seen": 1789104383.28431,
+    "ast_hash": "7854fcf5cc500fb8b1130eee301637dd",
     "semantic_hash": ""
   },
   "host/tests/scripts/test_arm_avatar.mjs": {
@@ -4392,9 +4392,9 @@
     "semantic_hash": ""
   },
   "docs/architecture/motion-engine-contract.md": {
-    "mtime": 1789102969.6016617,
-    "seen": 1789103094.7010012,
-    "ast_hash": "5a345898524cb699519a03009b6d1510",
+    "mtime": 1789104267.853585,
+    "seen": 1789104383.284388,
+    "ast_hash": "2d7f402996d0f54b119162512ee979f1",
     "semantic_hash": ""
   },
   "docs/architecture/project-details.html": {
