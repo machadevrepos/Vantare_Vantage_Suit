@@ -1,36 +1,66 @@
 # Motion Engine — data contract for the 3D / app team
 
-> **Calibration update, build 2026-09-11.25:** the historical warning-only
-> acceptance described below is superseded. Both N2 and N4 side/forward
-> rotation-axis separations must be 80-100 degrees. Outside that range the
-> engine clears mount corrections, returns to `side_ready`, logs
-> `anatomical_forward_rejected` with `code: capture_geometry`, and keeps the
-> directional viewer unavailable. The pure TRIAD solver still has its wider
-> mathematical validity range; this is a separate capture-quality gate.
+> **Calibration update, build 2026-09-11.27 (supersedes .26): pointing
+> calibration.** The mount is now solved from *where the arm pointed* in each
+> hold, not from the rotation axis of the hold.
 >
-> The 07:33:52 field log accepted N4=66.17 degrees and N2=85.35 degrees and
-> contains 18 events but no sample rows. It supports the calibration-quality
-> finding, not a diagnosis of live latency or the wearer's motion trajectory.
-> Raw streaming now registers and records sensor samples plus motion ticks
-> without an inference session. Download Log after the next physical check.
+> Why: field log 09:10. The wearer held the palm down in both directional
+> holds, which twisted the arm about its own long axis by +51° (side) and −43°
+> (forward) relative to their neutral palm. Twist tilts a rotation's axis, and
+> the axis solver read that tilt as mount geometry: the axes measured 60–62°
+> apart while the arm itself pointed 80° apart, and the straight-ahead hold
+> rendered **25–29° outward**. Pointing directions are blind to twist.
 >
-> Mount N2 on the distal forearm above the wrist joint and N4 on the upper arm
-> below the shoulder joint. N3 is auxiliary. Mount angles may differ; straps
-> must remain fixed. Follow the page's neutral (palm to thigh), side (palm
-> down), forward (thumb up) cues with straight wrist/elbow and still torso.
-> Validate repeated neutral/side/forward holds, then slow elbow bends before
-> free motion. Passing geometry is not proof of anatomical accuracy, and this
-> update still needs live validation. No torso compensation is available.
+> - **Frame:** vertical from the neutral pose (the GRV world is Z-up; it agreed
+>   with the BNO's separate gravity report to 0.01°), heading from the side and
+>   forward holds. Their disagreement from a right angle is split evenly, so
+>   each held direction renders within half of it. ≤15° solves silently, ≤30°
+>   solves with `anatomicalWarning`, beyond that the forward hold is refused
+>   (the side capture is kept). Holds must be 45–135° up from hanging; the
+>   height of each hold does not affect the frame.
+> - **Palm:** the side hold is taken palm-down and defines the wearer's
+>   neutral palm (`diagnostics.handRestPalm`, an anatomical vector). Every later
+>   twist of the forearm then moves the rendered palm with the wearer's. The
+>   palm orientation in the forward hold is free.
+> - **Straight-elbow check:** N4 and N2 *elevations* must agree within 15°
+>   (free of mount, heading and twist).
+> - **Replay on the 09:10 log** (`host/tests/scripts/replay_pointing_calibration.mjs`):
+>   calibrates first time; forward holds render 0–4.5° from straight ahead,
+>   side holds 87–89° (previously 25–29° outward); the palm faces the floor
+>   within 6.5–11° in holds where the wearer's palm faced the floor.
+> - **Viewer fix:** the full-body rig used a 2D `scale()`, which left depth at
+>   full size, so an exact forward pose drew as "up and out" (hand 77 px
+>   *above* the shoulder). It now uses `scale3d()` and a 35° three-quarter
+>   camera, where an exact forward pose draws level to screen-right and a side
+>   pose level to screen-left.
+> - **Viewer legibility (build .28):** in the three-quarter view the flat-card
+>   figure still read as facing the viewer, so a forward arm looked like it
+>   crossed the body. Added a floor disc with a FRONT marker, forward-pointing
+>   toes and a nose; limb cards now turn about their own axis toward the
+>   camera (never edge-on) and labels always face it (never mirrored); lens
+>   1600 px, tilt 8°. Measured on the 09:10 replay: the forward hold draws
+>   0.8° from the FRONT marker, the side hold 8° from the floor's right-hand
+>   direction. Only rendering changed; the packet is untouched.
+> - **Elbow bend, investigated and left alone:** a straight arm draws 2–6°
+>   bent, varying by pose. Fitting a static forearm alignment over all three
+>   calibration poses removed only ~1–2° in the holds and made the hanging arm
+>   worse, so it was not adopted. The residual is pose-dependent (soft tissue,
+>   forearm rotation about an oblique axis), not a calibration offset.
+>
+> Still open: the hinge curl phase auto-starts from the forward pose and asks
+> for "palm up" — both break hinge capture (see the 2026-09-11 review). Hinge
+> affects flexion numbers and rep verdicts, not the avatar, which uses the
+> heading-free `conj(A_upper)·A_forearm`. No torso compensation is available.
 
 
 Status: **validated on hardware 2026-09-10.** Neutral + hinge calibration and
 signed flexion all confirmed on a real arm; see "Field results" below. The
-three-pose anatomical calibration completed its first physical run on
-2026-09-11 (05:58): the solve installed, but the captured raises were 65.8°
-and 73.6° apart instead of ~90°, so the forward render was 23.5° off. Live
-separation coaching and a post-solve geometry warning were added in response
-(below). The full physical acceptance run is still outstanding — that is the
-documented handoff at the end of this document. Remaining gap: an isolated
+three-pose anatomical calibration completed its first physical runs on
+2026-09-11; the early runs showed that real raises are not the textbook right
+angle (54-74° measured), which is why the mount frame is now built from the
+measured directions rather than gated against a prescribed separation (update
+block above). The full physical acceptance run is still outstanding — that is
+the documented handoff at the end of this document. Remaining gap: an isolated
 yaw-drift measurement.
 Implementation: `host/live_tool/js/motion-engine.js`,
 `host/live_tool/js/anatomical-calibration.js` (pure TRIAD solver),
@@ -334,41 +364,56 @@ overhead and composed elbow directions, plus the side-raise sample at device
 182.667 s from `tmp/vantage_live_2026-09-11T07-08-56-665Z.ndjson`.
 
 
-**Workflow (ordered UI steps):**
+**Workflow (one session, ordered UI steps):**
 
-1. **Neutral** — arms hanging, palms facing the thighs, ~1.5 s of stillness.
+1. **Neutral** — arms hanging, palms facing the thighs; hold ~3 s.
    Starting a new neutral calibration invalidates every later stage.
-2. **Right-side raise** — straight arm held ~90° out to the right, palm down,
-   still, for the 1 s capture window.
+2. **Right-side raise** — straight arm held ~90° out to the right, palm down;
+   hold ~3 s.
 3. **Forward raise** — straight arm held ~90° forward, thumb up (the natural
    no-twist end state; "palm down" here would force a forearm rotation into
-   the capture). After this capture both mount corrections are solved and
-   installed atomically: a failure on either node leaves `mountCorrection`
-   empty and preserves the last completed stage.
-4. **Elbow hinge** — needs only the neutral pose (its math is independent of
-   the anatomical solve); still required for signed flexion and rep verdicts,
-   no longer required for the avatar.
+   the capture); hold ~3 s. Both mount corrections are solved and installed
+   atomically from the measured poses. If the pair turns out degenerate the
+   side capture is preserved and only the forward raise is retried.
+4. **Elbow hinge (starts automatically after step 3)** — turn the palm up,
+   keep the upper arm steady, and do 3 slow full curls. The axis is measured
+   for signed flexion and rep verdicts; `hingeQuality.peakElbowDeg` reports
+   the curl range the wearer actually produced.
 
 **Capture validation thresholds.** A transient fault — motion, a low raise,
-a bent elbow, unsynchronized data — restarts the 1 s capture window and tells
-the wearer what to fix; every restart is audited as an
-`motion_anatomical_hold_restarted` event with its reason. Only the 15 s
-timeout or a solver-level failure ends the attempt, and the timeout message
-carries the reason.
+a bent elbow, unsynchronized data — simply keeps the rolling 3 s window
+waiting and tells the wearer what to fix; every wait code change is audited
+as an `motion_anatomical_hold_restarted` event. Only the 25 s timeout or a
+solver-level failure ends the attempt, and the timeout message carries the
+reason.
 
 | Check | Threshold | On fault |
 |---|---|---|
-| Stillness | gyro < 0.2 rad/s, orientation spread ≤ 3° | restart window |
-| Raise magnitude (per node) | 75–105° from neutral (aim band; live readout) | restart window |
-| Segment mismatch (straight elbow) | \|N4 angle − N2 angle\| ≤ 15° | restart window |
-| Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms | restart window |
-| Solver | axes 60–120° apart, matrix finite, orthonormal, det ≈ +1 | forward stage rejected, side kept |
+| Stillness | gyro < 0.2 rad/s over ≤20% of the window, orientation spread ≤ 3° | keep waiting (window slides) |
+| Raise magnitude (per node) | 40–150° from neutral (measured; live readout) | keep waiting |
+| Segment mismatch (straight elbow) | \|N4 angle − N2 angle\| ≤ 20° | keep waiting |
+| Freshness / sync | both nodes fresh, device-time skew ≤ 60 ms | keep waiting |
+| Solver | axes 25–155° apart, matrix finite, orthonormal, det ≈ +1 | forward stage rejected, side kept |
 
-The 75–105° row is the *aim band*, not the solver window: the solve still
-accepts 60–120° separations, but the closer both raises are to 90°, the closer
-the solved mount is to the truth. Mismatch is checked before the magnitude
-band so a bent side raise is answered with "keep the elbow straight" rather
-than "raise higher" — the two faults have different fixes.
+Every pose is measured over a rolling 3 s window: samples join continuously
+and only samples older than the window age out, so a wobble no longer voids
+the hold. The raise bands are wide because the mount frame is defined by the
+directions the wearer actually held — the solve maps both captured axes
+exactly, whatever their separation; the bands only keep the rotation axis
+well-defined. Mismatch is checked before the magnitude band so a bent side
+raise is answered with "keep the elbow straight" rather than "raise higher".
+
+**How the measured frame works.** Write the two captured raise axes for a
+node as `s_side` and `s_forward`, at measured separation `θ`. TRIAD
+orthonormalizes `s_forward` against `s_side` and maps that perpendicular
+component onto the anatomical forward axis; the captured axes therefore land
+exactly where the wearer held them, and the calibrated poses render exactly.
+The residual error is only for directions *outside* the plane the two raises
+span, and it grows as `θ` departs from 90° — which is why separation is
+reported as a soft `anatomicalWarning` (below 75°) rather than enforced as a
+gate. The 2026-09-11 07:45 field log (N2 88°/N4 84° side raises; forward
+separations 54-65°) is the case that motivated this: the previous hard
+80-100° gate rejected a wearer who was raising correctly.
 
 **Why there is no elbow-relative capture gate** (2026-09-11 field lesson).
 An inter-sensor quantity such as `conj(q_upper) · q_fore` looks like the
@@ -381,18 +426,14 @@ during a directional capture is therefore conjugation-invariant (magnitudes,
 axis angles). Twist remains undetectable until the gravity-vector cross-check
 exists.
 
-**Why the solve window is 60–120°, not tighter** (second 2026-09-11 field
-lesson). An 80–100° window — chosen to match the ≤10° acceptance criterion —
-blocked the next session entirely (05:14, "raises were not independent"):
-people raise sideways in the scapular plane, 20–30° forward of pure lateral,
-landing at 60–75° of observed separation. The TRIAD solve is well-conditioned
-anywhere in 60–120°; the trade-off is plane fidelity IF the demo raise uses a
-different plane than the capture. Mitigations: the failure message and the
-`anatomical_forward_rejected` event report the measured separation, the live
-`anatomicalLive.separationDeg` readout lets the wearer steer to ~90° before
-holding, the success quality carries `axisSeparationDeg` per node (≈90° is the
-target to check), and a solved pair under 80° raises `anatomicalWarning`.
-A bent-elbow side raise
+**Separations are measured, never forced** (third 2026-09-11 field lesson).
+An 80–100° window blocked a session entirely (05:14) and the 07:45 log shows
+54-65° separations from a wearer who was raising correctly; the solver window
+is therefore 25-155°, which refuses only near-degenerate pairs. The live
+`anatomicalLive.separationDeg` readout lets the wearer steer toward ~90° if
+they want better off-plane fidelity, the success quality carries
+`axisSeparationDeg` per node, and a solved pair under 75° raises the soft
+`anatomicalWarning`. A bent-elbow side raise
 presents the same geometry as a scapular raise and is therefore accepted too
 — the upper arm's mount stays exact, the forearm's absorbs the bend and shows
 it in the render; closing that gap needs the gravity-vector cross-check, not
@@ -416,10 +457,13 @@ with side direction error **1.13°** and forward direction error **23.49°**.
 
 Reads on this:
 
-- **The solve is only as good as the capture pair.** A pair `s` degrees apart
-  maps the second axis `90 − s` off target: 65.8° measured, 23.5° forward
-  error observed. The side axis landed within ~1°, exactly as TRIAD promises,
-  which makes the failure easy to misread as broken math.
+- **A non-right-angle pair skews the frame off-plane.** The captured axes
+  themselves map exactly, but with 65.8° of separation the audit measures the
+  forward raise 23.5° from the idealized forward target, and motion outside
+  the captured plane is warped. At the time this was treated as unusable
+  (which led to the build .25 hard gate); it is now accepted with a soft
+  hint, because the wearer repeats the same plane and the captured poses are
+  exact.
 - **The wearer was flying blind.** Three of the six rejections were 0–1°
   separations — the "forward" attempt repeated the side direction — and the
   accepted attempt over-raised to 115–118°, ~25° past horizontal. Nothing on
@@ -436,9 +480,10 @@ Reads on this:
   separately.
 
 Changes made in response: live raise-angle and separation readout during the
-capture, the 75–105° aim band, side-preserving forward rejection, and the
-post-solve geometry warning. None of these substitutes for the physical
-acceptance run below — they make it possible to pass.
+capture, side-preserving forward rejection, and — after the 07:45 session
+showed a correctly-raising wearer still rejected — the measured-frame solve
+with rolling 3 s windows and the same-session curl phase. None of these
+substitutes for the physical acceptance run below.
 
 **Pose conventions.** The neutral pose is arms hanging, palms facing the
 thighs. From there the natural no-twist raises are **side → palm down** and
@@ -466,15 +511,13 @@ redoing the side raise; if the side itself is off-plane, they can still choose
 to redo step 2. In the 05:58 session four side captures were wasted because
 every forward failure reset the whole workflow.
 
-**Post-solve geometry warning.** A capture pair under 80° apart still solves,
-but the map is a proper rotation only up to the separation error: the second
-captured axis lands `90 − separation` degrees off its anatomical target, and
-everything near that direction is skewed by the same amount. The engine sets
-`diagnostics.anatomicalWarning` (and appends it to `anatomicalMessage`) with
-the measured separation and the expected skew — "geometry 66° (ideal 90):
-expect about 24° of forward tracking skew; redo steps 2-3". The 05:58 solve
-was accepted at 65.8° and rendered the forward raise 23.5° off (replay audit),
-silently, which is the failure mode this warning removes.
+**Post-solve geometry hint.** The captured axes map exactly, but directions
+outside the plane the two raises span are warped as the separation departs
+from 90°. A solved pair under 75° apart sets `diagnostics.anatomicalWarning`
+(and appends it to `anatomicalMessage`) with the measured separation, so the
+wearer can redo steps 2-3 if off-plane fidelity matters. It never blocks, and
+it is the only separation feedback a post-hoc log needs; the 05:58 and 07:45
+solves at 65.8° and 54-65° are accepted rather than rejected.
 
 **What capture validation still cannot see: whole-arm twist.** If the arm
 rotates about its own long axis during a raise, N4 and N2 rotate together:
@@ -502,7 +545,8 @@ replacement; switching the internal computation to it is its own change.
 `anatomicalSideAnglesDeg` (accepted side raise magnitude per node),
 `anatomicalLive` (per required node `{ raiseDeg, separationDeg }` while a
 capture is running), `anatomicalWarning` (set when a solved capture pair was
-under 80° apart), and `axisFrame`: `"anatomical"` only when both corrections
+under 75° apart), `hingeQuality.peakElbowDeg` (measured curl range from the
+calibration reps), and `axisFrame`: `"anatomical"` only when both corrections
 are installed. Events
 `anatomical_side_started / _side_complete / _forward_started / anatomical_complete /
 anatomical_forward_rejected / anatomical_failed` go to the session log as Tier 1
@@ -569,8 +613,9 @@ perform, slowly first, then at normal speed:
 6. one slow circular shoulder movement.
 
 During steps 2–3 watch the live readout: hold the forward raise until the
-separation reads ~90°. If the solved calibration shows a geometry warning
-(capture pair under 80°), redo steps 2–3 before recording the rest.
+separation reads as close to ~90° as comfortable. If the solved calibration
+shows a geometry hint (pair under 75°), redo steps 2–3 when off-plane
+accuracy matters. Step 4 (palm up, 3 slow curls) starts automatically.
 
 Acceptance: held side/forward display directions within 10° of the instructed
 plane; no zero-angle snap on an isolated dropped frame; added display latency
@@ -580,22 +625,26 @@ smoothed away. Do not claim client-demo readiness before this run.
 
 ## Calibration behaviour
 
-Press **Calibrate Neutral Pose**, then hold still. The engine requires ~1.5 s of
-contiguous stillness with:
+Press **Calibrate Neutral Pose**, then hold still. The engine keeps a rolling
+3 s window: every sample joins and only samples older than the window age out,
+so a wobble no longer discards the hold. The window is accepted when, across
+the freshest 3 s:
 
-- gyro magnitude below 0.2 rad/s on every node, and
-- orientation spread under 3° across the hold, and
-- both required nodes (N2, N4) fresh and contributing.
+- at most 20% of samples exceed 0.2 rad/s gyro, and
+- orientation spread stays under 3° on every contributing node, and
+- both required nodes (N2, N4) are fresh and contributing.
 
-Any violation discards the whole accumulated window and restarts the hold — a
-reference averaged across a twitch would blend two poses, which is worse than
-asking the wearer to hold again. The attempt fails after 15 s.
+The neutral reference is the mean over that window, which averages ~75 samples
+per node. The attempt fails after 20 s of never-settling data.
 
-Then press **Calibrate Hinge** and perform a few slow full reps. The engine
-collects the elbow rotation axis from frames past 40° of flexion and accepts it
-once 40 samples agree to within 15°. The direction of the reps defines positive
-flexion, so the sign is meaningful without assuming which arm is instrumented or
-how the PCB sits. Incoherent motion is rejected rather than averaged into a
+Steps 2-3 use the same rolling-window mechanism with a 3 s window and a 25 s
+timeout; the measured poses become the mount frame (above). Step 4 — the
+hinge — starts automatically after step 3, or from **Calibrate Elbow Hinge**
+at any time. The engine collects the elbow rotation axis from frames past 40°
+of flexion and accepts it once 40 samples agree to within 15°, reporting the
+measured curl peak (`peakElbowDeg`). The direction of the reps defines positive
+flexion, so the sign is meaningful without assuming which arm is instrumented
+or how the PCB sits. Incoherent motion is rejected rather than averaged into a
 meaningless axis. Clearing the neutral calibration also clears the hinge axis,
 because the axis is expressed relative to that neutral reference.
 

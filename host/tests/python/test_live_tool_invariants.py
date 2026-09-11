@@ -294,7 +294,7 @@ class LiveToolInvariants(unittest.TestCase):
     def test_live_tool_build_bumped_for_anatomical_workflow(self):
         """A stale cached module graph silently runs the old two-pose UI; the
         visible build string must move with this workflow change."""
-        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.25"', INFERENCE)
+        self.assertIn('LIVE_TOOL_BUILD = "2026-09-11.28"', INFERENCE)
 
     # --------------------------------------------------- anatomical replay
 
@@ -388,8 +388,10 @@ class LiveToolInvariants(unittest.TestCase):
         self.assertGreater(metrics["dropoutFrames"], 0, "dropout segment must be visible")
         self.assertIn("p50", metrics["visualStepDistribution"])
 
-    def test_anatomical_replay_keeps_rejected_geometry_unavailable(self):
-        """Rejected geometry must never replay as an anatomical calibration."""
+    def test_anatomical_replay_reports_measured_geometry_warning(self):
+        """Measured (non-right-angle) geometry solves, and the replay audit
+        must carry the soft quality warning rather than inventing an error
+        or silently dropping it."""
         if shutil.which("node") is None:
             self.skipTest("node not available")
         sys.path.insert(0, str(ROOT / "host" / "tests" / "python"))
@@ -401,17 +403,17 @@ class LiveToolInvariants(unittest.TestCase):
         builder = MotionEngineTest.calibrated_builder("replay_warning")
         off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
         builder.begin_side()
-        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 3.2)
         builder.begin_forward()
-        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 3.2)
         builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 0.3)
         builder.frame("after")
 
         metrics = self._replay_anatomical(builder)
 
-        self.assertEqual(metrics["axisFrame"], "sensor_neutral")
-        self.assertEqual(metrics["directionValidation"], "unavailable")
-        self.assertNotIn("calibrationWarning", metrics)
+        self.assertEqual(metrics["axisFrame"], "anatomical")
+        self.assertIn("calibrationWarning", metrics)
+        self.assertIn("20 degrees off a right angle", metrics["calibrationWarning"])
 
     def test_replay_reports_legacy_sensor_neutral_logs_honestly(self):
         """A log from before the three-pose workflow has no directional

@@ -68,20 +68,32 @@ assert.deepEqual(solveMountCorrection([0, 0, -1], [0, 0, -2]), {
 });
 assert.equal(solveMountCorrection([0, 0, -1], [0.2, 0, -0.98]).reason, "axes_not_independent");
 
-// Off-plane side raises: the window accepts a natural raise (most people
-// raise 20-30 degrees forward of the coronal plane, landing at 60-75 degree
-// separation) because a capture that always fails is worse than a plane the
-// wearer repeats consistently. The engine reports the measured separation so
-// the wearer can still straighten toward a right angle. Degenerate pairs
-// (<60 or >120) stay rejected.
+// Off-plane side raises are measured, not rejected: the mount frame is
+// defined by the directions the wearer actually held, so the first captured
+// axis maps exactly and the second maps to the same angle from it in the
+// anatomical plane. Only pairs too close to a single direction (<25 or >155
+// degrees apart) are refused.
 const raisedAxis = (offPlaneDeg) => [
   Math.sin((offPlaneDeg * Math.PI) / 180), 0, -Math.cos((offPlaneDeg * Math.PI) / 180),
 ];
-assert.equal(solveMountCorrection(raisedAxis(10), FORWARD).ok, true);
-assert.equal(solveMountCorrection(raisedAxis(25), FORWARD).ok, true);
-assert.equal(solveMountCorrection(raisedAxis(-25), FORWARD).ok, true);
-assert.equal(solveMountCorrection(raisedAxis(35), FORWARD).reason, "axes_not_independent");
-assert.equal(solveMountCorrection(raisedAxis(-35), FORWARD).reason, "axes_not_independent");
+for (const offPlaneDeg of [10, 25, 60]) {
+  const source = raisedAxis(offPlaneDeg);
+  const solved = solveMountCorrection(source, FORWARD);
+  assert.equal(solved.ok, true, `${offPlaneDeg} deg: ${solved.reason}`);
+  const map = conjugate(solved.mount);
+  assertVectorClose(rotate(map, source), SIDE);
+  const mappedForward = rotate(map, FORWARD);
+  const dotSide = mappedForward[0] * SIDE[0] + mappedForward[1] * SIDE[1] + mappedForward[2] * SIDE[2];
+  const mappedSeparation = (Math.acos(Math.max(-1, Math.min(1, dotSide))) * 180) / Math.PI;
+  assert.ok(
+    Math.abs(mappedSeparation - solved.quality.axisSeparationDeg) < 1e-8,
+    `second axis must land at the measured separation, got ${mappedSeparation}`
+  );
+}
+// 10 degrees of separation and a 170-degree reversal remain degenerate.
+assert.equal(solveMountCorrection(raisedAxis(80), FORWARD).reason, "axes_not_independent");
+assert.equal(solveMountCorrection(raisedAxis(-80), FORWARD).reason, "axes_not_independent");
+assert.equal(solveMountCorrection(raisedAxis(66), FORWARD).reason, "axes_not_independent");
 assert.equal(solveMountCorrection([Number.NaN, 0, 1], [1, 0, 0]).reason, "non_finite_axis");
 assert.equal(solveMountCorrection([0, 0, 0], [1, 0, 0]).reason, "zero_axis");
 

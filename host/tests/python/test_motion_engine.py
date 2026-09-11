@@ -127,37 +127,50 @@ MOUNTS = {
     AUX: q_axis_angle((0.44, 0.44, -0.78), 21.0),
 }
 
-# Each Game Rotation Vector powers up with an arbitrary heading. These are
-# explicit, large, per-sensor reference-frame offsets applied on the LEFT of
-# the reported quaternion (the reported frame is the true world frame rotated
-# by the sensor's own heading). They are NOT part of the default scenarios:
-# an engine quantity that cancels them (single shared world frame) but not
-# the headings is exactly the bug class the anatomical scenarios must never
-# reintroduce - see scenario_anatomical_with_heading_offsets.
+# Fixture world model. Poses are WRITTEN in the anatomical world frame
+# (+X wearer's right, +Y down, +Z forward) and REPORTED through the BNO085's
+# own world frame, which is Z-up (confirmed on the 09:10 field log: the GRV's
+# world up matched the separate gravity report to 0.01 degrees). BNO_FROM_ANAT
+# carries anatomical down (+Y) onto BNO down (-Z). The engine's pointing
+# calibration reads the vertical from the quaternion, so a fixture that
+# reported arbitrarily tilted "hanging" arms would be testing impossible
+# physics.
+BNO_FROM_ANAT = q_axis_angle((1.0, 0.0, 0.0), -90.0)
+
+# Each Game Rotation Vector powers up with an arbitrary heading: a rotation
+# about the VERTICAL (anatomical +Y), the only axis a GRV cannot reference.
+# Applied on the left of the anatomical world pose. They are NOT part of the
+# default scenarios: an engine quantity that cancels a shared world frame but
+# not per-sensor headings is exactly the bug class the anatomical scenarios
+# must never reintroduce - see scenario_anatomical_with_heading_offsets.
 HEADINGS = {
-    UPPER_ARM: q_axis_angle((0.0, 0.0, 1.0), 37.0),
-    FOREARM: q_axis_angle((0.0, 0.0, 1.0), -112.0),
-    AUX: q_axis_angle((0.0, 0.0, 1.0), 71.0),
+    UPPER_ARM: q_axis_angle((0.0, 1.0, 0.0), 37.0),
+    FOREARM: q_axis_angle((0.0, 1.0, 0.0), -112.0),
+    AUX: q_axis_angle((0.0, 1.0, 0.0), 71.0),
 }
 
-# Arbitrary neutral body pose, and an arbitrary world yaw offset per sensor to
-# stand in for the Game Rotation Vector's unreferenced heading.
+# Neutral: the straight arm hangs along gravity, each segment with its own
+# arbitrary twist about its long axis (strap position, palm orientation). The
+# forearm is twisted 80 degrees against the upper arm, like a wearer whose palm
+# faces back rather than toward the thigh.
 NEUTRAL = {
-    UPPER_ARM: q_axis_angle((0.0, 0.0, 1.0), 23.0),
-    FOREARM: q_axis_angle((0.1, 0.2, 0.97), 41.0),
-    AUX: q_axis_angle((0.3, 0.5, 0.81), 12.0),
+    UPPER_ARM: q_axis_angle((0.0, 1.0, 0.0), 23.0),
+    FOREARM: q_axis_angle((0.0, 1.0, 0.0), -57.0),
+    AUX: q_axis_angle((0.0, 1.0, 0.0), 12.0),
 }
 
 
 def reported(node, segment_orientation):
-    """q_n = S_n * conj(M_n) - what the BNO would report for this true pose."""
-    return q_norm(q_mul(segment_orientation, q_conj(MOUNTS[node])))
+    """q_n = B * S_n * conj(M_n): the anatomical-world pose S_n seen through the
+    BNO's Z-up world (B) and the node's unknown strap mount M_n."""
+    return q_norm(q_mul(q_mul(BNO_FROM_ANAT, segment_orientation), q_conj(MOUNTS[node])))
 
 
 def body_rates(poses, world_rate):
-    """Sensor-frame gyro per node for a rigid world rotation at `world_rate`."""
+    """Sensor-frame gyro per node for a rigid anatomical-world rotation rate."""
+    bno_rate = q_rotate_vector(world_rate, BNO_FROM_ANAT)
     return {
-        node: q_rotate_vector(world_rate, q_conj(reported(node, segment)))
+        node: q_rotate_vector(bno_rate, q_conj(reported(node, segment)))
         for node, segment in poses.items()
     }
 
@@ -289,8 +302,8 @@ class MotionEngineTest(unittest.TestCase):
             MotionEngineTest.scenario_anatomical_rejects_motion(),
             MotionEngineTest.scenario_anatomical_rejects_under_raise(),
             MotionEngineTest.scenario_anatomical_rejects_bent_elbow(),
-            MotionEngineTest.scenario_anatomical_rejects_bent_elbow_hidden(),
-            MotionEngineTest.scenario_anatomical_rejects_offplane_side_raise(),
+            MotionEngineTest.scenario_anatomical_palm_turned_in_holds(),
+            MotionEngineTest.scenario_anatomical_offplane_side_raise(),
             MotionEngineTest.scenario_anatomical_with_heading_offsets(),
             MotionEngineTest.scenario_anatomical_rejects_sync_loss(),
             MotionEngineTest.scenario_anatomical_reset(),
@@ -306,7 +319,7 @@ class MotionEngineTest(unittest.TestCase):
         builder = MotionFixtureBuilder(name, options)
         builder.hold(NEUTRAL, 0.4)
         builder.begin_calibration()
-        builder.hold(NEUTRAL, 2.0)
+        builder.hold(NEUTRAL, 3.2)
         return builder
 
     @staticmethod
@@ -320,13 +333,11 @@ class MotionEngineTest(unittest.TestCase):
 
     @staticmethod
     def rigid_arm_pose(axis, degrees):
-        """Whole rigid arm about a world-fixed axis (physical locked elbow).
+        """Whole straight arm rotated about an anatomical-world axis.
 
-        The raise composes on the LEFT of each segment's neutral world
-        orientation, exactly like scenario_upper_arm_only. Composing per
-        segment on the right would rotate each sensor differently in the
-        world, which no locked elbow can do - the mount-independent
-        elbow-relative capture gate rightly rejects it as a bend."""
+        The raise composes on the LEFT of each segment's neutral orientation:
+        one physical rotation carrying the locked arm. Per-sensor GRV headings
+        are modelled separately (HEADINGS via `headed`), on the left of this."""
         lift = q_axis_angle(axis, degrees)
         return {
             UPPER_ARM: q_mul(lift, NEUTRAL[UPPER_ARM]),
@@ -337,9 +348,9 @@ class MotionEngineTest(unittest.TestCase):
     @staticmethod
     def capture_anatomical(builder):
         builder.begin_side()
-        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 3.2)
         builder.begin_forward()
-        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 3.2)
 
     @staticmethod
     def scenario_elbow_sweep():
@@ -364,7 +375,7 @@ class MotionEngineTest(unittest.TestCase):
         }
         builder.hold(shifted, 0.4)
         builder.begin_calibration()
-        builder.hold(shifted, 2.0)
+        builder.hold(shifted, 3.2)
         for degrees in (0.0, 90.0):
             poses = {
                 UPPER_ARM: shifted[UPPER_ARM],
@@ -428,7 +439,7 @@ class MotionEngineTest(unittest.TestCase):
         builder.hold(NEUTRAL, 0.4)
         builder.frame("uncalibrated")
         builder.begin_calibration()
-        builder.hold(NEUTRAL, 2.0)
+        builder.hold(NEUTRAL, 3.2)
         builder.push_pose(NEUTRAL, skew_ms=250.0)
         builder.frame("skewed")
         return builder.build()
@@ -543,21 +554,21 @@ class MotionEngineTest(unittest.TestCase):
         builder = MotionEngineTest.calibrated_builder("anatomical_collinear")
         side = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
         builder.begin_side()
-        builder.hold(side, 1.2)
+        builder.hold(side, 3.2)
         builder.begin_forward()
-        builder.hold(side, 1.2)
+        builder.hold(side, 3.2)
         builder.frame("after_rejection")
         return builder.build()
 
     @staticmethod
     def scenario_anatomical_rejects_motion():
         builder = MotionEngineTest.calibrated_builder(
-            "anatomical_motion", {"anatomicalTimeoutMs": 1800}
+            "anatomical_motion", {"anatomicalTimeoutMs": 5000}
         )
         builder.begin_side()
         builder.hold(
             MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0),
-            2.2,
+            6.0,
             gyro=(0.4, 0.0, 0.0),
         )
         builder.frame("after_rejection")
@@ -566,17 +577,17 @@ class MotionEngineTest(unittest.TestCase):
     @staticmethod
     def scenario_anatomical_rejects_under_raise():
         builder = MotionEngineTest.calibrated_builder(
-            "anatomical_under_raise", {"anatomicalTimeoutMs": 1800}
+            "anatomical_under_raise", {"anatomicalTimeoutMs": 5000}
         )
         builder.begin_side()
-        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 45.0), 2.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 30.0), 6.0)
         builder.frame("after_rejection")
         return builder.build()
 
     @staticmethod
     def scenario_anatomical_rejects_bent_elbow():
         builder = MotionEngineTest.calibrated_builder(
-            "anatomical_bent", {"anatomicalTimeoutMs": 1800}
+            "anatomical_bent", {"anatomicalTimeoutMs": 5000}
         )
         poses = {
             UPPER_ARM: q_mul(NEUTRAL[UPPER_ARM], q_axis_angle((0.0, 0.0, -1.0), 90.0)),
@@ -584,7 +595,7 @@ class MotionEngineTest(unittest.TestCase):
             AUX: NEUTRAL[AUX],
         }
         builder.begin_side()
-        builder.hold(poses, 2.2)
+        builder.hold(poses, 6.0)
         builder.frame("after_rejection")
         return builder.build()
 
@@ -601,34 +612,40 @@ class MotionEngineTest(unittest.TestCase):
         )
 
     @staticmethod
-    def scenario_anatomical_rejects_bent_elbow_hidden():
-        """A 45-degree elbow bend during the side raise is invisible to the
-        magnitude gates (both segments still read ~90 degrees of raise) and
-        presents the same geometry as a natural scapular-plane raise, so the
-        60-120 solve window accepts it - a deliberately documented trade-off
-        from the 2026-09-11 field sessions: a calibration that always fails
-        is worse than one the wearer can complete. The upper arm's mount
-        stays exact; the forearm's mount absorbs the bend. Closing this gap
-        needs the gravity-vector cross-check, not a tighter window."""
-        builder = MotionEngineTest.calibrated_builder(
-            "anatomical_bent_hidden", {"anatomicalTimeoutMs": 8000}
-        )
-        raise_axis = (0.2, -0.3, 0.93)
-        upper_world = q_mul(q_axis_angle(raise_axis, 90.0), NEUTRAL[UPPER_ARM])
-        elbow_offset = q_mul(q_conj(NEUTRAL[UPPER_ARM]), NEUTRAL[FOREARM])
-        fore_world = q_mul(
-            q_mul(upper_world, elbow_offset), q_axis_angle((0.0, 1.0, 0.0), 45.0)
-        )
-        bent = {UPPER_ARM: upper_world, FOREARM: fore_world, AUX: NEUTRAL[AUX]}
+    def twisted_arm_pose(axis, degrees, twist_deg):
+        """Straight arm raised about `axis`, with the whole arm also turned
+        `twist_deg` about its own long axis - what holding the palm down in a
+        forward raise does to a wearer whose neutral palm faces back."""
+        lift = q_axis_angle(axis, degrees)
+        twist = q_axis_angle((0.0, 1.0, 0.0), twist_deg)
+        return {
+            UPPER_ARM: q_mul(q_mul(lift, NEUTRAL[UPPER_ARM]), twist),
+            FOREARM: q_mul(q_mul(lift, NEUTRAL[FOREARM]), twist),
+            AUX: NEUTRAL[AUX],
+        }
+
+    @staticmethod
+    def scenario_anatomical_palm_turned_in_holds():
+        """The 2026-09-11T09:10 field failure. The wearer held the palm DOWN in
+        both directional holds; against their neutral palm that was +51 degrees
+        of twist in the side hold and -43 in the forward hold. The old
+        rotation-axis solve read the twist as mount geometry and rendered the
+        straight-ahead hold 25-29 degrees outward. The pointing solve must be
+        blind to twist: afterwards a plain side raise and a plain forward raise
+        render exactly, and the palm follows a live twist degree for degree."""
+        builder = MotionEngineTest.calibrated_builder("anatomical_palm_turned")
         builder.begin_side()
-        builder.hold(bent, 1.2)
+        builder.hold(MotionEngineTest.twisted_arm_pose((0.0, 0.0, -1.0), 90.0, 51.0), 3.2)
         builder.begin_forward()
-        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
-        # Repeat the STRAIGHT side raise: the corrected upper segment must
-        # read the anatomical target exactly (its axes were never bent); the
-        # forearm reads off-target because its mount absorbed the bend.
-        builder.hold(MotionEngineTest.rigid_arm_pose(raise_axis, 90.0), 0.3)
-        builder.frame("straight_check")
+        builder.hold(MotionEngineTest.twisted_arm_pose((1.0, 0.0, 0.0), 90.0, -43.0), 3.2)
+        builder.hold(MotionEngineTest.twisted_arm_pose((0.0, 0.0, -1.0), 90.0, 51.0), 0.3)
+        builder.frame("side_as_calibrated")
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 0.3)
+        builder.frame("forward_plain")
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 0.3)
+        builder.frame("side_plain")
+        builder.hold(MotionEngineTest.twisted_arm_pose((1.0, 0.0, 0.0), 90.0, -70.0), 0.3)
+        builder.frame("forward_palm_turned_70")
         return builder.build()
 
     @staticmethod
@@ -642,42 +659,43 @@ class MotionEngineTest(unittest.TestCase):
         neutral = {n: MotionEngineTest.headed(n, NEUTRAL[n]) for n in NEUTRAL}
         builder.hold(neutral, 0.4)
         builder.begin_calibration()
-        builder.hold(neutral, 2.0)
+        builder.hold(neutral, 3.2)
         side = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
         forward = MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0)
         builder.begin_side()
-        MotionEngineTest.hold_headed(builder, side, 1.2)
+        MotionEngineTest.hold_headed(builder, side, 3.2)
         builder.begin_forward()
-        MotionEngineTest.hold_headed(builder, forward, 1.2)
+        MotionEngineTest.hold_headed(builder, forward, 3.2)
         MotionEngineTest.hold_headed(builder, side, 0.3)
         builder.frame("side_again")
         return builder.build()
 
     @staticmethod
-    def scenario_anatomical_rejects_offplane_side_raise():
-        """A side raise 40 degrees forward of the coronal plane puts the two
-        observed axes 50 degrees apart - outside the 60-120 solve window.
-        The failure must carry the measured separation so a field log alone
-        explains the rejection (the 05:14 session failed with no number)."""
+    def scenario_anatomical_offplane_side_raise():
+        """A side raise 40 degrees forward of the coronal plane points only 50
+        degrees from the forward hold: 40 off a right angle. Splitting that
+        evenly would leave each held direction 20 degrees wrong, beyond the
+        10-degree acceptance limit, so the forward hold is refused with the
+        measured number and the side capture is kept for a quick retry."""
         builder = MotionEngineTest.calibrated_builder(
-            "anatomical_offplane", {"anatomicalTimeoutMs": 4000}
+            "anatomical_offplane", {"anatomicalTimeoutMs": 8000}
         )
         off_axis = (math.sin(math.radians(40)), 0.0, -math.cos(math.radians(40)))
         builder.begin_side()
-        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 3.2)
         builder.begin_forward()
-        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
-        builder.frame("after_rejection")
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 3.2)
+        builder.frame("after_solve")
         return builder.build()
 
     @staticmethod
     def scenario_anatomical_rejects_sync_loss():
         builder = MotionEngineTest.calibrated_builder(
-            "anatomical_sync", {"anatomicalTimeoutMs": 1800}
+            "anatomical_sync", {"anatomicalTimeoutMs": 5000}
         )
         builder.begin_side()
         pose = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
-        for _ in range(55):
+        for _ in range(140):
             builder.push_pose(pose, skew_ms=150.0)
         builder.frame("after_rejection")
         return builder.build()
@@ -699,12 +717,12 @@ class MotionEngineTest(unittest.TestCase):
         builder = MotionEngineTest.calibrated_builder("anatomical_retry")
         side = MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0)
         builder.begin_side()
-        builder.hold(side, 1.2)
+        builder.hold(side, 3.2)
         builder.begin_forward()
-        builder.hold(side, 1.2)  # same direction: not independent
+        builder.hold(side, 3.2)  # same direction: not independent
         builder.frame("after_rejection")
         builder.begin_forward()
-        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((1.0, 0.0, 0.0), 90.0), 3.2)
         builder.frame("after_retry")
         return builder.build()
 
@@ -716,11 +734,11 @@ class MotionEngineTest(unittest.TestCase):
         forward attempts rejected with 0-57 degree separations)."""
         builder = MotionEngineTest.calibrated_builder("anatomical_live")
         builder.begin_side()
-        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 3.2)
         builder.begin_forward()
         # 20 degrees forward of the pure side direction: separation reads 70
         # while the raise magnitude stays 90 on both segments. Stop at 0.4 s,
-        # before the 1 s hold completes, so the frame sees a live capture.
+        # before the 3 s hold completes, so the frame sees a live capture.
         off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
         builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 0.4)
         builder.frame("forward_live")
@@ -728,14 +746,18 @@ class MotionEngineTest(unittest.TestCase):
 
     @staticmethod
     def scenario_anatomical_quality_warning():
-        """A 70-degree pair must not install a known-skewed anatomical frame."""
+        """A forward hold 20 degrees toward the side (70 from the side hold)
+        solves with a soft hint. The disagreement is split evenly, so the side
+        and forward holds each render within 10 degrees of where they were."""
         builder = MotionEngineTest.calibrated_builder("anatomical_warning")
         off_axis = (math.cos(math.radians(20)), 0.0, -math.sin(math.radians(20)))
         builder.begin_side()
-        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 3.2)
         builder.begin_forward()
-        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 1.2)
+        builder.hold(MotionEngineTest.rigid_arm_pose(off_axis, 90.0), 3.2)
         builder.frame("after_solve")
+        builder.hold(MotionEngineTest.rigid_arm_pose((0.0, 0.0, -1.0), 90.0), 0.3)
+        builder.frame("side_again")
         return builder.build()
 
     @staticmethod
@@ -896,29 +918,28 @@ class MotionEngineTest(unittest.TestCase):
         self.assertEqual(scenario["mountCorrections"], {})
         frame = self.frames("anatomical_collinear")["after_rejection"]["frame"]
         self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
-        self.assertIn("independent", scenario["anatomicalMessage"].lower())
+        self.assertIn("0 degrees apart", scenario["anatomicalMessage"])
         rejected = next(
             e for e in scenario["events"] if e["kind"] == "anatomical_forward_rejected"
         )
+        self.assertEqual(rejected["code"], "raises_not_perpendicular")
         self.assertEqual(
             {n: round(d) for n, d in rejected["separationsDeg"].items()}, {"2": 0, "4": 0}
         )
 
-    def test_offplane_side_raise_is_rejected_at_solve_time(self):
+    def test_offplane_side_raise_is_refused_with_the_measured_angle(self):
+        """40 degrees off a right angle would leave each held direction 20
+        degrees wrong. Refuse the forward hold, name the measured angle, and
+        keep the side capture so the retry is a single raise."""
         scenario = self.results["anatomical_offplane"]
         self.assertEqual(scenario["anatomicalState"], "side_ready", scenario["anatomicalMessage"])
-        self.assertIn("independent", scenario["anatomicalMessage"].lower())
-        self.assertIn("50", scenario["anatomicalMessage"], "measured separation must be reported")
-        self.assertIn("60-120", scenario["anatomicalMessage"])
         self.assertEqual(scenario["mountCorrections"], {})
-        failed = next(
+        self.assertIn("50 degrees apart", scenario["anatomicalMessage"])
+        rejected = next(
             e for e in scenario["events"] if e["kind"] == "anatomical_forward_rejected"
         )
-        self.assertEqual(
-            {n: round(d) for n, d in failed["separationsDeg"].items()}, {"2": 50, "4": 50}
-        )
-        frame = self.frames("anatomical_offplane")["after_rejection"]["frame"]
-        self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
+        for separation in rejected["separationsDeg"].values():
+            self.assertAlmostEqual(separation, 50.0, delta=0.5)
 
     def test_clear_calibration_removes_anatomical_mounts(self):
         scenario = self.results["anatomical_reset"]
@@ -950,33 +971,52 @@ class MotionEngineTest(unittest.TestCase):
             self.assertAlmostEqual(live[node_id]["raiseDeg"], 90.0, delta=1e-3)
             self.assertAlmostEqual(live[node_id]["separationDeg"], 70.0, delta=1e-3)
 
-    def test_poor_capture_geometry_requires_retry(self):
+    def test_poor_capture_geometry_is_accepted_with_a_hint(self):
         scenario = self.results["anatomical_warning"]
-        self.assertEqual(scenario["anatomicalState"], "side_ready")
-        self.assertIsNone(scenario["anatomicalQuality"])
-        self.assertIn("80-100", scenario["anatomicalMessage"])
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        self.assertIsNotNone(scenario["anatomicalQuality"])
+        frame = self.frames("anatomical_warning")["after_solve"]["frame"]
+        warning = frame["diagnostics"]["anatomicalWarning"]
+        self.assertIsNotNone(warning)
+        self.assertIn("20 degrees off a right angle", warning)
+        self.assertIn("within 10 degrees", warning)
 
-    def test_geometry_gate_is_symmetric_and_retry_recovers(self):
-        for separation in (66.171311, 114.0):
+    def test_disagreement_is_split_so_each_held_direction_renders_within_half(self):
+        """Rendered accuracy, not just 'it solved': with a 20-degree
+        disagreement the side hold must render within 10 degrees of pointing
+        straight to the side (and so must the forward hold, by symmetry)."""
+        frame = self.frames("anatomical_warning")["side_again"]["frame"]
+        for field in ("upper_arm_orientation", "forearm_orientation"):
+            arm = q_rotate_vector((0.0, 1.0, 0.0), packet_to_q(frame[field]))
+            error = math.degrees(math.acos(max(-1.0, min(1.0, arm[0]))))
+            self.assertAlmostEqual(error, 10.0, delta=0.05, msg=f"{field} side error")
+
+    def test_measured_separations_solve_warn_or_refuse_by_disagreement(self):
+        """Up to 15 degrees off a right angle solves silently, up to 30 solves
+        with a warning (each hold within half), beyond that is refused. The
+        policy is symmetric: 66 and 114 degrees are the same 24 off."""
+        cases = {80.0: "quiet", 66.171311: "warn", 114.0: "warn", 55.0: "refuse"}
+        for separation, expectation in cases.items():
             with self.subTest(separation=separation):
-                builder = self.calibrated_builder("geometry_retry")
+                builder = self.calibrated_builder("geometry_accept")
                 builder.begin_side()
-                builder.hold(self.rigid_arm_pose((0, 0, -1), 90), 1.2)
+                builder.hold(self.rigid_arm_pose((0, 0, -1), 90), 3.2)
                 builder.begin_forward()
                 offset = math.radians(90 - separation)
-                builder.hold(self.rigid_arm_pose((math.cos(offset), 0, -math.sin(offset)), 90), 1.2)
-                builder.frame("rejected")
-                builder.display_pose("rejected_pose")
-                builder.begin_forward()
-                builder.hold(self.rigid_arm_pose((1, 0, 0), 90), 1.2)
-                builder.frame("recovered")
+                builder.hold(self.rigid_arm_pose((math.cos(offset), 0, -math.sin(offset)), 90), 3.2)
+                builder.frame("after_solve")
                 results, _ = run_scenarios([builder.build()])
-                result = results["geometry_retry"]
-                rejected = next(f["frame"] for f in result["frames"] if f["label"] == "rejected")
-                self.assertEqual(rejected["diagnostics"]["axisFrame"], "sensor_neutral")
-                self.assertEqual(result["anatomicalState"], "calibrated")
-                events = [e for e in result["events"] if e["kind"] == "anatomical_forward_rejected"]
-                self.assertEqual(events[-1]["code"], "capture_geometry")
+                result = results["geometry_accept"]
+                frame = next(f["frame"] for f in result["frames"] if f["label"] == "after_solve")
+                if expectation == "refuse":
+                    self.assertEqual(result["anatomicalState"], "side_ready")
+                    continue
+                self.assertEqual(result["anatomicalState"], "calibrated", result["anatomicalMessage"])
+                self.assertEqual(frame["diagnostics"]["axisFrame"], "anatomical")
+                if expectation == "warn":
+                    self.assertIsNotNone(frame["diagnostics"]["anatomicalWarning"])
+                else:
+                    self.assertIsNone(frame["diagnostics"]["anatomicalWarning"])
 
     def test_display_prediction_reconstructs_the_true_pose(self):
         """The avatar's gyro extrapolation, not lagged interpolation: omega
@@ -1010,29 +1050,65 @@ class MotionEngineTest(unittest.TestCase):
     def test_directional_capture_rejects_under_raise(self):
         scenario = self.results["anatomical_under_raise"]
         self.assertEqual(scenario["anatomicalState"], "failed")
-        self.assertIn("75-105", scenario["anatomicalMessage"])
+        self.assertIn("45 and 135", scenario["anatomicalMessage"])
         self.assertNotIn("..", scenario["anatomicalMessage"], "doubled period")
-        # Rejections must be auditable (spec section 9): the restarts carry
-        # the stable code plus the actionable message, not just the timeout.
+        # Waiting is auditable (spec section 9): the wait carries the stable
+        # code plus the actionable message, not just the timeout.
         restarted = [
             e for e in scenario["events"] if e["kind"] == "anatomical_hold_restarted"
         ]
-        self.assertTrue(restarted, "capture restarts must be logged")
-        self.assertTrue(all(e.get("code") == "raise_range" for e in restarted))
-        self.assertTrue(any("75-105" in (e.get("reason") or "") for e in restarted))
+        self.assertTrue(restarted, "capture waits must be logged")
+        self.assertIn("raise_range", [e.get("code") for e in restarted])
+        self.assertTrue(any("45 and 135" in (e.get("reason") or "") for e in restarted))
 
     def test_directional_capture_rejects_bent_elbow(self):
         scenario = self.results["anatomical_bent"]
         self.assertEqual(scenario["anatomicalState"], "failed")
         self.assertIn("elbow straight", scenario["anatomicalMessage"].lower())
 
-    def test_directional_capture_catches_bent_elbow_the_magnitude_gate_misses(self):
-        """A bent capture that formerly produced a skewed mount now fails geometry."""
-        scenario = self.results["anatomical_bent_hidden"]
-        self.assertEqual(scenario["anatomicalState"], "side_ready")
-        self.assertIsNone(scenario["anatomicalQuality"])
-        frame = self.frames("anatomical_bent_hidden")["straight_check"]["frame"]
-        self.assertEqual(frame["diagnostics"]["axisFrame"], "sensor_neutral")
+    @staticmethod
+    def arm_direction(frame, field):
+        return q_rotate_vector((0.0, 1.0, 0.0), packet_to_q(frame[field]))
+
+    def test_palm_turned_in_holds_does_not_skew_the_calibration(self):
+        """The 09:10 field bug: palm-down holds twisted the arm +51/-43
+        degrees and the axis solve rendered straight-ahead 25-29 degrees
+        outward. With the pointing solve a plain raise renders EXACTLY."""
+        scenario = self.results["anatomical_palm_turned"]
+        self.assertEqual(scenario["anatomicalState"], "calibrated", scenario["anatomicalMessage"])
+        self.assertNotIn("off a right angle", scenario["anatomicalMessage"])
+        frames = self.frames("anatomical_palm_turned")
+        for label, target in (("forward_plain", (0.0, 0.0, 1.0)), ("side_plain", (1.0, 0.0, 0.0))):
+            for field in ("upper_arm_orientation", "forearm_orientation"):
+                arm = self.arm_direction(frames[label]["frame"], field)
+                error = math.degrees(math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(arm, target))))))
+                self.assertLess(error, 1e-3, f"{label} {field} points {error} deg off")
+
+    def test_palm_is_referenced_to_the_side_hold_and_follows_twist(self):
+        """The wearer holds the side pose palm down; the rendered palm must
+        face the floor there, and turn degree for degree with a later twist."""
+        scenario = self.results["anatomical_palm_turned"]
+        frames = self.frames("anatomical_palm_turned")
+        palm_rest = frames["side_as_calibrated"]["frame"]["diagnostics"]["handRestPalm"]
+        self.assertIsNotNone(palm_rest)
+        self.assertAlmostEqual(palm_rest[1], 0.0, places=9, msg="rest palm is horizontal")
+
+        def rendered_palm(label):
+            fore = packet_to_q(frames[label]["frame"]["forearm_orientation"])
+            return q_rotate_vector(tuple(palm_rest), fore)
+
+        side = rendered_palm("side_as_calibrated")
+        self.assertAlmostEqual(side[1], 1.0, delta=1e-6, msg=f"side-hold palm {side} must face down")
+        plain = rendered_palm("forward_plain")
+        turned = rendered_palm("forward_palm_turned_70")
+        between = math.degrees(math.acos(max(-1.0, min(1.0, sum(a * b for a, b in zip(plain, turned))))))
+        self.assertAlmostEqual(between, 70.0, delta=1e-3)
+        complete = next(e for e in scenario["events"] if e["kind"] == "anatomical_complete")
+        self.assertEqual(complete["method"], "pointing")
+        for quality in complete["quality"]["nodes"].values():
+            self.assertAlmostEqual(quality["sideTwistDeg"], 51.0, delta=1e-3)
+            self.assertAlmostEqual(quality["forwardTwistDeg"], -43.0, delta=1e-3)
+            self.assertAlmostEqual(quality["pointingSeparationDeg"], 90.0, delta=1e-3)
 
     def test_anatomical_capture_completes_despite_heading_offsets(self):
         """GRV headings do NOT cancel in inter-sensor products, so every
@@ -1046,10 +1122,9 @@ class MotionEngineTest(unittest.TestCase):
             e for e in scenario["events"] if e["kind"] == "anatomical_complete"
         )
         for node_id, quality in complete["quality"]["nodes"].items():
-            self.assertGreater(
-                quality["axisSeparationDeg"], 85.0, f"N{node_id} separation"
+            self.assertAlmostEqual(
+                quality["pointingSeparationDeg"], 90.0, delta=1e-3, msg=f"N{node_id} separation"
             )
-            self.assertLess(quality["axisSeparationDeg"], 95.0, f"N{node_id} separation")
         frame = self.frames("anatomical_headings")["side_again"]["frame"]
         target = q_axis_angle((0.0, 0.0, -1.0), 90.0)
         for field in ("upper_arm_orientation", "forearm_orientation"):

@@ -111,12 +111,13 @@ function failure(reason) {
 export function solveMountCorrection(sourceSide, sourceForward, {
   targetSide = [0, 0, -1],
   targetForward = [1, 0, 0],
-  // Wide enough to accept a naturally-raised arm (the scapular plane sits
-  // 20-30 degrees forward of the coronal, landing at 60-75 degree
-  // separation), tight enough to refuse degenerate pairs. The engine reports
-  // the measured separation so the wearer can still straighten toward 90.
-  minSeparationDeg = 60,
-  maxSeparationDeg = 120,
+  // The TRIAD construction maps the captured directions onto the anatomical
+  // targets exactly, so the calibrated poses are reproduced regardless of how
+  // far apart the wearer's raises were. These bounds only refuse a pair too
+  // close to a single direction (or its reverse) to define a rotation at all;
+  // a soft quality hint is reported separately.
+  minSeparationDeg = 25,
+  maxSeparationDeg = 155,
 } = {}) {
   if (![sourceSide, sourceForward, targetSide, targetForward].every(finiteVector)) {
     return failure("non_finite_axis");
@@ -158,4 +159,133 @@ export function solveMountCorrection(sourceSide, sourceForward, {
     },
     reason: null,
   };
+}
+
+// ------------------------------------------------------ pointing calibration
+
+function degreesBetween(a, b) {
+  return Math.acos(clamp(dot(normalize(a), normalize(b)), -1, 1)) * 180 / Math.PI;
+}
+
+function horizontal(vector, down) {
+  return normalize(vector.map((value, index) => value - dot(vector, down) * down[index]));
+}
+
+/**
+ * Solve a node's mount from WHERE THE ARM POINTED, not from how it rotated.
+ *
+ * Why this replaced the rotation-axis TRIAD: a raise that also twists the arm
+ * about its own long axis (turning the palm) tilts the delta quaternion's
+ * rotation axis, and the axis solver read that tilt as mount geometry. In the
+ * 2026-09-11T09:10 field session the wearer held the palm down in both
+ * directional poses; relative to their neutral palm that was +51 / -43 degrees
+ * of twist, so the rotation axes measured only 60 degrees apart while the arm
+ * itself pointed 80 degrees apart, and the straight-ahead hold rendered 25-29
+ * degrees outward. The long axis goes to the same place whatever the palm
+ * does, so this solve cannot be corrupted by twist at all.
+ *
+ * All three inputs are expressed in the node's own sensor-neutral frame, so
+ * they are free of both the mount rotation and the per-sensor GRV heading:
+ *   down            world vertical at neutral (the arm's long axis there)
+ *   sidePointing    where that long axis pointed during the side hold
+ *   forwardPointing where it pointed during the forward hold
+ *
+ * The vertical is exact (gravity). Only the heading of the frame has to come
+ * from the wearer's raises, and real raises are rarely a perfect right angle
+ * apart (field: 80 degrees). Rather than trusting one raise and pushing the
+ * whole error onto the other, the forward direction is taken as the bisector
+ * of the forward hold and the side hold turned 90 degrees, so each held pose
+ * renders within half of the disagreement.
+ *
+ * Returns the mount M with anatomical axes as its columns: X right, Y down,
+ * Z forward, expressed in the sensor-neutral frame. The engine applies it as
+ * conj(M) * D * M.
+ */
+export function solvePointingMount(down, sidePointing, forwardPointing, {
+  minElevationDeg = 45,
+  maxElevationDeg = 135,
+  maxDisagreementDeg = 30,
+} = {}) {
+  if (![down, sidePointing, forwardPointing].every(finiteVector)) {
+    return failure("non_finite_axis");
+  }
+  const y = normalize(down);
+  const side = normalize(sidePointing);
+  const forward = normalize(forwardPointing);
+  if (!y || !side || !forward) return failure("zero_axis");
+
+  const sideElevationDeg = degreesBetween(y, side);
+  const forwardElevationDeg = degreesBetween(y, forward);
+  const measured = { sideElevationDeg, forwardElevationDeg };
+  // A raise near vertical has no usable horizontal direction to read.
+  if (sideElevationDeg < minElevationDeg || forwardElevationDeg < minElevationDeg) {
+    return { ...failure("raise_too_low"), quality: measured };
+  }
+  if (sideElevationDeg > maxElevationDeg || forwardElevationDeg > maxElevationDeg) {
+    return { ...failure("raise_too_high"), quality: measured };
+  }
+
+  const sideFlat = horizontal(side, y);
+  const forwardFlat = horizontal(forward, y);
+  if (!sideFlat || !forwardFlat) return { ...failure("raise_too_low"), quality: measured };
+
+  // X = Y x Z for this right-handed frame, so a side (+X) direction implies
+  // forward = X x Y.
+  const forwardFromSide = normalize(cross(sideFlat, y));
+  const pointingSeparationDeg = degreesBetween(sideFlat, forwardFlat);
+  const disagreementDeg = degreesBetween(forwardFlat, forwardFromSide);
+  const quality = { ...measured, pointingSeparationDeg, disagreementDeg };
+  if (disagreementDeg > maxDisagreementDeg) {
+    return { ...failure("raises_not_perpendicular"), quality };
+  }
+
+  const z = normalize(forwardFlat.map((value, index) => value + forwardFromSide[index]));
+  if (!z) return { ...failure("raises_not_perpendicular"), quality };
+  const x = normalize(cross(y, z));
+  const mountMatrix = columns(x, y, z);
+  const det = determinant(mountMatrix);
+  const error = orthogonalityError(mountMatrix);
+  const mount = matrixToQuaternion(mountMatrix);
+  if (!mount || !Number.isFinite(det) || Math.abs(det - 1) > 1e-6 || error > 1e-6) {
+    return { ...failure("invalid_rotation"), quality };
+  }
+  return {
+    ok: true,
+    mount,
+    quality: { ...quality, determinant: det, orthogonalityError: error },
+    reason: null,
+  };
+}
+
+/**
+ * The wearer's palm direction at neutral, in anatomical axes, taken from the
+ * side hold where the palm is instructed to face the floor. The sensors cannot
+ * see which way the palm faces relative to the strap, so one pose has to name
+ * it; after that, every forearm twist (pronation, supination, shoulder
+ * rotation) moves the rendered palm with the wearer's. Field check on the
+ * 09:10 session: with the reference taken from the side hold alone, the palm
+ * in the separate forward holds came out 12-13 degrees from facing down, where
+ * the wearer held it.
+ *
+ * `sideDeltaAnatomical` is the side-hold rotation already mapped through the
+ * mount. Returns a horizontal unit vector, or null if it is degenerate.
+ */
+export function palmRestNormal(sideDeltaAnatomical) {
+  const q = sideDeltaAnatomical;
+  if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return null;
+  // Rotate world-down back through the side hold: conj(q) * (0,1,0) * q.
+  const [w, x, y, z] = q;
+  const v = [0, 1, 0];
+  const cx = -x;
+  const cy = -y;
+  const cz = -z;
+  const tx = 2 * (cy * v[2] - cz * v[1]);
+  const ty = 2 * (cz * v[0] - cx * v[2]);
+  const tz = 2 * (cx * v[1] - cy * v[0]);
+  const palm = [
+    v[0] + w * tx + cy * tz - cz * ty,
+    v[1] + w * ty + cz * tx - cx * tz,
+    v[2] + w * tz + cx * ty - cy * tx,
+  ];
+  return horizontal(palm, [0, 1, 0]);
 }

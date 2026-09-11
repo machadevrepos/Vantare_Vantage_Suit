@@ -250,7 +250,7 @@ export class Ui {
 
     const hingeBadges = {
       none: "Hinge axis not calibrated — flexion unavailable.",
-      capturing: "Measuring the hinge axis: perform a few slow full reps.",
+      capturing: diagnostics.hingeMessage || "Measuring the hinge axis: 3 slow full curls, palm up.",
       ready: diagnostics.hingeMessage,
       failed: diagnostics.hingeMessage,
     };
@@ -295,25 +295,24 @@ export class Ui {
   /** Instruction line, live capture feedback, and solve quality. */
   anatomicalSummary(diagnostics) {
     const message = diagnostics.anatomicalMessage || "";
-    // The engine carries the live raise angle and (during the forward
-    // capture) the separation from the stored side axis. Separation is the
-    // number that predicts the solve quality, so it leads the correction:
-    // the 05:58 session captured a 115-degree forward raise blind and
-    // skewed that node's whole mount by ~24 degrees.
+    // The engine carries the live arm elevation and (during the forward
+    // capture) the horizontal angle between where the arm points now and
+    // where it pointed in the side hold - exactly what the pointing solve
+    // uses, so the wearer can steer to ~90 before the window closes.
     let live = "";
     const liveValues = diagnostics.anatomicalLive;
     if (liveValues) {
       const parts = Object.entries(liveValues).map(([id, value]) => {
-        const raise = Number.isFinite(value.raiseDeg) ? `${value.raiseDeg.toFixed(0)}°` : "—";
+        const raise = Number.isFinite(value.raiseDeg) ? `${value.raiseDeg.toFixed(0)}° up` : "—";
         if (Number.isFinite(value.separationDeg)) {
-          return `N${id} ${raise} · sep ${value.separationDeg.toFixed(0)}°`;
+          return `N${id} ${raise} · ${value.separationDeg.toFixed(0)}° from side`;
         }
         return `N${id} ${raise}`;
       });
       const aim =
         diagnostics.anatomicalState === "forward_capturing"
-          ? `need ${MOTION_DEFAULTS.anatomicalAimSeparationMinDeg}-${MOTION_DEFAULTS.anatomicalAimSeparationMaxDeg}° separation`
-          : `aim ${MOTION_DEFAULTS.anatomicalMinAngleDeg}-${MOTION_DEFAULTS.anatomicalMaxAngleDeg}°`;
+          ? `aim ~90° from side (accepted ${90 - MOTION_DEFAULTS.anatomicalMaxDisagreementDeg}-${90 + MOTION_DEFAULTS.anatomicalMaxDisagreementDeg}°)`
+          : "aim ~90° up";
       live = ` — live: ${parts.join(" | ")} (${aim})`;
     }
     const quality = diagnostics.anatomicalQuality;
@@ -321,8 +320,8 @@ export class Ui {
     const parts = Object.entries(quality.nodes)
       .map(
         ([id, q]) =>
-          `N${id} side ${q.sideAngleDeg.toFixed(0)}° / fwd ${q.forwardAngleDeg.toFixed(0)}°` +
-          ` (sep ${q.axisSeparationDeg.toFixed(0)}°)`
+          `N${id} side ${q.sideAngleDeg.toFixed(0)}° / fwd ${q.forwardAngleDeg.toFixed(0)}° up` +
+          ` (${q.pointingSeparationDeg.toFixed(0)}° apart)`
       );
     if (typeof quality.segmentMismatchDeg === "number") {
       parts.push(`mismatch ${quality.segmentMismatchDeg.toFixed(1)}°`);

@@ -323,13 +323,14 @@ export function anatomicalArmMarkup() {
   return `
     <div class="body-reference-note">Full body reference &middot; right arm tracked</div>
     <div class="body-rig" role="img" aria-label="Full human body with tracked right arm; torso, left arm and legs are an untracked neutral reference">
-      <div class="body-head"><span class="body-face"></span></div>
+      <div class="body-floor" aria-hidden="true"><span class="body-floor-front">FRONT</span></div>
+      <div class="body-head"><span class="body-face"></span><span class="body-nose"></span></div>
       <div class="body-neck"></div>
       <div class="body-torso"><span class="body-chest-line"></span><span class="body-abdomen"></span></div>
       <div class="body-pelvis"></div>
       <div class="body-rest-arm"><div class="body-rest-upper"></div><div class="body-rest-elbow"></div><div class="body-rest-forearm"></div><div class="body-rest-hand"></div></div>
-      <div class="body-leg body-leg-right"><div class="body-thigh"></div><div class="body-knee"></div><div class="body-shin"></div><div class="body-foot"></div></div>
-      <div class="body-leg body-leg-left"><div class="body-thigh"></div><div class="body-knee"></div><div class="body-shin"></div><div class="body-foot"></div></div>
+      <div class="body-leg body-leg-right"><div class="body-thigh"></div><div class="body-knee"></div><div class="body-shin"></div><div class="body-foot"></div><div class="body-toe"></div></div>
+      <div class="body-leg body-leg-left"><div class="body-thigh"></div><div class="body-knee"></div><div class="body-shin"></div><div class="body-foot"></div><div class="body-toe"></div></div>
       <div class="arm-rig" aria-label="Live articulated human arm">
       <div class="arm-shoulder" data-arm-part="shoulder"><span class="anatomy-highlight"></span></div>
       <div class="arm-upper" data-arm-part="upper-arm">
@@ -354,9 +355,98 @@ export function anatomicalArmMarkup() {
     <div class="arm-avatar-label" data-arm-status>Run the three-pose calibration</div>`;
 }
 
+/**
+ * The avatar hand is drawn palm-forward at rest (anatomical position: palm
+ * facing the viewer, thumb toward the wearer's right). The wearer's own neutral
+ * palm usually faces the thigh or turns back; the engine measures it from the
+ * side calibration hold (palm down) as a horizontal anatomical vector. This is
+ * the rest twist about the forearm's long axis (+Y) that turns the drawn palm
+ * onto the measured one. It is applied to the hand only, so the forearm mesh is
+ * not spun edge-on; live twist still arrives through the forearm transform.
+ */
+const AVATAR_REST_PALM = [0, 0, 1];
+
+export function handRestQuaternion(palm) {
+  if (!Array.isArray(palm) || palm.length !== 3 || !palm.every(Number.isFinite)) {
+    return { ...IDENTITY_QUATERNION };
+  }
+  if (Math.hypot(palm[0], palm[2]) < 1e-6) return { ...IDENTITY_QUATERNION };
+  const phi = Math.atan2(palm[0], palm[2]) - Math.atan2(AVATAR_REST_PALM[0], AVATAR_REST_PALM[2]);
+  return { qx: 0, qy: Math.sin(phi / 2), qz: 0, qw: Math.cos(phi / 2) };
+}
+
+
+// ------------------------------------------------------------- billboards
+// All matrices here are CSS matrix3d values: 16 numbers, column-major, the
+// same form rotationMatrixForQuaternion() returns. Only the 3x3 rotation part
+// is used.
+
+const IDENTITY_MATRIX = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+/** Rotation part of a computed CSS transform, scale removed. */
+export function rotationFromCssTransform(text) {
+  const match = /matrix(3d)?\(([^)]*)\)/.exec(text || "");
+  if (!match) return IDENTITY_MATRIX.slice();
+  const v = match[2].split(",").map(Number);
+  const m = match[1]
+    ? v
+    : [v[0], v[1], 0, 0, v[2], v[3], 0, 0, 0, 0, 1, 0, v[4], v[5], 0, 1];
+  const out = IDENTITY_MATRIX.slice();
+  for (let col = 0; col < 3; col += 1) {
+    const n = Math.hypot(m[col * 4], m[col * 4 + 1], m[col * 4 + 2]) || 1;
+    for (let row = 0; row < 3; row += 1) out[col * 4 + row] = m[col * 4 + row] / n;
+  }
+  return out;
+}
+
+export function multiplyRotations(a, b) {
+  const out = IDENTITY_MATRIX.slice();
+  for (let col = 0; col < 3; col += 1) {
+    for (let row = 0; row < 3; row += 1) {
+      let sum = 0;
+      for (let k = 0; k < 3; k += 1) sum += a[k * 4 + row] * b[col * 4 + k];
+      out[col * 4 + row] = sum;
+    }
+  }
+  return out;
+}
+
+export function transposeRotation(m) {
+  const out = IDENTITY_MATRIX.slice();
+  for (let col = 0; col < 3; col += 1) {
+    for (let row = 0; row < 3; row += 1) out[col * 4 + row] = m[row * 4 + col];
+  }
+  return out;
+}
+
+function applyRotation(m, v) {
+  return [0, 1, 2].map((row) => m[row] * v[0] + m[4 + row] * v[1] + m[8 + row] * v[2]);
+}
+
+/**
+ * Rotation about a limb's own long axis (+Y) that turns its card to face the
+ * camera. `towardCamera` is the camera direction in the limb's local frame.
+ * Returns null when the limb points (almost) straight at the camera: every
+ * turn about that axis is then equally edge-on, so the caller keeps the last.
+ */
+export function limbBillboard(towardCamera) {
+  const [x, , z] = towardCamera;
+  const n = Math.hypot(x, z);
+  if (n < 1e-3) return null;
+  const c = z / n;
+  const s = x / n;
+  return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1];
+}
+
+const cssMatrix = (m) => `matrix3d(${m.map(cleanMatrixValue).join(",")})`;
+
 export class ArmAvatar {
   constructor(root) {
     this.root = root;
+    this.handRest = { ...IDENTITY_QUATERNION };
+    this.camera = null;
+    this.cameraWidth = null;
+    this.billboards = { upper: IDENTITY_MATRIX.slice(), forearm: IDENTITY_MATRIX.slice() };
     if (root) root.innerHTML = anatomicalArmMarkup();
     this.status = root?.querySelector("[data-arm-status]") || null;
     this.smoother = new ArmPoseSmoother();
@@ -372,6 +462,7 @@ export class ArmAvatar {
 
   render(frame, nowMs = performance.now()) {
     if (!this.root) return;
+    this.handRest = handRestQuaternion(frame?.diagnostics?.handRestPalm);
     this.smoother.pushFrame(frame, nowMs);
     if (typeof requestAnimationFrame !== "function") this.paintAt(nowMs);
   }
@@ -397,7 +488,54 @@ export class ArmAvatar {
     const forearmMatrix = rotationMatrixForQuaternion(pose.forearmRelative);
     this.root.style.setProperty("--upper-matrix", `matrix3d(${upperMatrix.join(",")})`);
     this.root.style.setProperty("--forearm-matrix", `matrix3d(${forearmMatrix.join(",")})`);
+    const handMatrix = rotationMatrixForQuaternion(this.handRest);
+    this.root.style.setProperty("--hand-matrix", `matrix3d(${handMatrix.join(",")})`);
+    this.paintBillboards(upperMatrix, forearmMatrix);
     this.root.dataset.state = pose.state;
     if (this.status) this.status.textContent = LABELS[pose.state] ?? "";
+  }
+
+  /**
+   * Camera rotation of the rig (body camera x arm rig), read from the
+   * computed styles once and again only when the panel is resized, since a
+   * media query can swap the rig transform.
+   */
+  cameraRotation() {
+    const width = this.root.clientWidth;
+    if (this.camera && this.cameraWidth === width) return this.camera;
+    const body = this.root.querySelector(".body-rig");
+    const arm = this.root.querySelector(".arm-rig");
+    const style = (el) => (el && typeof getComputedStyle === "function" ? getComputedStyle(el).transform : "");
+    this.camera = multiplyRotations(
+      rotationFromCssTransform(style(body)),
+      rotationFromCssTransform(style(arm))
+    );
+    this.cameraWidth = width;
+    return this.camera;
+  }
+
+  paintBillboards(upperMatrix, forearmMatrix) {
+    const camera = this.cameraRotation();
+    // Screen +Z (toward the viewer) expressed in the arm rig's frame.
+    const towardCamera = applyRotation(transposeRotation(camera), [0, 0, 1]);
+    const upperWorld = upperMatrix;
+    const forearmWorld = multiplyRotations(upperMatrix, forearmMatrix);
+    const upper = limbBillboard(applyRotation(transposeRotation(upperWorld), towardCamera));
+    const forearm = limbBillboard(applyRotation(transposeRotation(forearmWorld), towardCamera));
+    if (upper) this.billboards.upper = upper;
+    if (forearm) this.billboards.forearm = forearm;
+    // Labels cancel everything above them so they sit flat and upright on
+    // screen: label = (camera * segment * strap billboard)^-1.
+    const upperLabel = transposeRotation(
+      multiplyRotations(multiplyRotations(camera, upperWorld), this.billboards.upper)
+    );
+    const forearmLabel = transposeRotation(
+      multiplyRotations(multiplyRotations(camera, forearmWorld), this.billboards.forearm)
+    );
+    const set = (name, m) => this.root.style.setProperty(name, cssMatrix(m));
+    set("--upper-billboard", this.billboards.upper);
+    set("--forearm-billboard", this.billboards.forearm);
+    set("--upper-label", upperLabel);
+    set("--forearm-label", forearmLabel);
   }
 }

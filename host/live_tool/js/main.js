@@ -215,9 +215,12 @@ class App {
     } else if (event.kind === "calibration_failed") {
       this.ui.log(`Motion calibration failed: ${event.reason}`, "warn");
     } else if (event.kind === "hinge_complete") {
+      const peak = Number.isFinite(event.peakElbowDeg)
+        ? `, measured curl peak ${event.peakElbowDeg.toFixed(0)} deg`
+        : "";
       this.ui.log(
         `Hinge axis measured from ${event.samples} samples `
-          + `(mean spread ${event.meanSpreadDeg.toFixed(1)} deg, max ${event.maxSpreadDeg.toFixed(1)} deg).`
+          + `(mean spread ${event.meanSpreadDeg.toFixed(1)} deg, max ${event.maxSpreadDeg.toFixed(1)} deg${peak}).`
       );
     } else if (event.kind === "hinge_failed") {
       this.ui.log(`Hinge calibration failed: ${event.reason}`, "warn");
